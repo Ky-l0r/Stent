@@ -1,0 +1,1533 @@
+"""数据分析服务（企划书 3.2 模块四）。
+
+四类能力，全部走本地 SQLite，不依赖任何 UI：
+
+1. **展示** —— :meth:`AnalyticsService.overview` / :meth:`AnalyticsService.rank_contents`
+   汇总与排行单篇内容的播放、点赞、评论、收藏、分享。
+2. **趋势** —— :meth:`AnalyticsService.trend` 按日期聚合的时间序列（折线图数据源），
+   可再按平台、主题维度切片。
+3. **回流** —— :meth:`AnalyticsService.attribute` 用 LLM 分析表现最好 / 最差的内容，
+   产出「可复用的内容结构经验」并写入画像记忆（``db.append_memory``），指导下一次创作。
+4. **增量拉取** —— :meth:`AnalyticsService.sync_metrics` 只拉 ``db.posts_needing_sync()``
+   挑出的待更新内容，单条失败不影响整体。
+
+移植来源（Easel → Stent，详见 ``_reference/specs/analytics.md``）：
+
+- ``skills/shared/scripts/social_stats.py`` 的确定性计算口径（互动率、互动综合分、
+  环比、样本量警告、分组聚合）在此模块内以纯函数重新实现，避免跨项目 import。
+- ``skills/openclaw/skill-social-performance-review`` 的基准区间与 7 维分析框架。
+- ``skills/openclaw/skill-publish-analytics/scripts/analyze.py`` 的「最佳发布时段」模式。
+- ``skills/openclaw/skill-data-tracker/scripts/track.py`` 的「一天一快照 + 去重」增量思路。
+
+设计约束：
+
+- 本模块**不得** import PySide6 / anthropic / openclaw / Easel 的任何模块；
+- 平台适配器走**惰性导入 + 防御性写法**：``stent.platforms`` 的 registry 尚未实现时，
+  本模块仍可正常 import，``sync_metrics`` 返回友好错误而不是抛 ImportError；
+- 所有数据访问都通过注入的 ``Database`` 对象，不直接裸写 sqlite3；
+- 空数据一律返回空结构或带 ``warnings`` 的结果，不抛异常。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import date, datetime, timedelta
+from typing import Any, Callable, Iterable, Sequence
+
+log = logging.getLogger(__name__)
+
+__all__ = [
+    "AnalyticsService",
+    "BENCHMARKS",
+    "DEFAULT_BENCHMARK",
+    "METRIC_KEYS",
+    "PROGRESS_METRIC_KEYS",
+    "TIME_BUCKETS",
+    "WEEKDAYS",
+    "available_platforms",
+    "evaluate_benchmark",
+    "get_adapter",
+    "resolve_adapter",
+    "safe_div",
+    "engagement_rate",
+    "engagement_score",
+    "pct_change",
+    "mean",
+    "median",
+    "sample_warning",
+]
+
+# --------------------------------------------------------------------------- #
+# 常量：指标口径与平台基准
+# --------------------------------------------------------------------------- #
+
+#: 采样范围内可供图表/聚合使用的指标列（metrics 表的数值列）
+METRIC_KEYS: tuple[str, ...] = ("views", "likes", "comments", "collects", "shares")
+
+#: 参与互动率的指标（与 Easel review.py 的 _interactions 一致：赞 + 评 + 藏 + 转）
+INTERACTION_KEYS: tuple[str, ...] = ("likes", "comments", "collects", "shares")
+
+#: 互动综合分权重（沿用 social_stats.engagement_score 的默认权重）
+ENGAGEMENT_WEIGHTS: dict[str, float] = {
+    "views": 0.1,
+    "likes": 1.0,
+    "comments": 2.0,
+    "collects": 2.0,  # Easel 原口径为 shares×3；收藏在中文平台等价于 saves，给 2.0
+    "shares": 3.0,
+}
+
+#: 内部加权的评分维度（沿用 analysis-framework.md「内部评分框架」）
+SCORE_WEIGHTS: dict[str, float] = {
+    "engagement_vs_benchmark": 0.25,
+    "relative_views": 0.20,
+    "top_post": 0.20,
+    "consistency": 0.15,
+    "momentum": 0.20,
+}
+
+#: 一条画像记忆最多保留多少字，避免记忆区膨胀
+MEMORY_TEXT_LIMIT = 1200
+
+#: 归因时参与分析的内容条数（Top N / Bottom N）
+ATTRIBUTE_SAMPLE = 3
+
+#: 单次同步最多处理的帖子数（默认值，可被方法参数覆盖）
+DEFAULT_SYNC_LIMIT = 50
+
+#: 增量同步的最小间隔（分钟）
+DEFAULT_SYNC_INTERVAL_MINUTES = 30
+
+#: 一次拉取最多读入的 metrics 行数（防止长历史导致内存膨胀）
+DEFAULT_METRIC_ROW_LIMIT = 20000
+
+#: 发布时段分桶（沿用 analyze.py TIME_BUCKETS）
+TIME_BUCKETS: tuple[tuple[str, range], ...] = (
+    ("早晨", range(6, 9)),
+    ("上午", range(9, 12)),
+    ("午间", range(12, 14)),
+    ("下午", range(14, 18)),
+    ("晚间", range(18, 22)),
+)
+
+WEEKDAYS: tuple[str, ...] = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+#: 平台基准表（口径见 _reference/specs/analytics.md）
+#: engagement = 互动率区间（百分数）；collect_rate 仅小红书等「收藏为核心质量信号」的平台有意义。
+#: ranges 为 <偏低上限, <平均上限, <良好上限> 三段，超过第三段即「优秀」。
+BENCHMARKS: dict[str, dict[str, Any]] = {
+    "xiaohongshu": {
+        "label": "小红书",
+        "engagement": (3.0, 6.0, 10.0),
+        "collect_rate": (1.0, 3.0, 6.0),
+        "note": "互动率 =(点赞+收藏+评论+分享)÷曝光；收藏率是核心质量信号",
+    },
+    "douyin": {
+        "label": "抖音",
+        "engagement": (3.0, 6.0, 10.0),
+        "note": "完播率为首要指标；播放量按推荐分发，与粉丝量不成正比",
+    },
+    "bilibili": {
+        "label": "B 站",
+        "engagement": (3.0, 8.0, 12.0),
+        "note": "看「三连」（点赞+投币+收藏）与完播；互动率良好线约 8%",
+    },
+    "weibo": {
+        "label": "微博",
+        "engagement": (0.5, 2.0, 4.0),
+        "note": "转发链决定放大，蹭热点显著拉高",
+    },
+    "zhihu": {
+        "label": "知乎",
+        "engagement": (0.5, 2.0, 5.0),
+        "note": "长文打开与赞同为主，无公开权威区间，按互动率粗估",
+    },
+    "weixin_mp": {
+        "label": "公众号",
+        "engagement": (2.0, 5.0, 8.0),
+        "note": "无推荐分发；打开率普遍 2-5%，无在看数据时用互动率近似",
+    },
+}
+
+#: 未收录平台的兜底基准（取 Easel 通用「互动率 1-3-6」口径）
+DEFAULT_BENCHMARK: dict[str, Any] = {
+    "label": "通用",
+    "engagement": (1.0, 3.0, 6.0),
+    "note": "平台未收录，使用通用区间；建立自有历史后以自身上月为准",
+}
+
+
+# --------------------------------------------------------------------------- #
+# 纯函数：确定性计算（移植自 social_stats.py，只依赖标准库）
+# --------------------------------------------------------------------------- #
+def safe_div(
+    numerator: float | None, denominator: float | None, default: float | None = None
+) -> float | None:
+    """安全除法：分子/分母为 None 或分母为 0 时返回 ``default``（默认 None）。"""
+    if numerator is None or denominator is None or denominator == 0:
+        return default
+    return numerator / denominator
+
+
+def _clean(values: Iterable[float | None]) -> list[float]:
+    """去掉 None，返回可参与计算的数值列表。"""
+    return [v for v in values if v is not None]
+
+
+def mean(values: Iterable[float | None]) -> float | None:
+    """算术平均，忽略 None；空列表返回 None。"""
+    xs = _clean(values)
+    return safe_div(sum(xs), float(len(xs)))
+
+
+def median(values: Iterable[float | None]) -> float | None:
+    """中位数，忽略 None；空列表返回 None。"""
+    xs = sorted(_clean(values))
+    n = len(xs)
+    if n == 0:
+        return None
+    mid = n // 2
+    if n % 2 == 1:
+        return float(xs[mid])
+    return (xs[mid - 1] + xs[mid]) / 2.0
+
+
+def coverage(values: Sequence[float | None]) -> float | None:
+    """非 None 比例（0~1），衡量某指标的数据覆盖率；空序列返回 None。"""
+    if not values:
+        return None
+    return safe_div(float(len(_clean(values))), float(len(values)))
+
+
+def engagement_rate(
+    interactions: float | None, denominator: float | None, *, as_percent: bool = True
+) -> float | None:
+    """互动率 = 互动总量 ÷ 基数。
+
+    基数（reach / impressions / views）为 0 或 None 时返回 None —— 即
+    「数据缺失」而不是「表现差」。``as_percent=True`` 时返回百分数。
+    """
+    rate = safe_div(interactions, denominator)
+    if rate is None:
+        return None
+    return rate * 100.0 if as_percent else rate
+
+
+def engagement_score(
+    views: float | None = 0,
+    likes: float | None = 0,
+    comments: float | None = 0,
+    collects: float | None = 0,
+    shares: float | None = 0,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """互动综合分：默认 ``views×0.1 + likes×1 + comments×2 + collects×2 + shares×3``。
+
+    缺失值视为 0（不贡献分数），可通过 ``weights`` 覆盖任意权重。
+    """
+    w = dict(ENGAGEMENT_WEIGHTS)
+    if weights:
+        w.update(weights)
+    values = {
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "collects": collects,
+        "shares": shares,
+    }
+    return sum(w[k] * (values.get(k) or 0) for k in w)
+
+
+def pct_change(current: float | None, previous: float | None) -> float | None:
+    """变化率 = (current - previous) / previous × 100；previous 为 0/None 时返回 None。"""
+    if current is None or previous is None or previous == 0:
+        return None
+    return (current - previous) / previous * 100.0
+
+
+def sample_warning(n: int, min_n: int = 5, label: str = "样本") -> str | None:
+    """样本量不足时返回中文警告字符串，充足返回 None。"""
+    if n < min_n:
+        return f"⚠ {label}不足（{n} < {min_n}），结果可能不具统计意义"
+    return None
+
+
+def scale_to_range(
+    value: float | None,
+    lo: float,
+    hi: float,
+    out_lo: float = 0.0,
+    out_hi: float = 10.0,
+) -> float | None:
+    """把 ``value`` 从 ``[lo, hi]`` 线性映射到 ``[out_lo, out_hi]`` 并夹逼。"""
+    if value is None or hi == lo:
+        return None
+    ratio = max(0.0, min(1.0, (value - lo) / (hi - lo)))
+    return out_lo + ratio * (out_hi - out_lo)
+
+
+def weighted_score(
+    components: dict[str, float | None], weights: dict[str, float]
+) -> tuple[float | None, list[str]]:
+    """加权评分，值为 None 的维度被剔除并对剩余权重重新归一化（缺数据不废评分）。
+
+    返回 ``(总分, 实际参与维度列表)``；全维度缺失时返回 ``(None, [])``。
+    """
+    used = [k for k in weights if components.get(k) is not None]
+    total_w = sum(weights[k] for k in used)
+    if not used or total_w == 0:
+        return None, []
+    score = sum(float(components[k]) * weights[k] for k in used) / total_w
+    return score, used
+
+
+def benchmark_for(platform: str | None) -> dict[str, Any]:
+    """取平台基准（未收录时返回通用基准）。"""
+    key = (platform or "").strip().lower()
+    return BENCHMARKS.get(key, DEFAULT_BENCHMARK)
+
+
+def evaluate_benchmark(
+    value_pct: float | None, ranges: Sequence[float]
+) -> str | None:
+    """按基准区间给出中文评级：偏低 / 平均 / 良好 / 优秀；无数据返回 None。"""
+    if value_pct is None:
+        return None
+    padded = list(ranges) + [0.0] * (3 - len(list(ranges)))
+    low, avg, good = padded[0], padded[1], padded[2]
+    if value_pct < low:
+        return "偏低"
+    if value_pct < avg:
+        return "平均"
+    if value_pct < good:
+        return "良好"
+    return "优秀"
+
+
+# --------------------------------------------------------------------------- #
+# 平台适配器：惰性导入 + 防御性解析
+# --------------------------------------------------------------------------- #
+def _import_platforms() -> Any | None:
+    """惰性导入 ``stent.platforms``；不存在或导入失败时返回 None（绝不抛 ImportError）。"""
+    try:
+        from .. import platforms as platforms_module  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - registry 未实现 / 循环依赖 / 依赖缺失
+        log.debug("stent.platforms 尚不可用，数据分析将无法拉取指标", exc_info=True)
+        return None
+    return platforms_module
+
+
+def get_adapter(platform: str) -> Any | None:
+    """按平台 key 取适配器实例。
+
+    期望的 registry 接口（见 ``_reference/specs/analytics.md``）::
+
+        from stent.platforms import get_adapter
+        adapter = get_adapter("xiaohongshu")   # 未注册时返回 None
+
+    为了在 registry 尚未落地时也能工作，这里依次尝试多种可能形态：
+    ``get_adapter`` / ``get`` / ``adapter_for`` 工厂函数，或
+    ``ADAPTERS`` / ``PLATFORMS`` / ``REGISTRY`` / ``_REGISTRY`` 映射。
+    全部不可用时返回 None。
+    """
+    module = _import_platforms()
+    if module is None or not platform:
+        return None
+
+    for factory_name in ("get_adapter", "get", "adapter_for", "resolve_adapter"):
+        factory = getattr(module, factory_name, None)
+        if not callable(factory):
+            continue
+        try:
+            adapter = factory(platform)
+        except Exception:  # noqa: BLE001 - 工厂内部异常不应炸掉同步流程
+            log.warning("platforms.%s(%r) 调用失败", factory_name, platform, exc_info=True)
+            continue
+        if adapter is not None:
+            return adapter
+
+    for mapping_name in ("ADAPTERS", "PLATFORMS", "REGISTRY", "_REGISTRY", "ADAPTER_REGISTRY"):
+        mapping = getattr(module, mapping_name, None)
+        if not isinstance(mapping, dict):
+            continue
+        adapter = mapping.get(platform)
+        if adapter is None:
+            continue
+        # 映射里可能存的是类而不是实例
+        if isinstance(adapter, type):
+            try:
+                adapter = adapter()
+            except Exception:  # noqa: BLE001
+                log.warning("适配器类 %s 实例化失败", adapter, exc_info=True)
+                continue
+        return adapter
+
+    # 最后尝试 ``stent.platforms.<platform>`` 子模块里的 Adapter 类
+    for attr in (platform, f"{platform}_adapter"):
+        sub = getattr(module, attr, None)
+        if isinstance(sub, type):
+            try:
+                return sub()
+            except Exception:  # noqa: BLE001
+                continue
+    return None
+
+
+def resolve_adapter(platform: str) -> tuple[Any | None, str]:
+    """取适配器并返回 ``(adapter, 错误说明)``；成功时错误说明为空串。"""
+    if _import_platforms() is None:
+        return None, "平台适配器模块 stent.platforms 尚未实现，暂时无法拉取指标"
+    adapter = get_adapter(platform)
+    if adapter is None:
+        return None, f"未注册平台适配器：{platform}"
+    if not callable(getattr(adapter, "fetch_metrics", None)):
+        return None, f"适配器 {platform} 未实现 fetch_metrics(post_url)"
+    return adapter, ""
+
+
+def available_platforms() -> list[str]:
+    """列出 registry 中已注册的平台 key（registry 不存在时返回空列表）。"""
+    module = _import_platforms()
+    if module is None:
+        return []
+    for mapping_name in ("ADAPTERS", "PLATFORMS", "REGISTRY", "_REGISTRY"):
+        mapping = getattr(module, mapping_name, None)
+        if isinstance(mapping, dict) and mapping:
+            return sorted(str(k) for k in mapping)
+    for factory_name in ("available_platforms", "list_platforms", "platforms"):
+        factory = getattr(module, factory_name, None)
+        if callable(factory):
+            try:
+                found = factory()
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(found, (list, tuple, set)):
+                return sorted(str(k) for k in found)
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# 小工具
+# --------------------------------------------------------------------------- #
+def _emit(on_progress: Any, message: str, percent: int | None = None) -> None:
+    """向 UI 汇报进度；回调异常绝不影响主流程（与 platforms.base.emit 同口径）。"""
+    if not callable(on_progress):
+        return
+    try:
+        on_progress(message, percent)
+    except TypeError:
+        try:
+            on_progress(message)
+        except Exception:  # pragma: no cover - 进度回调不应影响主流程
+            pass
+    except Exception:  # pragma: no cover
+        pass
+
+
+def _ts(value: Any) -> datetime | None:
+    """宽松解析时间戳：支持 ``YYYY-MM-DD HH:MM:SS`` / ISO / ``YYYY-MM-DD`` / ``YYYY/MM/DD``。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("/", "-").replace("Z", ""))
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(text[: len(fmt) + 2], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _hour_bucket(hour: int) -> str:
+    """发布小时 → 中文时段名（沿用 analyze.py 的分桶）。"""
+    for name, hours in TIME_BUCKETS:
+        if hour in hours:
+            return name
+    return "深夜"
+
+
+def _to_int(value: Any) -> int | None:
+    """把平台返回值转 int；无法转换返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(str(value).replace(",", "").strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_json(text: str) -> Any | None:
+    """从 LLM 回复里尽力提取 JSON 对象（支持 ```json 围栏与前后废话）。"""
+    if not text:
+        return None
+    fenced = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.S)
+    candidates = [fenced.group(1)] if fenced else []
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    candidates.append(text)
+    for chunk in candidates:
+        try:
+            data = json.loads(chunk)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# 服务主体
+# --------------------------------------------------------------------------- #
+class AnalyticsService:
+    """社媒数据分析服务：指标拉取、汇总、趋势、排行、归因回流。
+
+    典型用法（UI 层在工作线程里调用）::
+
+        from stent.services.analytics import AnalyticsService
+
+        svc = AnalyticsService()
+        svc.sync_metrics(on_progress=lambda msg, pct: print(msg, pct))
+        data = svc.overview(days=30)
+        series = svc.trend(days=30, platform="xiaohongshu", metric="views")
+        result = svc.attribute(days=30)      # LLM 未配置时返回友好提示
+    """
+
+    def __init__(
+        self,
+        db: Any | None = None,
+        llm: Any | None = None,
+        config_manager: Any | None = None,
+    ) -> None:
+        """``db`` / ``llm`` / ``config_manager`` 均可注入，默认使用全局单例。"""
+        self._db = db
+        self._llm = llm
+        self._config_manager = config_manager
+
+    # -- 依赖（全部惰性，方便测试与解耦） --------------------------------
+    @property
+    def db(self) -> Any:
+        """数据库访问对象（``stent.core.db.Database``）。"""
+        if self._db is None:
+            from ..core.db import db as global_db  # noqa: PLC0415
+
+            self._db = global_db
+        return self._db
+
+    @property
+    def config_manager(self) -> Any:
+        """配置中心单例。"""
+        if self._config_manager is None:
+            from ..config import config_manager as global_manager  # noqa: PLC0415
+
+            self._config_manager = global_manager
+        return self._config_manager
+
+    @property
+    def llm(self) -> Any | None:
+        """LLM 客户端；未安装 openai 或未配置时返回 None。"""
+        if self._llm is None:
+            try:
+                from ..config import LLMConfig  # noqa: PLC0415
+                from ..core.llm import LLMClient  # noqa: PLC0415
+
+                cfg = getattr(self.config_manager.config, "llm", None) or LLMConfig()
+                api_key = ""
+                try:
+                    api_key = self.config_manager.api_key() or ""
+                except Exception:  # noqa: BLE001 - 密钥后端异常不应阻断分析
+                    log.debug("读取 API Key 失败", exc_info=True)
+                self._llm = LLMClient(cfg, api_key)
+            except Exception:  # noqa: BLE001
+                log.warning("LLM 客户端初始化失败", exc_info=True)
+                return None
+        return self._llm
+
+    @property
+    def llm_ready(self) -> bool:
+        """LLM 是否已具备最小可用配置（Base URL + 模型 + Key）。"""
+        checker = getattr(self.config_manager, "ready", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:  # noqa: BLE001
+                return False
+        cfg = getattr(self.config_manager.config, "llm", None)
+        return bool(getattr(cfg, "base_url", "") and getattr(cfg, "model", ""))
+
+    # ------------------------------------------------------------------ #
+    # 1. 指标拉取（增量）
+    # ------------------------------------------------------------------ #
+    def sync_metrics(
+        self,
+        platforms: Sequence[str] | None = None,
+        on_progress: Any | None = None,
+        force: bool = False,
+        min_interval_minutes: int = DEFAULT_SYNC_INTERVAL_MINUTES,
+        limit: int = DEFAULT_SYNC_LIMIT,
+    ) -> dict[str, Any]:
+        """增量拉取已发布内容的指标快照并落库。
+
+        - ``force=False``：只处理 ``db.posts_needing_sync()`` 挑出的帖子（距上次同步
+          超过 ``min_interval_minutes`` 或从未同步），避免每次全量刷新。
+        - ``force=True``：忽略时间间隔，取最近 ``limit`` 条 ``status='published'`` 的帖子。
+        - 单条失败只记入 ``errors``，不中断整体。
+        - 成功后写 ``db.add_metric`` 并更新 ``posts.last_synced``。
+
+        :param platforms: 只同步这些平台 key（如 ``["xiaohongshu"]``）；None 表示全部。
+        :param on_progress: ``callable(message, percent)`` 或 ``callable(message)``。
+        :param force: 是否忽略增量间隔强制刷新。
+        :param min_interval_minutes: 增量同步的最小间隔（分钟）。
+        :param limit: 单次最多处理的帖子数。
+        :return: ``{"synced": n, "failed": n, "skipped": n, "errors": [...]}``
+        """
+        wanted = {str(p).strip().lower() for p in (platforms or []) if str(p).strip()}
+        result: dict[str, Any] = {"synced": 0, "failed": 0, "skipped": 0, "errors": []}
+
+        try:
+            if force:
+                posts = self.db.list_posts(status="published", limit=limit)
+            else:
+                posts = self.db.posts_needing_sync(
+                    min_interval_minutes=min_interval_minutes, limit=limit
+                )
+        except Exception as exc:  # noqa: BLE001 - 数据库异常不向外抛
+            log.exception("读取待同步帖子失败")
+            result["errors"].append({"platform": "", "post_id": None, "error": f"读取待同步列表失败：{exc}"})
+            return result
+
+        if wanted:
+            posts = [p for p in posts if str(p.get("platform") or "").lower() in wanted]
+
+        if _import_platforms() is None:
+            result["errors"].append(
+                {
+                    "platform": "",
+                    "post_id": None,
+                    "error": "平台适配器模块 stent.platforms 尚未实现，暂时无法拉取指标",
+                }
+            )
+            _emit(on_progress, "平台适配器模块尚未实现，已中止同步", 100)
+            return result
+        if not posts:
+            _emit(on_progress, "没有需要同步的内容", 100)
+            return result
+
+        total = len(posts)
+        _emit(on_progress, f"待同步 {total} 条内容", 0)
+        for index, post in enumerate(posts, start=1):
+            platform = str(post.get("platform") or "")
+            post_id = post.get("id")
+            url = str(post.get("url") or "").strip()
+            percent = int(index / total * 100)
+
+            if not url:
+                result["skipped"] += 1
+                result["errors"].append(
+                    {"platform": platform, "post_id": post_id, "error": "帖子缺少链接，无法拉取指标"}
+                )
+                _emit(on_progress, f"跳过（无链接）：{post.get('title') or post_id}", percent)
+                continue
+
+            adapter, reason = resolve_adapter(platform)
+            if adapter is None:
+                result["failed"] += 1
+                result["errors"].append({"platform": platform, "post_id": post_id, "error": reason})
+                _emit(on_progress, f"跳过：{reason}", percent)
+                continue
+
+            _emit(on_progress, f"拉取 {platform} · {post.get('title') or url}", percent)
+            try:
+                snapshot = adapter.fetch_metrics(url)
+            except TypeError as exc:
+                # 兼容只接受关键字参数或额外参数的适配器实现
+                try:
+                    snapshot = adapter.fetch_metrics(post_url=url)
+                except Exception as inner:  # noqa: BLE001
+                    result["failed"] += 1
+                    result["errors"].append(
+                        {"platform": platform, "post_id": post_id, "error": f"{inner}"}
+                    )
+                    log.warning("拉取指标失败 %s %s: %s", platform, url, exc)
+                    continue
+            except Exception as exc:  # noqa: BLE001 - 单条失败不影响整体
+                result["failed"] += 1
+                result["errors"].append(
+                    {"platform": platform, "post_id": post_id, "error": f"{type(exc).__name__}: {exc}"}
+                )
+                log.warning("拉取指标失败 %s %s: %s", platform, url, exc)
+                continue
+
+            if snapshot is None:
+                result["failed"] += 1
+                result["errors"].append(
+                    {"platform": platform, "post_id": post_id, "error": "适配器未返回指标（可能未登录或需要人工处理）"}
+                )
+                continue
+
+            try:
+                payload = snapshot.as_dict() if hasattr(snapshot, "as_dict") else dict(snapshot)
+            except Exception:  # noqa: BLE001
+                payload = {
+                    key: getattr(snapshot, key, 0) for key in (*METRIC_KEYS, "raw")
+                }
+
+            try:
+                self.db.add_metric(post_id, payload)
+                self.db.update_post(post_id, last_synced=_now())
+                result["synced"] += 1
+            except Exception as exc:  # noqa: BLE001
+                result["failed"] += 1
+                result["errors"].append(
+                    {"platform": platform, "post_id": post_id, "error": f"写入指标失败：{exc}"}
+                )
+                log.exception("写入指标失败 post_id=%s", post_id)
+
+        _emit(on_progress, f"同步完成：成功 {result['synced']} / 失败 {result['failed']}", 100)
+        if result["synced"]:
+            try:
+                self.db.log_action(
+                    "",
+                    "analytics_sync",
+                    f"同步 {result['synced']} 条，失败 {result['failed']} 条",
+                )
+            except Exception:  # noqa: BLE001
+                log.debug("写审计日志失败", exc_info=True)
+        return result
+
+    def sync_account_metrics(self, platforms: Sequence[str] | None = None) -> dict[str, Any]:
+        """拉取账号级指标（粉丝数等）并缓存到 KV，供后续环比使用。
+
+        适配器未实现 ``fetch_account_metrics`` 时静默跳过，不影响主流程。
+        """
+        wanted = [str(p).strip().lower() for p in (platforms or []) if str(p).strip()] or [
+            str(p) for p in (getattr(self.config_manager.config, "publish_platforms", []) or [])
+        ]
+        out: dict[str, Any] = {"ok": [], "errors": []}
+        for platform in wanted:
+            adapter, reason = resolve_adapter(platform)
+            if adapter is None or not callable(getattr(adapter, "fetch_account_metrics", None)):
+                out["errors"].append({"platform": platform, "error": reason or "不支持账号级指标"})
+                continue
+            try:
+                data = adapter.fetch_account_metrics()
+            except Exception as exc:  # noqa: BLE001
+                out["errors"].append({"platform": platform, "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            if not data:
+                out["errors"].append({"platform": platform, "error": "账号级指标为空"})
+                continue
+            try:
+                self.db.set_kv(f"account_metrics:{platform}", {"at": _now(), "data": data})
+                out["ok"].append(platform)
+            except Exception as exc:  # noqa: BLE001
+                out["errors"].append({"platform": platform, "error": f"缓存失败：{exc}"})
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 2. 汇总与展示
+    # ------------------------------------------------------------------ #
+    def overview(self, days: int = 30, platform: str | None = None) -> dict[str, Any]:
+        """窗口内总览：总播放/点赞/评论/收藏/分享、发布篇数、按平台分组、平均互动率。
+
+        单篇取窗口内**最近一条**指标快照（与 ``db.metric_overview`` 同口径），
+        避免同一条内容被重复累加。
+        """
+        rows = self._snapshot_rows(days=days, platform=platform)
+        totals = {key: sum(int(r.get(key) or 0) for r in rows) for key in METRIC_KEYS}
+        interactions = sum(int(r.get(key) or 0) for r in rows for key in INTERACTION_KEYS)
+
+        per_post_rates = [
+            r["engagement_rate"] for r in rows if r.get("engagement_rate") is not None
+        ]
+        # 聚合互动率 = 总互动 ÷ 总播放（加权口径），与逐帖平均互动率一起给出
+        aggregate_rate = engagement_rate(interactions, totals["views"])
+        benchmark = benchmark_for(platform)
+
+        latest = max((r.get("captured_at") or "" for r in rows), default="")
+        warnings = [w for w in (sample_warning(len(rows), 5, "窗口内内容"),) if w]
+        if rows and not any(r.get("views") for r in rows):
+            warnings.append("窗口内所有内容的播放量为 0 或缺失，互动率不可用")
+
+        return {
+            "days": days,
+            "platform": platform,
+            "post_count": len(rows),
+            "posts_with_metrics": sum(1 for r in rows if r.get("captured_at")),
+            "totals": totals,
+            "interactions": interactions,
+            "avg_engagement_rate": mean(per_post_rates),
+            "median_engagement_rate": median(per_post_rates),
+            "aggregate_engagement_rate": aggregate_rate,
+            "engagement_rate_coverage": coverage(
+                [r.get("engagement_rate") for r in rows]
+            ),
+            "benchmark": {
+                "label": benchmark.get("label"),
+                "engagement_ranges": list(benchmark.get("engagement") or []),
+                "rating": evaluate_benchmark(
+                    aggregate_rate, benchmark.get("engagement") or ()
+                ),
+                "note": benchmark.get("note"),
+            },
+            "latest_captured_at": latest,
+            "warnings": warnings,
+        }
+
+    def platform_breakdown(self, days: int = 30) -> list[dict[str, Any]]:
+        """按平台分组统计（总览的切片），按互动综合分降序。"""
+        rows = self._snapshot_rows(days=days)
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            buckets.setdefault(str(row.get("platform") or "未知"), []).append(row)
+
+        out: list[dict[str, Any]] = []
+        for platform, items in buckets.items():
+            totals = {key: sum(int(r.get(key) or 0) for r in items) for key in METRIC_KEYS}
+            interactions = sum(int(r.get(key) or 0) for r in items for key in INTERACTION_KEYS)
+            rate = engagement_rate(interactions, totals["views"])
+            benchmark = benchmark_for(platform)
+            out.append(
+                {
+                    "platform": platform,
+                    "label": benchmark.get("label"),
+                    "post_count": len(items),
+                    "totals": totals,
+                    "interactions": interactions,
+                    "avg_views": mean([r.get("views") for r in items]),
+                    "avg_likes": mean([r.get("likes") for r in items]),
+                    "avg_collects": mean([r.get("collects") for r in items]),
+                    "avg_engagement_rate": mean(
+                        [r.get("engagement_rate") for r in items]
+                    ),
+                    "aggregate_engagement_rate": rate,
+                    "rating": evaluate_benchmark(rate, benchmark.get("engagement") or ()),
+                    "avg_score": mean([r.get("engagement_score") for r in items]),
+                    "warning": sample_warning(len(items), 5, f"{platform} 内容"),
+                }
+            )
+        out.sort(key=lambda r: (r["avg_score"] is None, -(r["avg_score"] or 0)))
+        return out
+
+    def rank_contents(
+        self, days: int = 30, by: str = "engagement", limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """内容排行。
+
+        :param by: 排行依据，可选
+            ``engagement``（互动综合分，默认）/ ``engagement_rate``（互动率）/
+            ``views`` / ``likes`` / ``comments`` / ``collects`` / ``shares``。
+        :param limit: 返回条数上限。
+        :raises ValueError: ``by`` 不在支持范围内。
+        """
+        keys: dict[str, Callable[[dict[str, Any]], float]] = {
+            "engagement": lambda r: r.get("engagement_score") or 0.0,
+            "engagement_rate": lambda r: r.get("engagement_rate") or -1.0,
+            "views": lambda r: r.get("views") or 0,
+            "likes": lambda r: r.get("likes") or 0,
+            "comments": lambda r: r.get("comments") or 0,
+            "collects": lambda r: r.get("collects") or 0,
+            "shares": lambda r: r.get("shares") or 0,
+        }
+        if by not in keys:
+            raise ValueError(f"不支持排行依据：{by}（可选 {', '.join(keys)}）")
+
+        rows = self._snapshot_rows(days=days)
+        rows.sort(key=keys[by], reverse=True)
+        ranked: list[dict[str, Any]] = []
+        for index, row in enumerate(rows[: max(0, int(limit))], start=1):
+            item = dict(row)
+            item["rank"] = index
+            item["topics"] = self._topics_for(row.get("post_id"))
+            ranked.append(item)
+        return ranked
+
+    def trend(
+        self,
+        days: int = 30,
+        platform: str | None = None,
+        metric: str = "views",
+        *,
+        cumulative: bool = True,
+    ) -> list[dict[str, Any]]:
+        """按日期聚合的时间序列，供折线图使用。
+
+        - ``cumulative=True``（默认）：每个日期取「截至当天，各内容的最新一条快照」求和，
+          即账号累计值曲线，适合看整体增长。
+        - ``cumulative=False``：只累加当天发布内容的最新快照，看单日产出表现。
+
+        :param metric: ``views`` / ``likes`` / ``comments`` / ``collects`` / ``shares``
+            / ``engagement``（互动总量）/ ``posts``（当日发布篇数）。
+        :return: ``[{"date": "2026-10-01", "value": 123, "count": 4}, ...]``，无数据返回空列表。
+        """
+        if metric not in (*METRIC_KEYS, "engagement", "posts"):
+            raise ValueError(
+                f"不支持的指标：{metric}（可选 {', '.join((*METRIC_KEYS, 'engagement', 'posts'))}）"
+            )
+
+        today = date.today()
+        start = today - timedelta(days=max(1, int(days)) - 1)
+        series: list[dict[str, Any]] = []
+
+        posts, metrics, _ = self._raw_data(platform=platform)
+
+        if metric == "posts":
+            wanted_platform = (platform or "").strip().lower()
+            published_dates: list[date] = []
+            for post in posts:
+                if wanted_platform and str(post.get("platform") or "").lower() != wanted_platform:
+                    continue
+                published = _ts(post.get("published_at")) or _ts(post.get("created_at"))
+                if published is not None:
+                    published_dates.append(published.date())
+            for offset in range((today - start).days + 1):
+                current = start + timedelta(days=offset)
+                count = sum(1 for d in published_dates if d == current)
+                series.append({"date": current.isoformat(), "value": count, "count": count})
+            return series
+
+        if not posts:
+            return []
+
+        wanted = (platform or "").strip().lower()
+        for offset in range((today - start).days + 1):
+            current = start + timedelta(days=offset)
+            day_end = datetime(current.year, current.month, current.day, 23, 59, 59)
+            total = 0
+            covered = 0
+            for post in posts:
+                if wanted and str(post.get("platform") or "").lower() != wanted:
+                    continue
+                published = _ts(post.get("published_at")) or _ts(post.get("created_at"))
+                if published is None or published > day_end:
+                    continue
+                if not cumulative and published.date() != current:
+                    continue
+                latest = None
+                for entry in metrics.get(int(post.get("id") or 0), []):
+                    captured = _ts(entry.get("captured_at"))
+                    if captured is not None and captured <= day_end:
+                        latest = entry
+                if latest is None:
+                    continue
+                covered += 1
+                if metric == "engagement":
+                    total += sum(int(latest.get(key) or 0) for key in INTERACTION_KEYS)
+                else:
+                    total += int(latest.get(metric) or 0)
+            series.append({"date": current.isoformat(), "value": total, "count": covered})
+        return series
+
+    def best_publish_hours(
+        self,
+        days: int = 90,
+        metric: str = "engagement",
+        min_samples: int = 2,
+    ) -> list[dict[str, Any]]:
+        """按发布小时统计平均表现（移植 analyze.py 的「最佳发布时段」模式）。
+
+        :param metric: 参与比较的指标，默认 ``engagement``（互动综合分）。
+        :param min_samples: 低于该样本数的小时仍返回，但带 ``warning``。
+        :return: ``[{"hour": 20, "bucket": "晚间", "count": 6, "avg_score": ...,
+            "avg_views": ..., "avg_engagement_rate": ..., "weekday": "周三",
+            "warning": None}, ...]``，按平均表现降序。
+        """
+        rows = self._snapshot_rows(days=days)
+        buckets: dict[tuple[int, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            published = _ts(row.get("published_at")) or _ts(row.get("created_at"))
+            if published is None:
+                continue
+            buckets.setdefault((published.hour, WEEKDAYS[published.weekday()]), []).append(row)
+
+        out: list[dict[str, Any]] = []
+        for (hour, weekday), items in buckets.items():
+            key = {
+                "engagement": lambda r: r.get("engagement_score"),
+                "engagement_rate": lambda r: r.get("engagement_rate"),
+                "views": lambda r: r.get("views"),
+                "likes": lambda r: r.get("likes"),
+            }.get(metric, lambda r: r.get("engagement_score"))
+            out.append(
+                {
+                    "hour": hour,
+                    "bucket": _hour_bucket(hour),
+                    "weekday": weekday,
+                    "count": len(items),
+                    "avg_score": mean([key(r) for r in items]),
+                    "avg_views": mean([r.get("views") for r in items]),
+                    "avg_likes": mean([r.get("likes") for r in items]),
+                    "avg_engagement_rate": mean([r.get("engagement_rate") for r in items]),
+                    "warning": sample_warning(len(items), min_samples, "该时段样本"),
+                }
+            )
+        out.sort(key=lambda r: (r["avg_score"] is None, -(r["avg_score"] or 0)))
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 3. 归因回流
+    # ------------------------------------------------------------------ #
+    def attribute(
+        self,
+        days: int = 30,
+        on_progress: Any | None = None,
+        *,
+        persist: bool = True,
+        use_llm: bool = True,
+    ) -> dict[str, Any]:
+        """归因回流：分析表现最好 / 最差的内容，提炼可复用的内容结构经验。
+
+        流程：取窗口内 Top / Bottom 内容 → 用 :class:`~stent.core.llm.LLMClient` 做定性归因
+        （Hook、结构、选题、平台适配等维度，移植 postmortem-dimensions.md）→
+        把结论写入画像记忆（``db.append_memory``）→ 同时返回给 UI。
+
+        LLM 未配置或调用失败时**不抛异常**，返回 ``ok=False`` 与中文 ``message``，
+        并附带本地的确定性统计结果（``stats``），UI 仍可展示数据侧结论。
+
+        :param persist: 是否把结论写入画像记忆（默认写入）。
+        :param use_llm: 传 False 时跳过 LLM，只做确定性统计与回流。
+        """
+        rows = self._snapshot_rows(days=days)
+        if not rows:
+            return {
+                "ok": False,
+                "message": f"最近 {days} 天还没有可用于归因的数据，请先同步指标。",
+                "stats": {},
+                "top": [],
+                "bottom": [],
+                "insight": "",
+                "memory_saved": False,
+            }
+
+        ranked = sorted(rows, key=lambda r: r.get("engagement_score") or 0.0, reverse=True)
+        top = ranked[:ATTRIBUTE_SAMPLE]
+        # Bottom 只在样本足够时给出，避免 3 条数据时 top 与 bottom 重叠
+        bottom = ranked[-ATTRIBUTE_SAMPLE:][::-1] if len(ranked) >= ATTRIBUTE_SAMPLE * 2 else []
+
+        stats = self._attribution_stats(rows, top, bottom)
+        result: dict[str, Any] = {
+            "ok": False,
+            "message": "",
+            "days": days,
+            "stats": stats,
+            "top": [self._brief(r) for r in top],
+            "bottom": [self._brief(r) for r in bottom],
+            "insight": "",
+            "structure_experience": [],
+            "memory_saved": False,
+            "warnings": [w for w in (sample_warning(len(rows), 5, "窗口内内容"),) if w],
+        }
+
+        if not use_llm:
+            result["message"] = "已跳过 AI 归因（use_llm=False），仅返回确定性统计。"
+            return result
+
+        if not self.llm_ready:
+            result["message"] = (
+                "尚未配置 AI 模型（配置中心 → API Base URL / API Key / 模型名称），"
+                "暂不能做内容结构归因；下方数据统计仍可使用。"
+            )
+            return result
+
+        client = self.llm
+        if client is None:
+            result["message"] = "AI 客户端不可用（可能未安装 openai 库），暂不能做内容结构归因。"
+            return result
+
+        _emit(on_progress, "正在分析表现最好与最差的内容…", 30)
+        prompt = self._build_attribution_prompt(top, bottom, stats, days)
+        try:
+            reply = client.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是社媒内容数据分析师。只基于给定数据归因，不编造指标；"
+                            "区分「内容因素」与「运气因素」（平台推荐、热点窗口）；"
+                            "结论要能指导下一次创作，禁止空话。"
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001 - LLM 失败不抛给 UI
+            log.warning("归因 LLM 调用失败", exc_info=True)
+            result["message"] = f"AI 归因调用失败：{exc}"
+            return result
+
+        _emit(on_progress, "归因完成，正在沉淀到账号画像…", 80)
+        insight = (reply or "").strip()
+        parsed = _extract_json(insight) or {}
+        experience = self._normalize_experience(parsed.get("structure_experience"))
+        result["insight"] = insight
+        result["structure_experience"] = experience
+        result["summary"] = str(parsed.get("summary") or "").strip()
+        result["avoid"] = [str(x).strip() for x in (parsed.get("avoid") or []) if str(x).strip()]
+
+        if persist and insight:
+            saved = self._persist_memory(insight, experience, days, stats)
+            result["memory_saved"] = saved
+        result["ok"] = True
+        result["message"] = "归因完成" + ("，已写入账号画像记忆。" if result["memory_saved"] else "。")
+        _emit(on_progress, result["message"], 100)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # 4. 内部数据访问
+    # ------------------------------------------------------------------ #
+    def _raw_data(
+        self, days: int | None = None, platform: str | None = None
+    ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], dict[int, dict[str, Any]]]:
+        """一次性读入帖子、指标与关联内容，供各分析函数在内存中聚合。
+
+        复用 ``db.query``（数据库层），避免在业务层重复拼 SQL 连接逻辑。
+        """
+        since = None
+        if days and int(days) > 0:
+            since = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
+
+        sql = """SELECT p.id, p.content_id, p.platform, p.title, p.body, p.url, p.status,
+                        p.published_at, p.created_at, p.last_synced,
+                        c.topic AS topic
+                 FROM posts p
+                 LEFT JOIN contents c ON c.id = p.content_id
+                 WHERE p.status = 'published'"""
+        params: list[Any] = []
+        if platform:
+            sql += " AND lower(p.platform) = ?"
+            params.append(platform.strip().lower())
+        if since:
+            sql += " AND COALESCE(p.published_at, p.created_at) >= ?"
+            params.append(since)
+        sql += " ORDER BY COALESCE(p.published_at, p.created_at) DESC"
+        try:
+            posts = self.db.query(sql, tuple(params))
+        except Exception:  # noqa: BLE001
+            log.exception("读取帖子失败")
+            posts = []
+
+        metrics: dict[int, list[dict[str, Any]]] = {}
+        try:
+            rows = self.db.query(
+                """SELECT post_id, captured_at, views, likes, comments, collects, shares
+                   FROM metrics ORDER BY post_id ASC, captured_at ASC LIMIT ?""",
+                (DEFAULT_METRIC_ROW_LIMIT,),
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("读取指标失败")
+            rows = []
+        for row in rows:
+            metrics.setdefault(int(row.get("post_id") or 0), []).append(row)
+
+        content_ids = [int(p["content_id"]) for p in posts if p.get("content_id")]
+        contents: dict[int, dict[str, Any]] = {}
+        if content_ids:
+            try:
+                placeholders = ", ".join("?" for _ in content_ids)
+                for row in self.db.query(
+                    f"SELECT id, topic, summary, tags_json FROM contents WHERE id IN ({placeholders})",
+                    tuple(content_ids),
+                ):
+                    contents[int(row["id"])] = row
+            except Exception:  # noqa: BLE001
+                log.debug("读取关联内容失败", exc_info=True)
+        return posts, metrics, contents
+
+    def _published_posts(
+        self, days: int | None = None, platform: str | None = None
+    ) -> list[dict[str, Any]]:
+        """只取已发布帖子的轻量列表。"""
+        posts, _, _ = self._raw_data(days=days, platform=platform)
+        return posts
+
+    def _snapshot_rows(
+        self, days: int = 30, platform: str | None = None
+    ) -> list[dict[str, Any]]:
+        """窗口内每个已发布内容的「最近一条快照」，并附带派生指标。
+
+        返回字段：``post_id / platform / title / url / published_at / created_at /
+        topic / captured_at / views / likes / comments / collects / shares /
+        interactions / engagement_rate / engagement_score``。
+        """
+        posts, metrics, contents = self._raw_data(days=days, platform=platform)
+        rows: list[dict[str, Any]] = []
+        for post in posts:
+            post_id = int(post.get("id") or 0)
+            latest = metrics.get(post_id, [])
+            latest = latest[-1] if latest else None
+            content = contents.get(int(post.get("content_id") or 0), {})
+            row: dict[str, Any] = {
+                "post_id": post_id,
+                "content_id": post.get("content_id"),
+                "platform": post.get("platform") or "",
+                "title": post.get("title") or "",
+                "url": post.get("url") or "",
+                "body_preview": _preview(post.get("body")),
+                "published_at": post.get("published_at"),
+                "created_at": post.get("created_at"),
+                "topic": (content.get("topic") or post.get("topic") or ""),
+                "tags": _load_tags(content.get("tags_json")),
+                "last_synced": post.get("last_synced") or "",
+                "captured_at": None,
+            }
+            for key in METRIC_KEYS:
+                row[key] = None
+            row["interactions"] = None
+            row["engagement_rate"] = None
+            row["engagement_score"] = None
+            if latest:
+                row["captured_at"] = latest.get("captured_at")
+                values = {key: _to_int(latest.get(key)) or 0 for key in METRIC_KEYS}
+                row.update(values)
+                row["interactions"] = sum(values[key] for key in INTERACTION_KEYS)
+                row["engagement_rate"] = engagement_rate(row["interactions"], values["views"])
+                row["engagement_score"] = engagement_score(**values)
+            rows.append(row)
+        return rows
+
+    def _topics_for(self, post_id: Any) -> list[str]:
+        """取该帖子所属内容层的主题标签（供「按主题维度」切片）。"""
+        if not post_id:
+            return []
+        try:
+            row = self.db.query_one(
+                """SELECT c.topic FROM posts p LEFT JOIN contents c ON c.id = p.content_id
+                   WHERE p.id = ?""",
+                (post_id,),
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        topic = (row or {}).get("topic") or ""
+        return [t for t in re.split(r"[，,;；/\s]+", topic) if t]
+
+    def _brief(self, row: dict[str, Any]) -> dict[str, Any]:
+        """归因用的内容摘要（控制 prompt 体积）。"""
+        return {
+            "post_id": row.get("post_id"),
+            "platform": row.get("platform"),
+            "title": row.get("title"),
+            "topic": row.get("topic"),
+            "published_at": row.get("published_at") or row.get("created_at"),
+            "views": row.get("views"),
+            "likes": row.get("likes"),
+            "comments": row.get("comments"),
+            "collects": row.get("collects"),
+            "shares": row.get("shares"),
+            "engagement_rate": _round(row.get("engagement_rate")),
+            "engagement_score": _round(row.get("engagement_score")),
+            "body_preview": row.get("body_preview"),
+        }
+
+    # ------------------------------------------------------------------ #
+    # 5. 归因辅助
+    # ------------------------------------------------------------------ #
+    def _attribution_stats(
+        self,
+        rows: list[dict[str, Any]],
+        top: list[dict[str, Any]],
+        bottom: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """归因用的确定性统计（LLM 只解读，不心算）。"""
+        rates = [r.get("engagement_rate") for r in rows]
+        avg_rate = mean(rates)
+        totals = {key: sum(int(r.get(key) or 0) for r in rows) for key in METRIC_KEYS}
+        return {
+            "post_count": len(rows),
+            "avg_engagement_rate": _round(avg_rate),
+            "median_engagement_rate": _round(median(rates)),
+            "aggregate_engagement_rate": _round(
+                engagement_rate(
+                    sum(int(r.get(key) or 0) for r in rows for key in INTERACTION_KEYS),
+                    totals["views"],
+                )
+            ),
+            "totals": totals,
+            "avg_views": _round(mean([r.get("views") for r in rows])),
+            "avg_collects": _round(mean([r.get("collects") for r in rows])),
+            "top_avg_rate": _round(mean([r.get("engagement_rate") for r in top])),
+            "bottom_avg_rate": _round(mean([r.get("engagement_rate") for r in bottom])),
+            "top_lift": _round(
+                safe_div(
+                    mean([r.get("engagement_rate") for r in top]),
+                    avg_rate,
+                )
+            ),
+            "by_platform": [
+                {
+                    "platform": platform_name,
+                    "post_count": len(items),
+                    "avg_engagement_rate": _round(
+                        mean([r.get("engagement_rate") for r in items])
+                    ),
+                }
+                for platform_name, items in _group_platforms(rows)
+            ],
+            "by_topic": [
+                {
+                    "topic": topic,
+                    "post_count": len(items),
+                    "avg_engagement_rate": _round(
+                        mean([r.get("engagement_rate") for r in items])
+                    ),
+                    "avg_views": _round(mean([r.get("views") for r in items])),
+                }
+                for topic, items in _group_topics(rows)
+            ],
+            "internal_score": self._internal_score(rows, top),
+            "warnings": [
+                w
+                for w in (
+                    sample_warning(len(rows), 5, "窗口内内容"),
+                    sample_warning(len(top), ATTRIBUTE_SAMPLE, "Top 样本"),
+                )
+                if w
+            ],
+        }
+
+    def _internal_score(
+        self, rows: list[dict[str, Any]], top: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """内部加权评分 1-10（移植 analysis-framework.md 的评分框架，缺维度自动剔除）。"""
+        avg_rate = mean([r.get("engagement_rate") for r in rows])
+        avg_views = mean([r.get("views") for r in rows])
+        platform = str(rows[0].get("platform") or "") if rows else ""
+        bench = benchmark_for(platform).get("engagement") or ()
+
+        components: dict[str, float | None] = {}
+        # 互动率 vs 基准：达「平均线」记 6 分
+        if avg_rate is not None and len(bench) >= 2:
+            components["engagement_vs_benchmark"] = scale_to_range(
+                avg_rate, bench[0] * 0.5, bench[2] if len(bench) > 2 else bench[1] * 2, 0, 10
+            )
+        # 播放量相对均值（离散度）
+        if avg_views:
+            components["relative_views"] = scale_to_range(
+                safe_div(mean([r.get("views") for r in rows]), avg_views), 0.6, 1.6, 0, 10
+            )
+        # Top 内容相对均值
+        top_rate = mean([r.get("engagement_rate") for r in top])
+        if top_rate is not None and avg_rate:
+            components["top_post"] = scale_to_range(safe_div(top_rate, avg_rate), 1.0, 3.0, 5, 10)
+        # 发布一致性：窗口内有指标的内容占比
+        if rows:
+            components["consistency"] = scale_to_range(
+                safe_div(float(sum(1 for r in rows if r.get("captured_at"))), float(len(rows))),
+                0.0,
+                1.0,
+                0,
+                10,
+            )
+        # 近半窗 vs 前半窗的互动率变化方向
+        half = max(1, len(rows) // 2)
+        recent = mean([r.get("engagement_rate") for r in rows[:half]])
+        prior = mean([r.get("engagement_rate") for r in rows[half:]])
+        change = pct_change(recent, prior)
+        if change is not None:
+            components["momentum"] = scale_to_range(change, -30, 30, 0, 10)
+
+        score, used = weighted_score(components, SCORE_WEIGHTS)
+        return {
+            "score_1to10": round(score, 1) if score is not None else None,
+            "components": {k: _round(v) for k, v in components.items()},
+            "dimensions_used": used,
+            "note": "缺数据的维度已剔除并重新归一化权重",
+        }
+
+    def _build_attribution_prompt(
+        self,
+        top: list[dict[str, Any]],
+        bottom: list[dict[str, Any]],
+        stats: dict[str, Any],
+        days: int,
+    ) -> str:
+        """构造归因 prompt（含确定性统计 + Top/Bottom 明细）。"""
+        def render(items: list[dict[str, Any]]) -> str:
+            if not items:
+                return "（样本不足，本期无对照）"
+            lines = []
+            for item in items:
+                lines.append(
+                    "- [{platform}] {title}｜主题：{topic}｜{published_at}｜"
+                    "播放 {views} / 赞 {likes} / 评 {comments} / 藏 {collects} / 转 {shares}｜"
+                    "互动率 {rate}%｜综合分 {score}\n  开头：{body}".format(
+                        platform=item.get("platform") or "未知",
+                        title=item.get("title") or "(无标题)",
+                        topic=item.get("topic") or "未分类",
+                        published_at=item.get("published_at") or "时间未知",
+                        views=item.get("views"),
+                        likes=item.get("likes"),
+                        comments=item.get("comments"),
+                        collects=item.get("collects"),
+                        shares=item.get("shares"),
+                        rate=item.get("engagement_rate"),
+                        score=item.get("engagement_score"),
+                        body=(item.get("body_preview") or "（无正文）")[:120],
+                    )
+                )
+            return "\n".join(lines)
+
+        profile: dict[str, Any] = {}
+        try:
+            profile = self.db.get_profile() or {}
+        except Exception:  # noqa: BLE001
+            log.debug("读取画像失败", exc_info=True)
+
+        return f"""请对以下最近 {days} 天的内容表现做归因，产出**可复用的内容结构经验**。
+
+## 账号画像
+定位：{profile.get("positioning") or "未填写"}
+风格：{profile.get("style") or "未填写"}
+受众：{profile.get("audience") or "未填写"}
+
+## 确定性统计（已由代码算好，不要重算，可直接引用）
+{json.dumps(stats, ensure_ascii=False, indent=2)}
+
+## 表现最好
+{render(top)}
+
+## 表现最差
+{render(bottom)}
+
+## 分析维度（逐维给出判断与证据，无证据就写"数据不足"）
+1. Hook 力（前 3 秒 / 首屏）2. 内容结构 3. 信息密度 4. 互动引导
+5. 选题与主题 6. 平台适配 7. 发布时间与节奏
+注意：短视频触达天然膨胀，不要直接与图文比绝对值；区分内容因素与运气因素（平台推荐/热点窗口）。
+
+## 输出（严格 JSON，不要输出任何其他文字或 Markdown 围栏）
+{{
+  "summary": "一句话结论",
+  "structure_experience": [
+    {{
+      "name": "公式名（≤8字）",
+      "structure": "结构，用 → 连接各环节",
+      "evidence": "支撑数据（引用上面的指标）",
+      "transferable_when": "什么类型的内容可以套用",
+      "example": "用本账号领域举一个可执行示例"
+    }}
+  ],
+  "top_reasons": ["表现好的原因，2-4 条"],
+  "bottom_reasons": ["表现差的原因，0-3 条，无对照留空"],
+  "avoid": ["下一条内容应避免的做法，1-3 条"],
+  "next_actions": ["下一条内容立即可用的动作，2-3 条"]
+}}"""
+
+    def _normalize_experience(self, raw: Any) -> list[dict[str, str]]:
+        """把 LLM 返回的结构经验归一化成固定字段的列表。"""
+        items: list[Any] = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        out: list[dict[str, str]] = []
+        for item in items:
+            if isinstance(item, str):
+                out.append({"name": item.strip()[:40], "structure": "", "evidence": "",
+                            "transferable_when": "", "example": ""})
+                continue
+            if not isinstance(item, dict):
+                continue
+            out.append(
+                {
+                    "name": str(item.get("name") or "").strip()[:40],
+                    "structure": str(item.get("structure") or "").strip(),
+                    "evidence": str(item.get("evidence") or "").strip(),
+                    "transferable_when": str(item.get("transferable_when") or "").strip(),
+                    "example": str(item.get("example") or "").strip(),
+                }
+            )
+        return [item for item in out if item["name"] or item["structure"]]
+
+    def _persist_memory(
+        self,
+        insight: str,
+        experience: list[dict[str, str]],
+        days: int,
+        stats: dict[str, Any],
+    ) -> bool:
+        """把归因结论写入画像记忆（供下一次创作参考）。失败返回 False，不抛异常。"""
+        lines = [f"【数据分析归因 · {date.today().isoformat()} · 近 {days} 天】"]
+        summary = ""
+        if experience:
+            lines.append("可复用的内容结构经验：")
+            for index, item in enumerate(experience, start=1):
+                lines.append(
+                    f"{index}. {item['name']}｜结构：{item['structure']}｜"
+                    f"依据：{item['evidence']}｜适用：{item['transferable_when']}"
+                )
+        else:
+            summary = insight
+        lines.append(
+            f"数据：内容 {stats.get('post_count')} 条，平均互动率 "
+            f"{stats.get('avg_engagement_rate')}%，最高/最低对照 "
+            f"{stats.get('top_avg_rate')}% vs {stats.get('bottom_avg_rate')}%"
+        )
+        if summary:
+            lines.append("分析结论：" + summary)
+        text = "\n".join(lines).strip()[:MEMORY_TEXT_LIMIT]
+        try:
+            self.db.append_memory(text)
+            self.db.log_action("", "analytics_attribute", f"写入画像记忆（近 {days} 天归因）")
+            return True
+        except Exception:  # noqa: BLE001
+            log.exception("写入画像记忆失败")
+            return False
+
+
+# --------------------------------------------------------------------------- #
+# 模块级辅助
+# --------------------------------------------------------------------------- #
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _round(value: Any, digits: int = 2) -> float | None:
+    """四舍五入保留小数；非数值原样返回 None。"""
+    if value is None:
+        return None
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _preview(text: Any, limit: int = 200) -> str:
+    """正文摘要（用于 prompt 与列表展示）。"""
+    flat = re.sub(r"\s+", " ", str(text or "")).strip()
+    return flat[:limit]
+
+
+def _load_tags(raw: Any) -> list[str]:
+    """解析 contents.tags_json。"""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [str(t) for t in data] if isinstance(data, list) else []
+
+
+def _group_platforms(rows: Sequence[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """按平台分组，返回 ``[(platform, rows), ...]``。"""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        buckets.setdefault(str(row.get("platform") or "未知"), []).append(row)
+    return sorted(buckets.items(), key=lambda kv: -len(kv[1]))
+
+
+def _group_topics(rows: Sequence[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """按主题分组（同一条内容可归入多个主题）。"""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        topics = [t for t in re.split(r"[，,;；/\s]+", str(row.get("topic") or "")) if t] or ["未分类"]
+        for topic in topics:
+            buckets.setdefault(topic, []).append(row)
+    return sorted(buckets.items(), key=lambda kv: -len(kv[1]))

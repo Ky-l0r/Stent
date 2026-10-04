@@ -1,0 +1,8 @@
+# Stent 运行依赖
+PySide6>=6.6,<7
+openai>=1.30          # LLM 调用；其自身依赖 httpx
+keyring>=25.0         # API Key 写入 Windows 凭据管理器
+playwright>=1.44      # 发布中心的浏览器自动化
+
+# 说明：热点发现的 HTTP 请求刻意使用标准库 urllib，
+# 因为 httpx 0.28 在 Windows 上每次构造 Client 需要约 3 秒，会拖慢热榜拉取。

@@ -1,0 +1,40 @@
+[project]
+name = "stent"
+version = "1.0.0"
+description = "Stent —— 基于 Easel 的桌面端社媒内容智能体"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Stent contributors" }]
+keywords = ["social-media", "ai-agent", "pyside6", "desktop"]
+
+dependencies = [
+    "PySide6>=6.6,<7",
+    "openai>=1.30",
+    "httpx>=0.27",
+    "keyring>=25.0",
+    "playwright>=1.44",
+]
+
+[project.optional-dependencies]
+dev = ["pyinstaller>=6.6", "pytest>=8.0"]
+
+[project.scripts]
+stent = "stent.app:main"
+
+[project.gui-scripts]
+stent-gui = "stent.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["stent", "stent.core", "stent.services", "stent.platforms", "stent.ui", "stent.ui.pages"]
+
+[tool.setuptools.package-data]
+stent = ["resources/*", "skills/*", "skills/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "selftest_*.py"]

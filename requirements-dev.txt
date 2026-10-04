@@ -1,0 +1,4 @@
+# 打包与测试依赖（普通用户不需要安装）
+-r requirements.txt
+pyinstaller>=6.6
+pytest>=8.0

@@ -1,0 +1,61 @@
+Stent
+Copyright 2026 Stent contributors
+
+本产品基于开源项目 Easel 提取、重构与重新打包而成，遵循 Apache License 2.0。
+
+================================================================================
+上游项目
+================================================================================
+
+Easel
+  仓库：https://github.com/ZJU-REAL/Easel
+  许可：Apache License 2.0
+  版权：Copyright ZJU-REAL 及 Easel 贡献者
+  引用版本：main 分支（2026-10 拉取，用于提取参考）
+
+Easel 的发布与登录实现源自 xpzouying/xiaohongshu-mcp 的公开实现（Apache-2.0），
+Stent 的 platforms/xiaohongshu.py 在选择器层面参考了该上游与 Easel 的实现。
+  仓库：https://github.com/xpzouying/xiaohongshu-mcp
+
+================================================================================
+Stent 对上游内容的处理说明（Apache-2.0 第 4 条要求的修改声明）
+================================================================================
+
+1. 复用的内容
+   - 热榜聚合的数据源清单（skills/shared/hotlist-apis.md）
+     → stent/skills/hotlist-apis.md，实现见 stent/services/hotsearch.py
+   - 平台规范与内容体例（social-content、copywriting、post-formatter 等 SKILL）
+     → stent/skills/*.md，规则已裁剪并内联进 stent/services/creator.py
+   - 发布前检查与风险扫描规则（skill-publish-checklist、skill-risk-scanner、
+     content_guard.py、wordcount.py）
+     → 重写为 stent/services/precheck.py 与 stent/resources/sensitive_words.txt
+   - 平台登录与发布流程（xhs_publish.py、douyin_publish.py、zhihu_answer.py、
+     bili_login.py 等）
+     → 重写为 stent/platforms/*.py，去掉 OpenClaw / Anthropic 依赖，统一改用
+       Playwright 与统一适配器接口
+   - 数据分析口径与基准（social_stats.py、skill-publish-analytics、
+     skill-social-performance-review）
+     → 重写为 stent/services/analytics.py
+
+2. 修改说明
+   - 所有复用内容均去除了对 OpenClaw 运行框架、Anthropic SDK 与 .env 配置系统的依赖；
+   - 移除视频、音频、短剧、小说、论文解读等重型能力（企划书 2.3 明确边界）；
+   - 平台适配器改用统一的 PlatformAdapter 抽象与 Playwright 持久化上下文；
+   - 配置系统改为图形界面的 config.json + 系统凭据管理器。
+
+3. 未复用的内容
+   上游仓库中的媒体资源（演示视频、图片）、Web 前端（React）、FastAPI 服务、
+   OpenClaw 网关与工作区代码均未包含在本产品中。
+
+================================================================================
+第三方依赖
+================================================================================
+
+Qt for Python (PySide6)          LGPL-3.0 / 商业许可    https://doc.qt.io/qtforpython-6/
+OpenAI Python SDK               Apache-2.0            https://github.com/openai/openai-python
+HTTPX                           BSD-3-Clause          https://github.com/encode/httpx
+keyring                         MIT                   https://github.com/jaraco/keyring
+Playwright for Python           Apache-2.0            https://github.com/microsoft/playwright-python
+Lucide 图标（内联 SVG path）      ISC                   https://lucide.dev/
+
+完整许可文本见本目录 LICENSE 文件。
