@@ -26,7 +26,7 @@ from .. import __version__
 from . import icons
 from .components import BusyOverlay, Toast, make_button
 from .context import AppContext
-from .theme import build_qss, palette
+from .theme import build_qss, palette, set_current_theme
 from .workers import WorkerHost
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,12 @@ class MainWindow(QMainWindow, WorkerHost):
     # 构建
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
+        from .qt_guard import building
+
+        with building(self):
+            self._build_ui_inner()
+
+    def _build_ui_inner(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
@@ -152,12 +158,35 @@ class MainWindow(QMainWindow, WorkerHost):
 
         layout.addStretch(1)
 
-        hint = QLabel("v1 · 只做 4 个模块\n热点 → 创作 → 发布 → 数据")
-        hint.setObjectName("Faint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        footer = QFrame()
+        footer.setObjectName("SidebarFooter")
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 10, 0, 0)
+        footer_layout.setSpacing(4)
+
+        self.changelog_button = QPushButton("版本更新日志")
+        self.changelog_button.setObjectName("VersionButton")
+        self.changelog_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.changelog_button.setIconSize(QSize(15, 15))
+        self.changelog_button.clicked.connect(self.show_changelog)
+        footer_layout.addWidget(self.changelog_button)
+
+        self.version_label = QLabel(f"v{__version__}　·　Apache-2.0")
+        self.version_label.setObjectName("Faint")
+        footer_layout.addWidget(self.version_label)
+
+        layout.addWidget(footer)
 
         return side
+
+    def show_changelog(self) -> None:
+        from .dialogs import ChangelogDialog
+
+        try:
+            ChangelogDialog(self).exec()
+        except Exception:  # noqa: BLE001
+            log.exception("打开更新日志失败")
+            self.show_toast("打开更新日志失败，请查看日志", "error")
 
     # ------------------------------------------------------------------
     # 上下文接线
@@ -257,6 +286,8 @@ class MainWindow(QMainWindow, WorkerHost):
     # 主题
     # ------------------------------------------------------------------
     def apply_theme(self, theme: str) -> None:
+        # 自绘组件（表格委托、图表）通过全局当前主题取色
+        set_current_theme(theme)
         self.setStyleSheet(build_qss(theme))
         p = palette(theme)
         icons.clear_cache()
@@ -268,12 +299,21 @@ class MainWindow(QMainWindow, WorkerHost):
         self.theme_button.setIcon(icons.icon("sun" if theme == "dark" else "moon", p.text_sub, 16))
         self.settings_button.setIcon(icons.icon("settings", p.text_sub, 16))
         self.profile_button.setIcon(icons.icon("user", p.text_sub, 16))
+        self.changelog_button.setIcon(icons.icon("clock", p.text_sub, 15))
         for page in self._pages.values():
             if hasattr(page, "apply_theme"):
                 try:
                     page.apply_theme(theme)  # type: ignore[attr-defined]
                 except Exception:  # noqa: BLE001
                     log.exception("页面主题刷新失败")
+        # 委托绘制的单元格需要重绘才能换色
+        from PySide6.QtWidgets import QAbstractItemView
+
+        for view in self.findChildren(QAbstractItemView):
+            try:
+                view.viewport().update()
+            except Exception:  # pragma: no cover
+                pass
         self._refresh_profile_badge()
         self._refresh_llm_status()
 

@@ -29,7 +29,7 @@ from ... import __version__, paths
 from ...config import PROVIDER_PRESETS, preset_for, secrets
 from ...core.llm import LLMClient
 from ...services.hotsearch import DEFAULT_PLATFORMS, PLATFORM_LABELS
-from ..components import Card, CardTitle, PageHeader, ScrollArea, StatusBanner, make_button
+from ..components import Card, CardTitle, PageHeader, ScrollArea, make_button
 from ..theme import palette
 from .base import BasePage
 
@@ -57,13 +57,11 @@ class SettingsPage(BasePage):
         layout.addStretch(1)
 
         header = PageHeader("设置", "配置 LLM 接入、通用偏好与本地存储；所有配置只保存在本机")
+        header.add_action(self.status_light)
         self.save_button = make_button("保存设置", icon="save", theme=self.ctx.theme, primary=True)
         self.save_button.clicked.connect(self.save)
         header.add_action(self.save_button)
         self._root.insertWidget(0, header)
-
-        self.banner = StatusBanner()
-        self._root.insertWidget(1, self.banner)
 
         self.add(ScrollArea(inner), 1)
 

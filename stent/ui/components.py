@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Iterable, Sequence
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -17,12 +19,16 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
 from . import icons
-from .theme import palette
+from .theme import current_theme, level_color, level_tint, palette, platform_color
 
 
 class Card(QFrame):
@@ -143,10 +149,9 @@ class StatCard(Card):
 
     def __init__(self, label: str, value: str = "—", *, sub: str = "", accent: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent, padding=14, spacing=2)
+        self._accent = accent
         self.value_label = QLabel(value)
         self.value_label.setObjectName("StatValue")
-        if accent:
-            self.value_label.setStyleSheet(f"color: {palette('light').accent};")
         self.label_label = QLabel(label)
         self.label_label.setObjectName("StatLabel")
         self.sub_label = QLabel(sub)
@@ -155,6 +160,13 @@ class StatCard(Card):
         self.add(self.value_label)
         self.add(self.label_label)
         self.add(self.sub_label)
+        self.apply_theme(current_theme())
+
+    def apply_theme(self, theme: str) -> None:
+        if getattr(self, "_accent", False):
+            self.value_label.setStyleSheet(
+                f"color: {palette(theme).accent}; background: transparent;"
+            )
 
     def set_value(self, value: str, sub: str = "") -> None:
         self.value_label.setText(value)
@@ -217,7 +229,12 @@ class EmptyState(QWidget):
 
 
 class StatusBanner(QFrame):
-    """顶部状态条：info / warn / error / success。"""
+    """内联提示条：info / warn / error / success。
+
+    注意：页面顶部主视觉优先留给标题与主操作，日常状态请用
+    :class:`StatusLight`（右上角指示灯）；本组件只用于需要用户立刻读到的
+    重要信息（例如页面初始化失败）。
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -236,33 +253,32 @@ class StatusBanner(QFrame):
         self.close_button.clicked.connect(lambda: self.setVisible(False))
         layout.addWidget(self.close_button)
         self._level = "info"
+        self._last: tuple[str, bool] | None = None
 
-    def show_message(self, text: str, level: str = "info", *, closable: bool = True) -> None:
-        from .theme import level_color
-
+    def show_message(self, text: str, level: str = "info", *, closable: bool = True, **_kw: Any) -> None:
+        theme = current_theme()
         self._level = level
-        color = level_color("light", level)
+        self._last = (text, closable)
+        color = level_color(theme, level)
         self.text_label.setText(text)
-        self.text_label.setStyleSheet(f"color: {color};")
+        self.text_label.setStyleSheet(f"color: {color}; background: transparent;")
         icon_name = {"error": "alert", "warn": "alert", "warning": "alert", "success": "check"}.get(level, "info")
         self.icon_label.setPixmap(icons.pixmap(icon_name, color, 16))
         self.close_button.setVisible(closable)
         self.setStyleSheet(
-            f"QFrame {{ background: {_tint(level)}; border: 1px solid {color}; border-radius: 8px; }}"
+            f"QFrame {{ background: {level_tint(theme, level)}; border: 1px solid {color};"
+            f" border-radius: 8px; }}"
         )
         self.setVisible(True)
 
+    def apply_theme(self, _theme: str) -> None:
+        if self._last and self.isVisible():
+            text, closable = self._last
+            self.show_message(text, self._level, closable=closable)
+
     def clear(self) -> None:
         self.setVisible(False)
-
-
-def _tint(level: str) -> str:
-    return {
-        "error": "#FEF3F2",
-        "warn": "#FFFAEB",
-        "warning": "#FFFAEB",
-        "success": "#ECFDF3",
-    }.get(level, "#EFF4FF")
+        self._last = None
 
 
 class Toast(QLabel):
@@ -281,10 +297,9 @@ class Toast(QLabel):
         self._animation.finished.connect(self._maybe_hide)
 
     def show_message(self, text: str, level: str = "info", *, duration_ms: int = 2400) -> None:
-        from .theme import level_color
-
-        p = palette("light")
-        color = level_color("light", level)
+        theme = current_theme()
+        p = palette(theme)
+        color = level_color(theme, level)
         self.setText(text)
         self.setStyleSheet(
             f"background: {p.card}; border: 1px solid {color}; border-radius: 8px;"
@@ -341,9 +356,9 @@ class TagChip(QLabel):
         colors = {
             "default": (p.bg_alt, p.text_sub),
             "accent": (p.accent_soft, p.accent),
-            "success": ("#ECFDF3" if theme == "light" else "#12291F", p.success),
-            "warning": ("#FFFAEB" if theme == "light" else "#2A2113", p.warning),
-            "danger": ("#FEF3F2" if theme == "light" else "#2C1A19", p.danger),
+            "success": (p.tint_success, p.success),
+            "warning": (p.tint_warn, p.warning),
+            "danger": (p.tint_error, p.danger),
         }
         bg, fg = colors.get(tone, colors["default"])
         self.setStyleSheet(
@@ -536,7 +551,7 @@ class BusyOverlay(QLabel):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def show_text(self, text: str) -> None:
-        p = palette("light")
+        p = palette(current_theme())
         self.setText(text)
         self.setStyleSheet(
             f"background: {p.card}; border: 1px solid {p.border}; border-radius: 8px;"
@@ -620,3 +635,234 @@ def make_button(
     if tooltip:
         button.setToolTip(tooltip)
     return button
+
+
+# --------------------------------------------------------------------------
+# 状态指示灯
+# --------------------------------------------------------------------------
+def auto_summary(text: str, limit: int = 16) -> str:
+    """把长提示压缩成一句短语，供指示灯展示。"""
+    first = re.split(r"[。；;\n]", (text or "").strip())[0].strip()
+    if not first:
+        return "就绪"
+    return first if len(first) <= limit else first[:limit] + "…"
+
+
+class StatusLight(QLabel):
+    """右上角状态指示灯（**常驻显示**）。
+
+    把原先占一整行的提示条压缩成一枚小胶囊：
+    - 圆点颜色表示状态（灰=就绪 / 紫=进行中 / 绿=正常 / 黄=降级 / 红=失败）
+    - 空闲时显示中性的 ``● 就绪``，不会消失，保持页面右上角视觉稳定
+    - 鼠标悬停或点击才展开完整详情，把页面顶部主视觉留给标题与主操作
+
+    接口与 :class:`StatusBanner` 保持兼容（``show_message`` / ``clear``），
+    页面无需区分两者；``clear()`` 的语义是「回到就绪」而不是隐藏。
+    """
+
+    #: 空闲时展示的文案
+    IDLE_TEXT = "就绪"
+
+    def __init__(self, theme: str = "light", parent: QWidget | None = None, *, idle_text: str = "") -> None:
+        super().__init__(parent)
+        self.setObjectName("StatusLight")
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._theme = theme
+        self._idle_text = idle_text or self.IDLE_TEXT
+        self._level = "idle"
+        self._detail = ""
+        self._summary = self._idle_text
+        self._render()
+        # 注意：这里**不能**调用 setVisible(True)。构造期间控件还没有 parent，
+        # 一旦被设为可见就会成为独立顶层窗口而闪现（Qt 会把无父控件当窗口）。
+        # 加入布局后，父窗口 show 时它会自然显示。
+
+    # -- 与 StatusBanner 对齐的接口 ---------------------------------------
+    def show_message(
+        self,
+        text: str,
+        level: str = "info",
+        *,
+        closable: bool = True,  # noqa: ARG002 - 兼容 StatusBanner 签名
+        summary: str = "",
+        detail: str = "",
+        **_kw: Any,
+    ) -> None:
+        self._level = level or "info"
+        self._detail = detail or text or ""
+        self._summary = summary or auto_summary(text)
+        self._render()
+        self.setToolTip(self._detail)
+        self._ensure_visible()
+
+    def show_idle(self, text: str = "") -> None:
+        """回到中性的「就绪」状态（指示灯依然可见）。"""
+        self._level = "idle"
+        self._detail = ""
+        self._summary = text or self._idle_text
+        self._render()
+        self.setToolTip("当前没有需要提示的状态")
+        self._ensure_visible()
+
+    def clear(self) -> None:
+        """回到「就绪」——指示灯常驻，不隐藏。"""
+        self.show_idle()
+
+    def _ensure_visible(self) -> None:
+        """仅在已有父级（即已经进入界面树）时才显式显示，避免构造期闪现。"""
+        try:
+            if self.parent() is not None and not self.isVisible():
+                self.setVisible(True)
+        except RuntimeError:  # pragma: no cover
+            pass
+
+    # -- 视觉 -------------------------------------------------------------
+    def _render(self) -> None:
+        self.setText(f"● {self._summary}")
+        color = level_color(self._theme, self._level)
+        tint = level_tint(self._theme, self._level)
+        self.setStyleSheet(
+            f"#StatusLight {{"
+            f" background: {tint};"
+            f" border: 1px solid {self._border_for(color)};"
+            f" border-radius: 11px;"
+            f" padding: 2px 10px;"
+            f" font-size: 11.5px;"
+            f" color: {color};"
+            f"}}"
+            f"#StatusLight:hover {{ border-color: {level_color(self._theme, 'info')}; }}"
+        )
+
+    def _border_for(self, color: str) -> str:
+        """就绪态用更淡的描边，避免常驻元素过于抢眼。"""
+        if self._level == "idle":
+            return palette(self._theme).border
+        return color
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self._render()
+
+    # -- 交互 -------------------------------------------------------------
+    def mousePressEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        QToolTip.showText(
+            self.mapToGlobal(QPoint(0, self.height() + 6)),
+            self._detail or self.toolTip(),
+            self,
+        )
+        super().mousePressEvent(event)
+
+    @property
+    def detail(self) -> str:
+        return self._detail
+
+    @property
+    def level(self) -> str:
+        return self._level
+
+    @property
+    def is_idle(self) -> bool:
+        return self._level == "idle"
+
+
+# --------------------------------------------------------------------------
+# 平台品牌色标签
+# --------------------------------------------------------------------------
+class PlatformBadgeDelegate(QStyledItemDelegate):
+    """在表格单元格内绘制「平台品牌色圆点 + 文字」。
+
+    数据来自单元格的 ``Qt.UserRole``（平台 key）。没有 key 时退回默认绘制。
+    """
+
+    DOT = 7.0
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: Any) -> None:  # noqa: N802
+        key = index.data(Qt.ItemDataRole.UserRole)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        if not key:
+            super().paint(painter, option, index)
+            return
+
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+        theme = current_theme()
+        p = palette(theme)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = option.rect
+        left = rect.left() + 10
+        center_y = rect.center().y() + 1
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(platform_color(str(key)))))
+        painter.drawEllipse(QPointF(left, center_y), self.DOT / 2, self.DOT / 2)
+
+        text_left = left + self.DOT + 5
+        text_rect = QRectF(
+            text_left, rect.top(), max(0.0, rect.right() - text_left - 4), rect.height()
+        )
+        painter.setPen(QPen(QColor(p.text)))
+        painter.drawText(
+            text_rect,
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            text,
+        )
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: Any):  # noqa: N802
+        size = super().sizeHint(option, index)
+        size.setWidth(size.width() + int(self.DOT) + 10)
+        return size
+
+
+def attach_platform_delegate(table: Any, column: int) -> PlatformBadgeDelegate:
+    """给表格的某一列挂上平台品牌色委托。"""
+    delegate = PlatformBadgeDelegate(table)
+    table.setItemDelegateForColumn(column, delegate)
+    return delegate
+
+
+def platform_item(label: str, key: str) -> Any:
+    """构造带平台 key 的表格单元格（供委托绘制圆点）。"""
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    item = QTableWidgetItem(label)
+    item.setData(Qt.ItemDataRole.UserRole, key or "")
+    return item
+
+
+# --------------------------------------------------------------------------
+# 让每个组件成为「构建宿主」
+# --------------------------------------------------------------------------
+# 组件 __init__ 里创建的裸控件（如 QLabel(title)）会直接挂到组件名下，
+# 而不是短暂成为顶层窗口。详见 ui/qt_guard.py。
+from . import qt_guard as _qt_guard  # noqa: E402
+
+for _component_cls in (
+    Card,
+    CardTitle,
+    PageHeader,
+    StatCard,
+    EmptyState,
+    StatusBanner,
+    StatusLight,
+    Toast,
+    TagChip,
+    FlowRow,
+    LineChart,
+    ScrollArea,
+    BusyOverlay,
+    ConfirmBar,
+):
+    _qt_guard.guarded_init(_component_cls)
+del _component_cls

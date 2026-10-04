@@ -1,8 +1,9 @@
 """主题与视觉规范（企划书 5.1 / 5.3）。
 
 简洁 · 留白 · 卡片化 · 一屏完成 · 暗色可选
-浅色为主（白底、灰卡片、单一强调色），暗色模式可切换。
-圆角：卡片 8-12px，按钮 6px；内容区间距不小于 24px。
+
+配色基线：以**淡紫**为唯一强调色的中性色系统，浅色与暗色共用同一套语义槽位。
+暗色模式使用**灰黑**而非纯黑，降低长时间使用的压迫感。
 """
 
 from __future__ import annotations
@@ -13,22 +14,33 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Palette:
     name: str
+    # 背景层次
     bg: str
     bg_alt: str
     card: str
     card_hover: str
+    # 描边
     border: str
     border_strong: str
+    # 文字
     text: str
     text_sub: str
     text_faint: str
+    # 强调色（淡紫）
     accent: str
     accent_hover: str
     accent_soft: str
     on_accent: str
+    # 语义色
     success: str
     warning: str
     danger: str
+    # 语义底色（状态灯/标签/提示条背景）
+    tint_info: str
+    tint_warn: str
+    tint_error: str
+    tint_success: str
+    # 结构区
     sidebar: str
     sidebar_active: str
     topbar: str
@@ -37,50 +49,59 @@ class Palette:
 
 LIGHT = Palette(
     name="light",
-    bg="#F5F6F8",
-    bg_alt="#EDEFF3",
+    bg="#F6F4FB",
+    bg_alt="#EDE9F6",
     card="#FFFFFF",
-    card_hover="#F8F9FB",
-    border="#E4E7EC",
-    border_strong="#D0D5DD",
-    text="#1B1F27",
-    text_sub="#5B6472",
-    text_faint="#98A2B3",
-    accent="#3B6EF6",
-    accent_hover="#2F5FE0",
-    accent_soft="#EAF0FE",
+    card_hover="#F8F6FD",
+    border="#E7E1F3",
+    border_strong="#D5CDE7",
+    text="#231D33",
+    text_sub="#6A6280",
+    text_faint="#A29BB5",
+    accent="#7C5CE6",
+    accent_hover="#6A49D6",
+    accent_soft="#F1ECFD",
     on_accent="#FFFFFF",
-    success="#12B76A",
-    warning="#F79009",
-    danger="#F04438",
-    sidebar="#FFFFFF",
-    sidebar_active="#EAF0FE",
+    success="#12A66A",
+    warning="#D98410",
+    danger="#E5453B",
+    tint_info="#F1ECFD",
+    tint_warn="#FDF4E4",
+    tint_error="#FCEDEC",
+    tint_success="#E8F8F0",
+    sidebar="#FBFAFE",
+    sidebar_active="#F1ECFD",
     topbar="#FFFFFF",
-    shadow="rgba(16, 24, 40, 0.06)",
+    shadow="rgba(60, 40, 110, 0.07)",
 )
 
+#: 暗色刻意避开纯黑：背景取灰黑并带极轻的紫调，长时间阅读更舒适
 DARK = Palette(
     name="dark",
-    bg="#14161B",
-    bg_alt="#1A1D24",
-    card="#1E222A",
-    card_hover="#252A34",
-    border="#2C313C",
-    border_strong="#3A404D",
-    text="#E7E9EE",
-    text_sub="#A3ABB9",
-    text_faint="#6E7787",
-    accent="#5B8DEF",
-    accent_hover="#6F9BF2",
-    accent_soft="#22304A",
-    on_accent="#0F1116",
-    success="#32D583",
-    warning="#FDB022",
-    danger="#F97066",
-    sidebar="#1A1D24",
-    sidebar_active="#22304A",
-    topbar="#1A1D24",
-    shadow="rgba(0, 0, 0, 0.35)",
+    bg="#232128",
+    bg_alt="#2A2731",
+    card="#2E2B37",
+    card_hover="#35323F",
+    border="#3C3846",
+    border_strong="#4B4657",
+    text="#EDEAF4",
+    text_sub="#ADA7BE",
+    text_faint="#7E7891",
+    accent="#A98BF7",
+    accent_hover="#B79CF9",
+    accent_soft="#382F4E",
+    on_accent="#1B1823",
+    success="#3DD68C",
+    warning="#E9A93C",
+    danger="#F2786F",
+    tint_info="#2E2942",
+    tint_warn="#3A3324",
+    tint_error="#3A2827",
+    tint_success="#1F3A2D",
+    sidebar="#1F1D24",
+    sidebar_active="#382F4E",
+    topbar="#1F1D24",
+    shadow="rgba(0, 0, 0, 0.30)",
 )
 
 
@@ -88,9 +109,43 @@ def palette(theme: str) -> Palette:
     return DARK if (theme or "").lower() == "dark" else LIGHT
 
 
+# --------------------------------------------------------------------------
+# 全局当前主题
+# --------------------------------------------------------------------------
+# 供自绘组件（表格委托、图表）在没有 theme 参数时取用。
+_current_theme = "light"
+
+
+def set_current_theme(theme: str) -> None:
+    global _current_theme
+    _current_theme = "dark" if str(theme).lower() == "dark" else "light"
+
+
+def current_theme() -> str:
+    return _current_theme
+
+
 #: 中文优先字体栈（企划书 5.3：中文微软雅黑/思源黑体，英文 Inter 或系统默认）
 FONT_FAMILY = '"Inter", "Microsoft YaHei UI", "Microsoft YaHei", "Source Han Sans SC", "PingFang SC", sans-serif'
 MONO_FAMILY = '"Cascadia Mono", "Consolas", "JetBrains Mono", monospace'
+
+
+#: 平台品牌色（用于列表中的来源标识）
+PLATFORM_COLORS: dict[str, str] = {
+    "xiaohongshu": "#FF2E4D",  # 小红书红
+    "douyin": "#FE2C55",  # 抖音红（品牌色取自其官方红）
+    "zhihu": "#0F88EB",  # 知乎蓝
+    "bilibili": "#FB7299",  # B 站粉
+    "weibo": "#E6162D",  # 微博红
+    "baidu": "#2932E1",  # 百度蓝
+    "toutiao": "#F04142",  # 今日头条红
+    "rednote": "#FF2E4D",
+    "unknown": "#8C86A0",
+}
+
+
+def platform_color(key: str) -> str:
+    return PLATFORM_COLORS.get((key or "").lower(), PLATFORM_COLORS["unknown"])
 
 
 def build_qss(theme: str) -> str:
@@ -121,6 +176,7 @@ QMainWindow, QDialog {{
     font-size: 16px;
     font-weight: 600;
     letter-spacing: 0.5px;
+    color: {p.accent};
 }}
 #BrandSub {{
     font-size: 11px;
@@ -133,7 +189,7 @@ QMainWindow, QDialog {{
     padding: 5px 10px;
 }}
 #TopBar QPushButton:hover {{
-    background: {p.bg_alt};
+    background: {p.accent_soft};
     border-color: {p.border};
 }}
 
@@ -160,12 +216,23 @@ QMainWindow, QDialog {{
     color: {p.accent};
     font-weight: 600;
 }}
-#NavBadge {{
-    font-size: 10.5px;
-    color: {p.text_faint};
-    padding: 1px 6px;
+#SidebarFooter {{
+    background: transparent;
+    border-top: 1px solid {p.border};
+}}
+#VersionButton {{
+    background: transparent;
     border: 1px solid {p.border};
-    border-radius: 8px;
+    border-radius: 6px;
+    padding: 5px 10px;
+    color: {p.text_sub};
+    font-size: 12px;
+    text-align: left;
+}}
+#VersionButton:hover {{
+    background: {p.accent_soft};
+    border-color: {p.accent};
+    color: {p.accent};
 }}
 
 /* ---------- 卡片 ---------- */
@@ -216,6 +283,20 @@ QMainWindow, QDialog {{
     font-weight: 600;
     padding: 2px 8px;
     border-radius: 10px;
+}}
+
+/* ---------- 状态指示灯 ---------- */
+#StatusLight {{
+    background: {p.bg_alt};
+    border: 1px solid {p.border};
+    border-radius: 11px;
+    padding: 2px 10px;
+    font-size: 11.5px;
+    color: {p.text_sub};
+}}
+#StatusLight:hover {{
+    border-color: {p.accent};
+    color: {p.text};
 }}
 
 /* ---------- 按钮 ---------- */
@@ -384,7 +465,7 @@ QToolTip {{
     color: {p.text};
     border: 1px solid {p.border_strong};
     border-radius: 6px;
-    padding: 5px 8px;
+    padding: 6px 9px;
 }}
 QSplitter::handle {{ background: {p.border}; }}
 QTabWidget::pane {{ border: 1px solid {p.border}; border-radius: 8px; background: {p.card}; }}
@@ -406,8 +487,8 @@ QStatusBar::item {{ border: none; }}
 """
 
 
-#: 语义色快捷取用
 def level_color(theme: str, level: str) -> str:
+    """语义色快捷取用。"""
     p = palette(theme)
     return {
         "error": p.danger,
@@ -416,4 +497,26 @@ def level_color(theme: str, level: str) -> str:
         "info": p.accent,
         "success": p.success,
         "ok": p.success,
+        "busy": p.accent,
+        "idle": p.text_sub,
     }.get(level, p.text_sub)
+
+
+def level_tint(theme: str, level: str) -> str:
+    """语义底色（随主题变化，暗色下不会出现刺眼的浅黄/浅红）。"""
+    p = palette(theme)
+    return {
+        "error": p.tint_error,
+        "warn": p.tint_warn,
+        "warning": p.tint_warn,
+        "info": p.tint_info,
+        "success": p.tint_success,
+        "ok": p.tint_success,
+        "busy": p.tint_info,
+        "idle": p.bg_alt,
+    }.get(level, p.tint_info)
+
+
+def level_dot(theme: str, level: str) -> str:
+    """状态指示灯的点色。"""
+    return level_color(theme, level)

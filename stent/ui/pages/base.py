@@ -32,17 +32,25 @@ class BasePage(QWidget, WorkerHost):
         self._root.setContentsMargins(24, 20, 24, 24)
         self._root.setSpacing(16)
         self._loaded = False
-        try:
-            self.build()
-        except Exception:  # noqa: BLE001 - 单页构建失败不应拖垮整个应用
-            import logging
+        from ..components import StatusLight
+        from ..qt_guard import building
 
-            logging.getLogger(__name__).exception("页面 %s 构建失败", self.key)
-            from ..components import StatusBanner
+        with building(self):
+            # 右上角状态指示灯：日常状态只占一枚小胶囊，详情悬停可见
+            self.status_light = StatusLight(theme=ctx.theme)
+            #: 兼容页面里既有的 self.banner.show_message(...) 调用
+            self.banner = self.status_light
+            try:
+                self.build()
+            except Exception:  # noqa: BLE001 - 单页构建失败不应拖垮整个应用
+                import logging
 
-            banner = StatusBanner(self)
-            banner.show_message(f"页面初始化失败，请查看日志（{self.key}）", "error")
-            self._root.addWidget(banner)
+                logging.getLogger(__name__).exception("页面 %s 构建失败", self.key)
+                from ..components import StatusBanner
+
+                banner = StatusBanner(self)
+                banner.show_message(f"页面初始化失败，请查看日志（{self.key}）", "error")
+                self._root.addWidget(banner)
         ctx.theme_changed.connect(self._on_theme_changed)
 
     # -- 生命周期 --------------------------------------------------------
@@ -59,6 +67,10 @@ class BasePage(QWidget, WorkerHost):
         """首次显示时的懒加载逻辑（如加载列表数据）。"""
 
     def _on_theme_changed(self, theme: str) -> None:
+        try:
+            self.status_light.apply_theme(theme)
+        except Exception:  # pragma: no cover
+            pass
         try:
             self.apply_theme(theme)
         except Exception:  # pragma: no cover

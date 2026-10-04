@@ -17,6 +17,7 @@ datas = [
     (str(ROOT / "stent" / "resources"), "stent/resources"),
     (str(ROOT / "stent" / "skills"), "stent/skills"),
     (str(ROOT / "README.md"), "."),
+    (str(ROOT / "CHANGELOG.md"), "."),
     (str(ROOT / "NOTICE"), "."),
     (str(ROOT / "LICENSE"), "."),
 ]

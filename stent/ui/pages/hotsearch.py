@@ -32,7 +32,16 @@ from ...services.hotsearch import (
     PlatformResult,
     hotsearch_service,
 )
-from ..components import Card, CardTitle, EmptyState, PageHeader, StatusBanner, TagChip, make_button, FlowRow
+from ..components import (
+    Card,
+    CardTitle,
+    EmptyState,
+    FlowRow,
+    PageHeader,
+    attach_platform_delegate,
+    make_button,
+    platform_item,
+)
 from .base import BasePage
 
 
@@ -51,13 +60,12 @@ class HotSearchPage(BasePage):
             "热点发现",
             "聚合微博、抖音、知乎、B 站、百度、头条热榜，双击任意条目即可送入创作",
         )
+        # 状态灯放在主操作左侧：日常状态只占一枚小胶囊，页面顶部留给标题与刷新按钮
+        header.add_action(self.status_light)
         self.refresh_button = make_button("刷新热榜", icon="refresh", theme=self.ctx.theme, primary=True)
         self.refresh_button.clicked.connect(lambda: self.reload(force=True))
         header.add_action(self.refresh_button)
         self.add(header)
-
-        self.banner = StatusBanner()
-        self.add(self.banner)
 
         # ---- 筛选工具条 ----
         toolbar = Card(padding=14, spacing=10)
@@ -125,6 +133,8 @@ class HotSearchPage(BasePage):
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
+        # 平台列用品牌色圆点标注来源，便于快速识别
+        attach_platform_delegate(self.table, 0)
         table_card.add(self.table, 1)
 
         self.empty = EmptyState(
@@ -226,7 +236,16 @@ class HotSearchPage(BasePage):
         if failed:
             parts.append("失败：" + "、".join(f"{r.label}（{r.error}）" for r in failed))
         level = "warn" if (failed or stale) else "success"
-        self.banner.show_message("；".join(parts), level)
+
+        # 状态灯摘要：一眼看清「几个平台正常 / 几个降级」
+        # 普通缓存命中属于正常工作方式，只有「过期降级」才标黄
+        if failed:
+            summary = f"{len(ok)} 平台正常 · {len(failed)} 失败"
+        elif stale:
+            summary = f"{len(ok)} 平台 · {len(stale)} 缓存"
+        else:
+            summary = f"{len(ok)} 平台正常"
+        self.banner.show_message("；".join(parts), level, summary=summary)
 
         self._refresh_category_combo()
         self._apply_filters()
@@ -288,7 +307,10 @@ class HotSearchPage(BasePage):
             source.source if source else "—",
         ]
         for column, text in enumerate(cells):
-            cell = QTableWidgetItem(text)
+            if column == 0:
+                cell = platform_item(text, item.platform)
+            else:
+                cell = QTableWidgetItem(text)
             if column == 1:
                 cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if column == 2:

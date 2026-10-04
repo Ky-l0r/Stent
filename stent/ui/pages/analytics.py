@@ -34,8 +34,9 @@ from ..components import (
     PageHeader,
     ScrollArea,
     StatCard,
-    StatusBanner,
+    attach_platform_delegate,
     make_button,
+    platform_item,
 )
 from ..theme import palette
 from .base import BasePage
@@ -166,6 +167,7 @@ class AnalyticsPage(BasePage):
         for column in range(3, 8):
             self.rank_table.setColumnWidth(column, 76)
         self.rank_table.setMinimumHeight(200)
+        attach_platform_delegate(self.rank_table, 1)
         rank_card.add(self.rank_table, 1)
         self.rank_empty = EmptyState(
             "还没有可分析的数据",
@@ -187,6 +189,7 @@ class AnalyticsPage(BasePage):
         self.platform_table.setShowGrid(False)
         self.platform_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.platform_table.setMinimumHeight(132)
+        attach_platform_delegate(self.platform_table, 0)
         platform_card.add(self.platform_table, 1)
         layout.addWidget(platform_card)
 
@@ -216,6 +219,7 @@ class AnalyticsPage(BasePage):
 
         # ---- 头部（放在滚动区外，始终可见）----
         header = PageHeader("数据分析", "同步平台指标、查看趋势与排行，并把经验回流到账号画像")
+        header.add_action(self.status_light)
         self.sync_button = make_button("同步指标", icon="refresh", theme=self.ctx.theme, primary=True)
         self.sync_button.clicked.connect(lambda: self.sync(force=False))
         header.add_action(self.sync_button)
@@ -223,9 +227,6 @@ class AnalyticsPage(BasePage):
         self.full_sync_button.clicked.connect(lambda: self.sync(force=True))
         header.add_action(self.full_sync_button)
         self._root.insertWidget(0, header)
-
-        self.banner = StatusBanner()
-        self._root.insertWidget(1, self.banner)
 
     # ------------------------------------------------------------------
     def on_first_show(self) -> None:
@@ -273,7 +274,9 @@ class AnalyticsPage(BasePage):
 
         warnings = overview.get("warnings") or []
         if warnings:
-            self.banner.show_message("；".join(str(w) for w in warnings), "warn")
+            self.banner.show_message(
+                "；".join(str(w) for w in warnings), "warn", summary=f"{len(warnings)} 项数据提示"
+            )
         else:
             self.banner.clear()
 
@@ -301,7 +304,11 @@ class AnalyticsPage(BasePage):
                 _pct(item.get("engagement_rate")),
             ]
             for column, text in enumerate(cells):
-                self.rank_table.setItem(row, column, QTableWidgetItem(text))
+                if column == 1:
+                    cell = platform_item(text, item.get("platform", ""))
+                else:
+                    cell = QTableWidgetItem(text)
+                self.rank_table.setItem(row, column, cell)
         has = bool(ranked)
         self.rank_table.setVisible(has)
         self.rank_empty.setVisible(not has)
@@ -318,7 +325,11 @@ class AnalyticsPage(BasePage):
                 str(item.get("rating") or "—"),
             ]
             for column, text in enumerate(cells):
-                self.platform_table.setItem(row, column, QTableWidgetItem(text))
+                if column == 0:
+                    cell = platform_item(text, item.get("platform", ""))
+                else:
+                    cell = QTableWidgetItem(text)
+                self.platform_table.setItem(row, column, cell)
 
     # ------------------------------------------------------------------
     def sync(self, *, force: bool) -> None:
@@ -355,7 +366,8 @@ class AnalyticsPage(BasePage):
             first = errors[0]
             detail = first.get("error") if isinstance(first, dict) else str(first)
             text += f"；首个错误：{detail}"
-        self.banner.show_message(text, level)
+        summary = f"同步完成 · {synced} 条" if not failed else f"{failed} 条未同步"
+        self.banner.show_message(text, level, summary=summary)
         self.reload()
         self.ctx.notify_data_changed("metrics")
 

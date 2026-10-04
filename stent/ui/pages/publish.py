@@ -37,9 +37,9 @@ from ..components import (
     ConfirmBar,
     EmptyState,
     PageHeader,
-    StatusBanner,
-    TagChip,
+    attach_platform_delegate,
     make_button,
+    platform_item,
 )
 from ..theme import level_color, palette
 from .base import BasePage
@@ -63,13 +63,11 @@ class PublishPage(BasePage):
             "发布中心",
             "发布前检查 → 预览 → 人工确认 → 发布；默认只自动填写表单，最终提交由你在浏览器中确认",
         )
+        header.add_action(self.status_light)
         self.refresh_button = make_button("刷新内容", icon="refresh", theme=self.ctx.theme, ghost=True)
         self.refresh_button.clicked.connect(self.reload_contents)
         header.add_action(self.refresh_button)
         self.add(header)
-
-        self.banner = StatusBanner()
-        self.add(self.banner)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -228,6 +226,7 @@ class PublishPage(BasePage):
         self.history_table.setColumnWidth(3, 84)
         self.history_table.setColumnWidth(4, 132)
         self.history_table.setColumnWidth(5, 160)
+        attach_platform_delegate(self.history_table, 1)
         card.add(self.history_table, 1)
         self.history_empty = EmptyState("还没有发布记录", hint="完成一次发布后，记录会出现在这里", icon="send", theme=self.ctx.theme)
         card.add(self.history_empty)
@@ -250,7 +249,9 @@ class PublishPage(BasePage):
         except Exception:  # noqa: BLE001
             return
         if not ok:
-            self.banner.show_message(f"发布功能尚未就绪：{detail}", "warn")
+            self.banner.show_message(
+                f"发布功能尚未就绪：{detail}", "warn", summary="未安装浏览器内核"
+            )
 
     def receive(self, **kwargs) -> None:
         content_id = kwargs.get("content_id")
@@ -307,7 +308,11 @@ class PublishPage(BasePage):
                 post.get("url") or (post.get("error") or "")[:40],
             ]
             for column, text in enumerate(cells):
-                self.history_table.setItem(row, column, QTableWidgetItem(text))
+                if column == 1:
+                    cell = platform_item(text, post.get("platform", ""))
+                else:
+                    cell = QTableWidgetItem(text)
+                self.history_table.setItem(row, column, cell)
         has = bool(posts)
         self.history_table.setVisible(has)
         self.history_empty.setVisible(not has)
@@ -423,13 +428,17 @@ class PublishPage(BasePage):
         if prep.support_note:
             notes.append(prep.support_note)
         if notes:
-            self.banner.show_message("；".join(notes), "warn")
+            self.banner.show_message("；".join(notes), "warn", summary=f"{len(notes)} 项适配提示")
         elif passed:
             self.banner.show_message(
-                f"检查通过（{score} 分）。确认无误后点击下方「确认发布」", "success"
+                f"检查通过（{score} 分）。确认无误后点击下方「确认发布」",
+                "success",
+                summary=f"检查通过 · {score} 分",
             )
         else:
-            self.banner.show_message("检查存在阻断问题，请先回到创作页修改内容", "error")
+            self.banner.show_message(
+                "检查存在阻断问题，请先回到创作页修改内容", "error", summary="检查未通过"
+            )
 
         supported = prep.supported and passed
         self.confirm_bar.button.setEnabled(supported and self.confirm_bar.checkbox.isChecked())

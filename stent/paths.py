@@ -100,3 +100,8 @@ def browser_dir() -> Path:
 
 def exports_dir() -> Path:
     return _sub("exports")
+
+
+def changelog_path() -> Path:
+    """随包分发的更新日志（导航栏「版本更新日志」入口读取它）。"""
+    return resource_dir() / "CHANGELOG.md"

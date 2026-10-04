@@ -33,7 +33,7 @@ from ...services.creator import (
     style_for,
 )
 from ...services.profile import profile_service
-from ..components import Card, CardTitle, EmptyState, PageHeader, StatusBanner, make_button, labeled_row
+from ..components import Card, CardTitle, EmptyState, PageHeader, make_button, labeled_row
 from .base import BasePage
 
 log = logging.getLogger(__name__)
@@ -57,6 +57,7 @@ class CreatePage(BasePage):
             "内容创作",
             "输入主题即可产出正文、标题候选、简介与标签；生成过程可随时中断（Ctrl+Enter 快捷生成）",
         )
+        header.add_action(self.status_light)
         self.generate_button = make_button("开始生成", icon="sparkles", theme=self.ctx.theme, primary=True)
         self.generate_button.clicked.connect(self.generate)
         header.add_action(self.generate_button)
@@ -68,9 +69,6 @@ class CreatePage(BasePage):
         self.drafts_button.clicked.connect(self.open_drafts)
         header.add_action(self.drafts_button)
         self.add(header)
-
-        self.banner = StatusBanner()
-        self.add(self.banner)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -438,7 +436,9 @@ class CreatePage(BasePage):
         self.result_hint.setText(result.usage_hint or "生成完成")
         self.quality_button.setEnabled(True)
         self.regen_button.setEnabled(True)
-        self.banner.show_message("生成完成，可直接编辑后「存为草稿」或「送入发布中心」", "success")
+        self.banner.show_message(
+            "生成完成，可直接编辑后「存为草稿」或「送入发布中心」", "success", summary="生成完成"
+        )
         self.ctx.notify_data_changed("create")
         self._update_counts()
 

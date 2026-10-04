@@ -52,6 +52,11 @@ def build_application(argv: Sequence[str]):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
+    # 必须在任何界面控件创建之前安装：消除切换页面时的小窗口闪现
+    from .ui.qt_guard import install as install_qt_guard
+
+    install_qt_guard()
+
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     app = QApplication(list(argv))
     app.setApplicationName("Stent")

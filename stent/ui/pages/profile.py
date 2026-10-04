@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...services.profile import DIMENSIONS, profile_service
-from ..components import Card, CardTitle, EmptyState, PageHeader, StatusBanner, make_button, hline
+from ..components import Card, CardTitle, EmptyState, PageHeader, make_button, hline
 from .base import BasePage
 
 
@@ -39,6 +39,7 @@ class ProfilePage(BasePage):
             "账号画像",
             "六维画像决定创作的语气、选题与平台适配；数据分析的结论会回流到「记忆」",
         )
+        header.add_action(self.status_light)
         self.save_button = make_button("保存画像", icon="save", theme=self.ctx.theme, primary=True)
         self.save_button.clicked.connect(self.save)
         header.add_action(self.save_button)
@@ -46,9 +47,6 @@ class ProfilePage(BasePage):
         self.export_button.clicked.connect(self.export_markdown)
         header.add_action(self.export_button)
         self.add(header)
-
-        self.banner = StatusBanner()
-        self.add(self.banner)
 
         # ---- 完整度 ----
         progress_card = Card(padding=14, spacing=6)
