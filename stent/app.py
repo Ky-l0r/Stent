@@ -54,11 +54,13 @@ def build_application(argv: Sequence[str]):
 
     # 必须在任何界面控件创建之前安装：消除切换页面时的小窗口闪现
     from .ui.qt_guard import install as install_qt_guard
+    from .ui.wheel_guard import WheelSafeApplication
 
     install_qt_guard()
 
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
-    app = QApplication(list(argv))
+    # 用子类而非 installEventFilter：后者拦不到发往子控件的滚轮事件
+    app = WheelSafeApplication(list(argv))
     app.setApplicationName("Stent")
     app.setApplicationDisplayName("Stent")
     app.setOrganizationName("Stent")
@@ -109,9 +111,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     exit_code = app.exec()
 
     # 退出前确保后台线程都已结束，否则 QThread 在运行中被析构会终止进程
-    from .ui.workers import shutdown_workers
+    from .ui.workers import pending_workers, shutdown_workers
 
-    if not shutdown_workers(8000):
+    pending = pending_workers()
+    if pending:
+        log.info("等待 %d 个后台任务结束…", len(pending))
+    if not shutdown_workers(6000):
         log.warning("仍有后台任务未结束，强制退出以避免 QThread 析构崩溃")
         logging.shutdown()
         os._exit(exit_code)

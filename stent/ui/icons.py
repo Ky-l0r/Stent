@@ -73,6 +73,14 @@ PATHS: dict[str, str] = {
         '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
     ),
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+    "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+    "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    "sliders": (
+        '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/>'
+        '<path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/>'
+        '<path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/>'
+    ),
     "alert": (
         '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>'
         '<path d="M12 9v4"/><path d="M12 17h.01"/>'
@@ -102,6 +110,31 @@ PATHS: dict[str, str] = {
         '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 '
         '10.75 10.75 0 0 1-19.876 0"/>'
         '<circle cx="12" cy="12" r="3"/>'
+    ),
+    # ---- 窗口控制 ----
+    "win-min": '<path d="M5 12h14"/>',
+    "win-max": '<rect width="15" height="15" x="4.5" y="4.5" rx="1.5"/>',
+    "win-restore": (
+        '<rect width="12" height="12" x="8" y="8" rx="1.5"/>'
+        '<path d="M4 16V5.5A1.5 1.5 0 0 1 5.5 4H16"/>'
+    ),
+    "win-full": (
+        '<path d="M8 3H5a2 2 0 0 0-2 2v3"/>'
+        '<path d="M16 3h3a2 2 0 0 1 2 2v3"/>'
+        '<path d="M16 21h3a2 2 0 0 0 2-2v-3"/>'
+        '<path d="M8 21H5a2 2 0 0 1-2-2v-3"/>'
+    ),
+    "win-exit-full": (
+        '<path d="M3 8h3a2 2 0 0 0 2-2V3"/>'
+        '<path d="M21 8h-3a2 2 0 0 1-2-2V3"/>'
+        '<path d="M21 16h-3a2 2 0 0 0-2 2v3"/>'
+        '<path d="M3 16h3a2 2 0 0 1 2 2v3"/>'
+    ),
+    "win-close": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    "grip": (
+        '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/>'
+        '<circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/>'
+        '<circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>'
     ),
 }
 

@@ -236,6 +236,10 @@ class AppConfig:
     embedding_model: str = ""  # 留空则使用关键词检索降级（企划书 4.4）
     analytics_auto_sync: bool = True
     minimize_to_tray: bool = False
+    #: 窗口最大化 / 还原 / 最小化的过渡动画。
+    #: Qt widgets 走 CPU 光栅化，大窗口下单帧重绘约 29ms、帧率上限 35~40fps；
+    #: 与其给一个掉帧的动画，不如默认瞬间切换来得利落，需要时可在设置里开启。
+    ui_animations: bool = False
     last_media_dir: str = ""
 
     # -- 序列化 ----------------------------------------------------------

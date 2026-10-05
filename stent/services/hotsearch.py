@@ -135,6 +135,14 @@ SOURCES: dict[str, tuple[Source, ...]] = {
     "rednote": (
         _s("60s", f"{BASE_60S}/v2/rednote", "sixty"),
     ),
+    # 以下两个是「垂类频道」：主流热榜偏综合，游戏 / 数码 / 时政这类内容
+    # 常常进不了总榜，单独收一路可以让垂类筛选真正有内容可选。
+    "it-news": (
+        _s("60s", f"{BASE_60S}/v2/it-news", "sixty"),
+    ),
+    "60s": (
+        _s("60s", f"{BASE_60S}/v2/60s", "strlist"),
+    ),
 }
 
 PLATFORM_LABELS: dict[str, str] = {
@@ -145,10 +153,15 @@ PLATFORM_LABELS: dict[str, str] = {
     "baidu": "百度",
     "toutiao": "今日头条",
     "rednote": "小红书",
+    "it-news": "IT 资讯",
+    "60s": "每日 60 秒",
 }
 
 #: 企划书默认聚合的平台
 DEFAULT_PLATFORMS: tuple[str, ...] = ("weibo", "douyin", "zhihu", "bilibili", "baidu", "toutiao")
+
+#: 全部可选平台（含垂类频道）；默认不开启，用户可在筛选条或设置里打开
+ALL_PLATFORMS: tuple[str, ...] = tuple(SOURCES)
 
 #: 送创作时使用的平台搜索链接模板
 SEARCH_TEMPLATES: dict[str, str] = {
@@ -159,21 +172,70 @@ SEARCH_TEMPLATES: dict[str, str] = {
     "baidu": "https://www.baidu.com/s?wd={q}",
     "toutiao": "https://so.toutiao.com/search?keyword={q}",
     "rednote": "https://www.xiaohongshu.com/search_result?keyword={q}",
+    "it-news": "https://www.ithome.com/search/{q}.html",
+    "60s": "",
 }
 
 
 # --------------------------------------------------------------------------
 # 垂类分类（关键词规则，供「垂类筛选」使用；后续可升级为 LLM 打标）
 # --------------------------------------------------------------------------
+#: 顺序即优先级：命中数相同时取靠前的垂类，因此**具体垂类必须排在泛垂类之前**
+#: （例如「游戏」在「科技」前、「AI」在「科技」后但与「科技」同分时让位给科技）。
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "娱乐": ("明星", "综艺", "电影", "电视剧", "演唱会", "演员", "歌手", "票房", "剧", "粉丝", "爱豆", "导演", "颁奖"),
-    "科技": ("AI", "人工智能", "芯片", "手机", "华为", "苹果", "小米", "机器人", "大模型", "算力", "发布", "科技", "数码", "自动驾驶", "卫星"),
-    "财经": ("股市", "基金", "房价", "经济", "GDP", "央行", "利率", "比特币", "黄金", "关税", "出口", "消费", "破产", "融资", "上市"),
-    "社会": ("警方", "通报", "事故", "争议", "回应", "官方", "罚款", "判决", "网友", "救援", "教育", "学校", "医院", "老人", "地铁"),
-    "体育": ("比赛", "夺冠", "亚运", "奥运", "足球", "篮球", "球员", "联赛", "冠军", "世界杯", "乒乓球", "游泳"),
-    "生活": ("美食", "旅行", "穿搭", "减肥", "健康", "养生", "宠物", "家居", "育儿", "天气", "假期", "攻略", "食谱"),
-    "职场": ("就业", "招聘", "工资", "加班", "裁员", "考公", "面试", "副业", "创业", "老板"),
-    "国际": ("美国", "俄罗斯", "日本", "乌克兰", "以色列", "联合国", "总统", "外交", "欧洲", "韩国"),
+    "科技": (
+        "芯片", "华为", "苹果", "小米", "操作系统", "卫星", "航天", "专利", "科技",
+        "互联网", "开源", "发布会", "5G", "6G",
+    ),
+    "数码": (
+        "手机", "笔记本", "平板", "耳机", "显卡", "相机", "充电", "测评", "路由器",
+        "显示器", "固态", "智能手表", "无人机",
+    ),
+    "AI": (
+        "AI", "人工智能", "大模型", "智能体", "算力", "GPT", "机器人", "算法",
+        "深度学习", "OpenAI", "超级智能", "生成式",
+    ),
+    "游戏": (
+        "游戏", "手游", "电竞", "玩家", "开服", "联机", "Steam", "主机", "网游",
+        "皮肤", "版本更新", "副本", "氪金",
+    ),
+    "动漫": ("动漫", "动画", "番剧", "漫画", "二次元", "声优", "手办", "国漫", "新番"),
+    "影视": (
+        "电影", "电视剧", "剧集", "票房", "导演", "演员", "开播", "定档", "首映",
+        "影帝", "预告", "综艺", "纪录片",
+    ),
+    "音乐": ("歌手", "演唱会", "单曲", "专辑", "音乐节", "乐队", "新歌", "巡演", "歌词"),
+    "娱乐": ("明星", "爱豆", "粉丝", "绯闻", "塌房", "颁奖", "红毯", "代言", "艺人"),
+    "财经": (
+        "股市", "A股", "基金", "GDP", "央行", "利率", "比特币", "黄金", "关税",
+        "融资", "上市", "财报", "降息", "汇率", "营收",
+    ),
+    "汽车": ("汽车", "新能源车", "特斯拉", "比亚迪", "车主", "续航", "车企", "试驾", "充电桩", "智驾"),
+    "房产": ("楼市", "二手房", "土地", "公积金", "购房", "地产", "租房", "房贷"),
+    "体育": (
+        "比赛", "夺冠", "奥运", "亚运", "足球", "篮球", "球员", "联赛", "冠军",
+        "世界杯", "乒乓球", "游泳", "国足", "网球", "全运会",
+    ),
+    "军事": ("军演", "导弹", "战机", "航母", "国防", "部队", "军事", "阅兵", "演习"),
+    "国际": (
+        "美国", "俄罗斯", "日本", "乌克兰", "以色列", "联合国", "总统", "外交",
+        "欧洲", "韩国", "白宫", "欧盟", "特朗普",
+    ),
+    "时政": ("国务院", "两会", "政策", "部署", "中央", "省委", "民生", "十四五", "发布会"),
+    "社会": (
+        "警方", "通报", "事故", "争议", "回应", "官方", "罚款", "判决", "网友",
+        "救援", "失联", "诈骗", "曝光", "热搜",
+    ),
+    "教育": ("高考", "考研", "学校", "教师", "学生", "录取", "开学", "作业", "留学", "校园", "培训"),
+    "健康": ("医院", "医生", "疫苗", "流感", "养生", "体检", "睡眠", "减肥", "用药", "疾病", "急救"),
+    "美食": ("美食", "食谱", "餐厅", "火锅", "奶茶", "外卖", "探店", "菜谱", "月饼", "预制菜"),
+    "旅游": ("旅游", "景区", "门票", "出行", "航班", "高铁", "签证", "自驾", "酒店", "游客"),
+    "职场": ("就业", "招聘", "工资", "加班", "裁员", "考公", "面试", "副业", "创业", "老板", "离职"),
+    "情感": ("恋爱", "婚姻", "离婚", "彩礼", "相亲", "分手", "婆媳", "情感"),
+    "母婴": ("育儿", "宝宝", "孕妈", "奶粉", "产假", "亲子", "儿童", "幼儿园"),
+    "宠物": ("宠物", "铲屎官", "流浪动物", "动物园", "熊猫", "猫咪", "狗狗"),
+    "科学": ("科学家", "研究", "实验", "考古", "天文", "物理", "化学", "论文", "Nature", "南极"),
+    "生活": ("天气", "假期", "快递", "家居", "穿搭", "收纳", "油价", "社保", "降温", "台风"),
 }
 
 CATEGORY_ORDER = tuple(CATEGORY_KEYWORDS.keys())
@@ -201,7 +263,7 @@ def _unwrap(payload: Any) -> list[Any]:
         return []
     data: Any = payload.get("data", payload)
     if isinstance(data, dict):
-        for key in ("data", "list", "items", "result"):
+        for key in ("data", "list", "items", "result", "news"):
             if isinstance(data.get(key), list):
                 return data[key]
         return []
@@ -577,13 +639,20 @@ class HotSearchService:
         *,
         keyword: str = "",
         category: str = "",
+        categories: Iterable[str] | None = None,
         platforms: Iterable[str] | None = None,
         limit: int = 500,
     ) -> list[HotItem]:
-        """关键词 + 垂类 + 平台筛选，统一按「平台 → 排名」排序。"""
+        """关键词 + 垂类 + 平台筛选，统一按「平台 → 排名」排序。
+
+        三个条件是**与**关系：搜索「火锅」时仍受当前垂类约束，
+        UI 上以「关键词 AND 垂类」明确提示，避免用户误以为筛选失效。
+        """
         allow = set(platforms) if platforms else None
         key = (keyword or "").strip().lower()
-        cat = (category or "").strip()
+        wanted = {c for c in (categories or ()) if c}
+        if not wanted and category:
+            wanted = {category}
         out: list[HotItem] = []
         for platform, result in results.items():
             if allow is not None and platform not in allow:
@@ -591,7 +660,7 @@ class HotSearchService:
             for item in result.items:
                 if key and key not in item.title.lower() and key not in (item.keyword or "").lower():
                     continue
-                if cat and cat not in ("全部", "综合筛选") and item.category != cat:
+                if wanted and (item.category or "综合") not in wanted:
                     continue
                 out.append(item)
                 if len(out) >= limit:
@@ -599,15 +668,28 @@ class HotSearchService:
         return out
 
     @staticmethod
-    def categories(results: dict[str, PlatformResult]) -> list[tuple[str, int]]:
-        """统计各垂类数量，供筛选下拉框使用。"""
+    def category_counts(
+        results: dict[str, PlatformResult],
+        *,
+        platforms: Iterable[str] | None = None,
+    ) -> list[tuple[str, int]]:
+        """统计各垂类数量（可按平台过滤），供两列分类选择器使用。"""
+        allow = set(platforms) if platforms else None
         counts: dict[str, int] = {}
-        for result in results.values():
+        for platform, result in results.items():
+            if allow is not None and platform not in allow:
+                continue
             for item in result.items:
-                counts[item.category or "综合"] = counts.get(item.category or "综合", 0) + 1
+                name = item.category or "综合"
+                counts[name] = counts.get(name, 0) + 1
         ordered = [(c, counts.pop(c)) for c in CATEGORY_ORDER if c in counts]
         ordered += sorted(counts.items(), key=lambda kv: -kv[1])
         return ordered
+
+    @staticmethod
+    def categories(results: dict[str, PlatformResult]) -> list[tuple[str, int]]:
+        """统计各垂类数量，供筛选下拉框使用。"""
+        return HotSearchService.category_counts(results)
 
     @staticmethod
     def to_draft_seed(item: HotItem, target_platform: str = "") -> dict[str, Any]:

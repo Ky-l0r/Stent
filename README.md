@@ -207,16 +207,22 @@ Stent/
 │   ├── skills/                 从 Easel 裁剪的 prompt 资产（可查阅）
 │   └── ui/
 │       ├── main_window.py      顶栏 + 侧栏 + 卡化主区
+│       ├── frameless.py        无边框窗口（原生拖拽/Snap/调整大小/圆角/阴影）
 │       ├── theme.py            淡紫浅色 / 灰黑暗色主题与 QSS
 │       ├── icons.py            线性图标（内联 Lucide SVG）
 │       ├── components.py       卡片、状态指示灯、平台色委托、趋势图等
 │       ├── qt_guard.py         控件父级守卫（消除切换页面时的小窗口闪现）
+│       ├── wheel_guard.py      滚轮守卫（悬停滚动不误改数值）
 │       ├── dialogs.py          版本更新日志等对话框
 │       ├── workers.py          后台任务线程封装
 │       └── pages/              七个页面（含引导页）
 ├── tests/
 │   ├── selftest_all.py         服务层端到端自检（106 项）
-│   └── ui_smoke.py             真实窗口双主题 UI 冒烟
+│   ├── ui_smoke.py             真实窗口双主题 UI 冒烟（含无边框检查）
+│   ├── ui_wheel.py             真实滚轮注入验证（Win32 输入，防误改回归）
+│   ├── ui_animation.py         最大化/还原/最小化过渡动画逐帧验证
+│   ├── ui_contrast.py          主题对比度检查（找出与背景撞色的文字）
+│   └── ui_screenshot.py        窗口关键区域截图（人工核对视觉）
 ├── CHANGELOG.md                更新日志（应用内「版本更新日志」入口读取）
 ├── LICENSE                     Apache-2.0
 └── NOTICE                      上游来源与修改声明
@@ -225,6 +231,52 @@ Stent/
 ---
 
 ## 界面说明
+
+### 窗口与标题栏
+
+Stent 使用**无边框窗口**，把 Windows 系统标题栏的能力全部搬到应用自己的顶栏上，
+让顶栏与内容区风格统一：
+
+| 操作 | 行为 |
+|---|---|
+| 长按顶栏拖动 | 移动窗口；拖到屏幕左/右边缘自动分屏，拖到顶部最大化 |
+| 拖到顶部停住 | 呼出系统 Snap 布局选择器（Windows 11） |
+| 双击顶栏 | 最大化 / 还原 |
+| 悬停「最大化」按钮 | 呼出 Snap 布局选择器（Windows 11） |
+| 拖拽窗口四边/四角 | 调整窗口大小 |
+| 顶栏右侧按钮 | 最小化 · 最大化/还原 · 关闭（在「设置」右边） |
+| `F11` / `Esc` | 进入全屏 / 退出全屏 |
+| `Ctrl+M` | 最大化 / 还原 |
+
+实现要点：
+
+- **必须补齐标准窗口样式位**。`FramelessWindowHint` 生成的窗口是纯 `WS_POPUP`，
+  系统会认为它「不可最大化、不可调整大小」，于是拖到边缘不分屏、悬停不弹 Snap
+  布局、最大化也没有过渡动画。因此启动时通过 `SetWindowLongW` 补上
+  `WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU | WS_CAPTION`，
+  再用 `WM_NCCALCSIZE` 返回 0 把系统标题栏区域抹掉——样式位带来原生能力，
+  `WM_NCCALCSIZE` 保证界面不被系统边框侵占；
+- 拖拽发送 `WM_NCLBUTTONDOWN + HTCAPTION`（等价于按住原生标题栏），
+  Aero Snap、贴边分屏、顶部布局选择器全部由系统接管；
+- 窗口边缘通过 `WM_NCHITTEST` 返回 `HTLEFT` / `HTBOTTOMRIGHT` 等命中码；
+- 「最大化」按钮同样返回 `HTMAXBUTTON`，从而触发 Snap 布局选择器；
+- 最大化时用 `WM_GETMINMAXINFO` 贴合显示器工作区，不会遮住任务栏；
+- **过渡动画自己实现**：无边框窗口丢掉了系统非客户区，DWM 不会播放最大化 /
+  最小化的缩放过渡，因此改用 `QPropertyAnimation` 对窗口几何做缓动
+  （最大化 / 还原 130ms `OutCubic`，最小化 120ms `InCubic` + 淡出）。
+  为压低每帧成本，动画期间把内容尺寸**冻结**（不逐帧重排，同时消除卡片文字抖动）
+  并开启 `WA_StaticContents` 只重绘新暴露区域。
+
+  > **关于流畅度**：Qt 界面是 CPU 光栅化，1920×1080 单帧重绘约 29ms，
+  > 动画帧率上限约 35~40fps（实测）。与其给一个掉帧的动画，不如瞬间切换来得
+  > 利落，因此**默认关闭**；想要过渡效果可在
+  > **设置 → 通用 → 启用窗口过渡动画** 打开，Snap、圆角、阴影等其余行为不受影响。
+- **圆角**：Windows 11 走 DWM 原生圆角（`DWMWA_WINDOW_CORNER_PREFERENCE`），
+  边框色跟随主题；Windows 10 无此 API，降级为 `SetWindowRgn` 区域裁剪；
+- **阴影**：由上面的 `WS_THICKFRAME` 一并带来。
+
+> 系统级对话框（文件选择、消息框、引导页）仍保留原生标题栏 —— 它们由系统绘制，
+> 也更符合用户对弹窗的操作预期。
 
 ### 主题
 

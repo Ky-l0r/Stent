@@ -5,17 +5,34 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Callable, Iterable, Sequence
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLayoutItem,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -29,6 +46,11 @@ from PySide6.QtWidgets import (
 
 from . import icons
 from .theme import current_theme, level_color, level_tint, palette, platform_color
+
+#: 表格自定义数据角色（各页共用）
+PLATFORM_ROLE = Qt.ItemDataRole.UserRole + 1
+#: 热度原始数值（float），供微型条形图计算比例
+HEAT_ROLE = Qt.ItemDataRole.UserRole + 2
 
 
 class Card(QFrame):
@@ -366,27 +388,349 @@ class TagChip(QLabel):
         )
 
 
+class TitleCandidateDelegate(QStyledItemDelegate):
+    """标题候选列表：选中项右侧出现一枚勾选标记。
+
+    「双击选用」是隐蔽且低效的操作；改成单击选中后，用一枚明确的勾号告诉用户
+    「当前用的就是这一条」，比把提示写在标题里更直白。
+    """
+
+    MARK = 16
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        if selected:
+            # 给右侧勾号让出位置，避免长标题压到标记上
+            opt.rect = option.rect.adjusted(0, 0, -(self.MARK + 18), 0)
+        super().paint(painter, opt, index)
+
+        if not selected:
+            return
+        p = palette(current_theme())
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = option.rect
+        box = QRectF(
+            rect.right() - self.MARK - 10,
+            rect.center().y() - self.MARK / 2 + 1,
+            self.MARK,
+            self.MARK,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(p.accent)))
+        painter.drawEllipse(box)
+        pen = QPen(QColor(p.on_accent), 2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawLine(
+            QPointF(box.left() + box.width() * 0.28, box.center().y()),
+            QPointF(box.left() + box.width() * 0.44, box.bottom() - box.height() * 0.30),
+        )
+        painter.drawLine(
+            QPointF(box.left() + box.width() * 0.44, box.bottom() - box.height() * 0.30),
+            QPointF(box.right() - box.width() * 0.26, box.top() + box.height() * 0.30),
+        )
+        painter.restore()
+
+
+class EditableTagChip(QFrame):
+    """可交互的标签胶囊：点胶囊复制，点右侧 × 删除。
+
+    旧版标签是一行纯文本 `#通勤穿搭 #平价好物`，既看不出有几个、也没法单独删。
+    改成一颗颗胶囊后，标签数量一眼可数，删改都是单击完成。
+    """
+
+    #: 点击胶囊正文（复制）
+    clicked = Signal(str)
+    #: 点击 × （删除）
+    removed = Signal(str)
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        theme: str = "light",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("TagPill")
+        self._text = text
+        self._theme = theme
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 2, 4, 2)
+        layout.setSpacing(4)
+
+        self.text_label = QLabel(f"#{text}")
+        self.text_label.setObjectName("TagPillText")
+        layout.addWidget(self.text_label)
+
+        self.close_button = QPushButton("×")
+        self.close_button.setObjectName("TagPillClose")
+        self.close_button.setFixedSize(16, 16)
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button.setToolTip(f"删除标签 #{text}")
+        self.close_button.clicked.connect(lambda: self.removed.emit(self._text))
+        layout.addWidget(self.close_button)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(f"点击复制 #{text}")
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+    @property
+    def tag(self) -> str:
+        return self._text
+
+    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._text)
+        super().mouseReleaseEvent(event)
+
+
+class CollapsibleSection(QWidget):
+    """可折叠分组：一行标题 + 可收起的正文区。
+
+    输入面板控件一多就会「又长又挤」，把低频项收进折叠区，
+    常用项就能拿到更大的空间。
+    """
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        icon: str = "sliders",
+        theme: str = "light",
+        expanded: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._theme = theme
+        self._icon_name = icon
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.header = QPushButton(f"  {title}")
+        self.header.setObjectName("CollapsibleHeader")
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setIconSize(QSize(14, 14))
+        self.header.toggled.connect(self._on_toggled)
+        layout.addWidget(self.header)
+
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(2, 0, 0, 0)
+        self.body_layout.setSpacing(8)
+        layout.addWidget(self.body)
+        self.body.setVisible(expanded)
+
+        self._refresh_icon()
+
+    def add(self, widget: QWidget) -> QWidget:
+        self.body_layout.addWidget(widget)
+        return widget
+
+    def add_layout(self, layout: Any) -> Any:
+        self.body_layout.addLayout(layout)
+        return layout
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.header.setChecked(expanded)
+
+    def is_expanded(self) -> bool:
+        return self.header.isChecked()
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.body.setVisible(checked)
+        self._refresh_icon()
+
+    def _refresh_icon(self) -> None:
+        p = palette(self._theme)
+        name = "chevron-down" if self.header.isChecked() else "chevron-right"
+        self.header.setIcon(icons.icon(name, p.text_sub, 14))
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self._refresh_icon()
+
+
+class StepIndicator(QFrame):
+    """生成步骤提示条：把「模型正在做什么」明明白白写出来。
+
+    等待流式输出的那几秒如果界面毫无动静，用户会怀疑是不是卡住了；
+    这里用「步骤文字 + 不确定进度条」给出持续的活动反馈。
+    """
+
+    def __init__(self, theme: str = "light", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("StepBar")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(10)
+
+        self.text_label = QLabel("")
+        self.text_label.setObjectName("StepText")
+        layout.addWidget(self.text_label)
+
+        self.bar = QProgressBar()
+        # 0/0 = 不确定进度：模型返回节奏不可预测，走「来回滚动」比假装百分比诚实
+        self.bar.setRange(0, 0)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedWidth(90)
+        self.bar.setFixedHeight(4)
+        layout.addWidget(self.bar)
+        layout.addStretch(1)
+        self.setVisible(False)
+
+    def start(self, text: str) -> None:
+        self.text_label.setText(text)
+        self.setVisible(True)
+        self.bar.setVisible(True)
+
+    def set_step(self, text: str) -> None:
+        self.text_label.setText(text)
+        if not self.isVisible():
+            self.setVisible(True)
+
+    def stop(self) -> None:
+        self.setVisible(False)
+
+
+class FilterChip(QPushButton):
+    """筛选胶囊（可选中）。
+
+    选中态由 QSS 的 ``#FilterChip:checked`` 渲染成**实心强调色 + 反白文字**，
+    未选中态是安静的描边胶囊——旧版白底紫边几乎看不出是否选中。
+    """
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        checked: bool = False,
+        tooltip: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("FilterChip")
+        self.setCheckable(True)
+        self.setChecked(checked)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        if tooltip:
+            self.setToolTip(tooltip)
+
+
+class FlowLayout(QLayout):
+    """按可用宽度自动换行的流式布局。
+
+    筛选胶囊、分类标签这类「数量不定、宽度不一」的元素用网格硬排会在窄窗口下
+    溢出，这里按行高动态折行，窗口缩放时自动重排。
+    """
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        margin: int = 0,
+        h_spacing: int = 6,
+        v_spacing: int = 6,
+    ) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._h_spacing = h_spacing
+        self._v_spacing = v_spacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    # -- QLayout 接口 ----------------------------------------------------
+    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802 - Qt 命名
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    # -- 折行计算 --------------------------------------------------------
+    def _do_layout(self, rect: QRect, *, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x, y = area.x(), area.y()
+        line_height = 0
+        for item in self._items:
+            widget = item.widget()
+            # 只跳过「被显式隐藏」的项：父窗口尚未 show 时 isVisible() 也是 False，
+            # 若按 isVisible() 判断，布局在首次计算高度时会得到 0。
+            if widget is not None and widget.isHidden():
+                continue
+            hint = item.sizeHint()
+            if line_height and x + hint.width() > area.right() + 1:
+                x = area.x()
+                y += line_height + self._v_spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._h_spacing
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + margins.bottom()
+
+
 class FlowRow(QWidget):
-    """自动换行的标签/按钮行（用 QHBoxLayout + 换行策略简化实现）。"""
+    """自动换行的标签 / 按钮行。"""
 
     def __init__(self, parent: QWidget | None = None, *, spacing: int = 6) -> None:
         super().__init__(parent)
-        from PySide6.QtWidgets import QGridLayout
-
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(spacing)
+        self._flow = FlowLayout(self, h_spacing=spacing, v_spacing=spacing)
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
         self._items: list[QWidget] = []
-        self._per_row = 8
 
-    def set_items(self, widgets: Iterable[QWidget], per_row: int = 8) -> None:
+    def set_items(self, widgets: Iterable[QWidget], per_row: int | None = None) -> None:
+        """替换全部子项。``per_row`` 仅作兼容保留：换行由布局按宽度自动决定。"""
         for widget in self._items:
-            self._grid.removeWidget(widget)
+            self._flow.removeWidget(widget)
             widget.setParent(None)
+            widget.deleteLater()
         self._items = list(widgets)
-        self._per_row = max(1, per_row)
-        for index, widget in enumerate(self._items):
-            self._grid.addWidget(widget, index // self._per_row, index % self._per_row)
+        for widget in self._items:
+            widget.setParent(self)
+            self._flow.addWidget(widget)
+            widget.show()
+        self.updateGeometry()
+
+    def items(self) -> list[QWidget]:
+        return list(self._items)
 
 
 class LineChart(QWidget):
@@ -533,6 +877,27 @@ def labeled_row(label: str, widget: QWidget, *, label_width: int = 88) -> QWidge
     return row
 
 
+def field_label(text: str, hint: str = "") -> QWidget:
+    """字段标题行：加粗字段名 + 右侧可选说明。
+
+    表单里字段一多，「标签」和「内容」就容易糊成一片；统一用 #FieldLabel
+    把字段名立起来，视线可以按标题快速跳读。
+    """
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    name = QLabel(text)
+    name.setObjectName("FieldLabel")
+    layout.addWidget(name)
+    layout.addStretch(1)
+    if hint:
+        note = QLabel(hint)
+        note.setObjectName("FieldHint")
+        layout.addWidget(note)
+    return row
+
+
 def hline() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
@@ -619,12 +984,16 @@ def make_button(
     primary: bool = False,
     danger: bool = False,
     ghost: bool = False,
+    stop: bool = False,
     tooltip: str = "",
 ) -> QPushButton:
     """统一风格的按钮工厂。"""
     button = QPushButton(text)
     if primary:
         button.setObjectName("Primary")
+    elif stop:
+        # 弱化的「中断 / 停止」：平时安静，悬停才亮红（见 #StopButton）
+        button.setObjectName("StopButton")
     elif danger:
         button.setObjectName("Danger")
     elif ghost:
@@ -720,26 +1089,33 @@ class StatusLight(QLabel):
 
     # -- 视觉 -------------------------------------------------------------
     def _render(self) -> None:
-        self.setText(f"● {self._summary}")
-        color = level_color(self._theme, self._level)
-        tint = level_tint(self._theme, self._level)
+        """始终只留一枚小圆点 + 中性文字，不画边框、不铺底色。
+
+        平台健康检查是低频信息，旧版「绿边框 + 绿底 + 绿字」比主操作按钮还显眼；
+        现在状态只由圆点颜色表达（绿=正常 / 黄=降级 / 红=失败 / 灰=就绪），
+        完整详情留在悬停提示里，页面右上角始终只有一个视觉焦点。
+        """
+        theme = self._theme
+        p = palette(theme)
+        dot_color = level_color(theme, self._level)
+        self.setText(
+            f'<span style="color:{dot_color}; font-size:9px;">●</span>'
+            f'<span style="color:{p.text_sub};"> {self._summary}</span>'
+        )
         self.setStyleSheet(
             f"#StatusLight {{"
-            f" background: {tint};"
-            f" border: 1px solid {self._border_for(color)};"
-            f" border-radius: 11px;"
-            f" padding: 2px 10px;"
+            f" background: transparent;"
+            f" border: none;"
+            f" padding: 2px 4px;"
             f" font-size: 11.5px;"
-            f" color: {color};"
             f"}}"
-            f"#StatusLight:hover {{ border-color: {level_color(self._theme, 'info')}; }}"
+            f"#StatusLight:hover {{ color: {p.text}; }}"
         )
 
-    def _border_for(self, color: str) -> str:
-        """就绪态用更淡的描边，避免常驻元素过于抢眼。"""
-        if self._level == "idle":
-            return palette(self._theme).border
-        return color
+    @property
+    def summary(self) -> str:
+        """纯文本摘要（``text()`` 现在是富文本，这里给出可断言的原文）。"""
+        return self._summary
 
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
@@ -842,6 +1218,738 @@ def platform_item(label: str, key: str) -> Any:
 
 
 # --------------------------------------------------------------------------
+# 热榜表格专用绘制：行底色 / 排名徽章 / 热度条形图 / 标题平台图标
+# --------------------------------------------------------------------------
+_HEAT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*(亿|万|w|W|k|K)?")
+
+
+def parse_heat(text: str) -> float:
+    """把「130.5万」「1.2亿」「1148823」这类热度文本还原成可比较的数值。
+
+    热度在服务层已经格式化成人话，条形图却需要原始量级，这里做一次反解。
+    解析不出来时返回 0，调用方据此退化（不画条、数字用弱化色）。
+    """
+    raw = (text or "").strip()
+    if not raw or raw in {"—", "-", "暂无", "N/A"}:
+        return 0.0
+    match = _HEAT_RE.search(raw)
+    if not match:
+        return 0.0
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return 0.0
+    unit = (match.group(2) or "").lower()
+    if unit == "亿":
+        value *= 100_000_000
+    elif unit in ("万", "w"):
+        value *= 10_000
+    elif unit == "k":
+        value *= 1_000
+    return value
+
+
+def heat_tone(theme: str, ratio: float) -> str:
+    """按「相对当前列表峰值」的比例给出热度色：红=爆、橙=热、灰=温。"""
+    p = palette(theme)
+    if ratio >= 0.6:
+        return p.heat_hot
+    if ratio >= 0.3:
+        return p.heat_warm
+    return p.heat_cool
+
+
+class RowBackgroundDelegate(QStyledItemDelegate):
+    """统一绘制行底色：悬停微亮、选中加深（暗色主题下变浅）。
+
+    选中态不再铺满强调色——整行淡紫在长列表里既刺眼，也让标题文字对比不稳。
+    改为「行底色加深 + 左侧 3px 强调色竖条」：克制，但一眼能定位到当前行。
+    """
+
+    ACCENT_BAR = 3
+
+    def _paint_row(self, painter: QPainter, option: QStyleOptionViewItem, index: Any) -> None:
+        # 悬停整行而不是「鼠标下的那个单元格」：Qt 的 State_MouseOver 只作用于单个
+        # 单元格，左右移动时整行高亮会一段一段地闪，因此改由 _RowHoverFilter 记录行号。
+        hovered_row = getattr(option.widget, "_hovered_row", -1)
+        hovered = hovered_row == index.row()
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if not (selected or hovered):
+            return
+        p = palette(current_theme())
+        # 只填自己这一格：Qt 不会把委托的画笔裁剪到单元格，若在这里 fillRect 整行，
+        # 后绘制的列会把前面列已经画好的文字整行盖掉（选中/悬停行会「变空白」）。
+        rect = option.rect
+        painter.save()
+        painter.fillRect(rect, QColor(p.row_selected if selected else p.row_hover))
+        if selected and index.column() == 0:
+            # 选中行的左侧强调竖条只由第一列负责，否则每列都会画一条
+            painter.fillRect(
+                QRect(rect.left(), rect.top(), self.ACCENT_BAR, rect.height()), QColor(p.accent)
+            )
+        painter.restore()
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        super().paint(painter, option, index)
+
+
+class _RowHoverFilter(QObject):
+    """跟踪鼠标所在的行，并只重绘受影响的两行。
+
+    整行悬停高亮需要「知道当前在哪一行」，而 Qt 只告诉委托「哪个单元格被悬停」；
+    这里在 viewport 上记录行号，顺便把重绘限制在该行，避免整表刷新造成拖影。
+    """
+
+    def __init__(self, table: Any) -> None:
+        super().__init__(table)
+        self._table = table
+        self._row = -1
+        table._hovered_row = -1
+        table.viewport().installEventFilter(self)
+
+    def _row_rect(self, row: int) -> QRect:
+        table = self._table
+        model = table.model()
+        rect = table.visualRect(model.index(row, 0))
+        last = model.columnCount() - 1
+        if last > 0:
+            rect = rect.united(table.visualRect(model.index(row, last)))
+        return rect
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 - Qt 命名
+        try:
+            if event.type() == QEvent.Type.MouseMove:
+                row = self._table.rowAt(event.position().toPoint().y())
+            elif event.type() == QEvent.Type.Leave:
+                row = -1
+            else:
+                return False
+        except RuntimeError:  # pragma: no cover - 表格已销毁
+            return False
+        if row != self._row:
+            previous, self._row = self._row, row
+            self._table._hovered_row = row
+            for candidate in (previous, row):
+                if candidate >= 0:
+                    self._table.viewport().update(self._row_rect(candidate))
+        return False
+
+
+class RankBadgeDelegate(RowBackgroundDelegate):
+    """排名列：1-3 名用金银铜圆形徽章，4-10 名深色数字，10 名以后浅灰数字。
+
+    排名是热榜里最有信息量的一列，纯文本数字扫不出重点；徽章让前三名一眼可见。
+    """
+
+    DIAMETER = 22.0
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "").strip()
+        try:
+            rank = int(float(text))
+        except ValueError:
+            rank = 0
+        p = palette(current_theme())
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = option.rect
+        if 1 <= rank <= 3:
+            color = {1: p.badge_gold, 2: p.badge_silver, 3: p.badge_bronze}[rank]
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(color)))
+            painter.drawEllipse(
+                QPointF(rect.center().x(), rect.center().y()), self.DIAMETER / 2, self.DIAMETER / 2
+            )
+            font = QFont(option.font)
+            font.setPixelSize(11)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(p.on_badge)))
+        else:
+            font = QFont(option.font)
+            font.setBold(rank <= 10)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(p.text if rank <= 10 else p.text_faint)))
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: Any) -> QSize:  # noqa: N802
+        size = super().sizeHint(option, index)
+        size.setHeight(max(size.height(), int(self.DIAMETER) + 14))
+        return size
+
+
+class HeatBarDelegate(RowBackgroundDelegate):
+    """热度列：右对齐数值 + 左侧微型条形图，并按热度高低着色。
+
+    纯数字看不出「爆」和「温」的差别；条形图给出同一列表内的相对量级，
+    颜色（红=爆 / 橙=热 / 灰=温）则给出绝对档位。
+    """
+
+    BAR_WIDTH = 34
+    BAR_HEIGHT = 4
+    GAP = 8
+    PAD = 10
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._peak = 0.0
+
+    def set_peak(self, value: float) -> None:
+        """设置当前列表的热度峰值（条形图按它归一化）。"""
+        self._peak = max(0.0, float(value or 0.0))
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "").strip()
+        raw = index.data(HEAT_ROLE)
+        try:
+            value = float(raw) if raw is not None else parse_heat(text)
+        except (TypeError, ValueError):
+            value = parse_heat(text)
+
+        theme = current_theme()
+        p = palette(theme)
+        rect = option.rect
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        font = QFont(option.font)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        label = text or "—"
+        text_width = metrics.horizontalAdvance(label)
+        text_rect = QRect(
+            rect.right() - self.PAD - text_width, rect.top(), text_width, rect.height()
+        )
+        if value <= 0:
+            painter.setPen(QPen(QColor(p.text_faint)))
+            painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignCenter), label)
+            painter.restore()
+            return
+
+        ratio = min(1.0, value / self._peak) if self._peak > 0 else 1.0
+        color = QColor(heat_tone(theme, ratio))
+        painter.setPen(QPen(color))
+        painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignCenter), label)
+
+        bar_left = rect.left() + self.PAD
+        available = text_rect.left() - self.GAP - bar_left
+        if available >= 10:
+            width = float(min(self.BAR_WIDTH, available))
+            top = rect.center().y() - self.BAR_HEIGHT / 2 + 1
+            painter.setPen(Qt.PenStyle.NoPen)
+            track = QColor(p.border_strong)
+            track.setAlpha(110)
+            painter.setBrush(QBrush(track))
+            painter.drawRoundedRect(
+                QRectF(bar_left, top, width, self.BAR_HEIGHT), 2, 2
+            )
+            painter.setBrush(QBrush(color))
+            painter.drawRoundedRect(
+                QRectF(bar_left, top, max(3.0, width * ratio), self.BAR_HEIGHT), 2, 2
+            )
+        painter.restore()
+
+
+#: 平台 → 品牌色图标里的单字（无官方 logo 授权，用品牌色 + 单字做可识别的图标）
+PLATFORM_GLYPHS: dict[str, str] = {
+    "weibo": "微",
+    "douyin": "抖",
+    "zhihu": "知",
+    "bilibili": "B",
+    "baidu": "百",
+    "toutiao": "头",
+    "rednote": "红",
+    "it-news": "IT",
+    "ai-news": "AI",
+    "60s": "60",
+}
+
+
+class TitleCellDelegate(RowBackgroundDelegate):
+    """标题列：最左侧一枚平台品牌色图标，其后是标题文字。
+
+    平台名单独占一列时，同一平台的几十行会重复同一个词，既冗余又白占宽度；
+    这里把「来源」压缩成一枚品牌色小图标挂在标题最左侧。
+    """
+
+    GLYPH = 18.0
+    GAP = 8
+    PAD = 10
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        key = str(index.data(PLATFORM_ROLE) or "")
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+        p = palette(current_theme())
+        rect = option.rect
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        left = float(rect.left() + self.PAD)
+        if key:
+            side = self.GLYPH
+            box = QRectF(left, rect.center().y() - side / 2 + 1, side, side)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(platform_color(key))))
+            painter.drawRoundedRect(box, 5, 5)
+            glyph = PLATFORM_GLYPHS.get(key) or (key[:1] or "?").upper()
+            font = QFont(option.font)
+            font.setPixelSize(10 if len(glyph) > 1 else 11)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor("#FFFFFF")))
+            painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), glyph)
+            left += side + self.GAP
+
+        font = QFont(option.font)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor(p.text)))
+        available = max(0, int(rect.right() - self.PAD - left))
+        elided = QFontMetrics(font).elidedText(text, Qt.TextElideMode.ElideRight, available)
+        painter.drawText(
+            QRect(int(left), rect.top(), available, rect.height()),
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            elided,
+        )
+        painter.restore()
+
+
+class SkeletonList(QWidget):
+    """列表骨架屏：刷新期间用占位条撑住表格区域，避免留白或闪烁。"""
+
+    ROW_HEIGHT = 34
+    BAR_HEIGHT = 8
+    #: 拿不到真实列宽时的兜底比例：(起始位置, 宽度)
+    SEGMENTS: tuple[tuple[float, float], ...] = (
+        (0.014, 0.018),
+        (0.042, 0.400),
+        (0.620, 0.085),
+        (0.730, 0.055),
+        (0.800, 0.170),
+    )
+
+    def __init__(self, parent: QWidget | None = None, *, rows: int = 9) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._rows = max(1, rows)
+        self._view: Any = None
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(60)
+        self._timer.timeout.connect(self._tick)
+        self.setVisible(False)
+
+    def attach(self, view: Any) -> "SkeletonList":
+        """挂到某个视图的 viewport 上，并跟随其尺寸变化。"""
+        self.setParent(view.viewport())
+        self._view = view
+        view.viewport().installEventFilter(self)
+        self.setGeometry(view.viewport().rect())
+        return self
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 - Qt 命名
+        if event.type() == QEvent.Type.Resize:
+            try:
+                self.setGeometry(obj.rect())
+            except RuntimeError:  # pragma: no cover - 控件已销毁
+                return False
+        return False
+
+    def start(self) -> None:
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
+        self._phase = 0.0
+        self.setVisible(True)
+        self.raise_()
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.setVisible(False)
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 0.09) % 1.0
+        self.update()
+
+    def _segments(self) -> list[tuple[float, float]]:
+        """占位条的位置：优先按表格真实列宽对齐，取不到时退回固定比例。"""
+        view = getattr(self, "_view", None)
+        if view is not None:
+            try:
+                model = view.model()
+                count = model.columnCount() if model is not None else 0
+                spans: list[tuple[float, float]] = []
+                for column in range(count):
+                    width = view.columnWidth(column)
+                    if width <= 12:
+                        continue
+                    left = view.columnViewportPosition(column)
+                    pad = 10.0
+                    usable = width - pad * 2
+                    spans.append((left + pad, max(8.0, usable * 0.6)))
+                if spans:
+                    return spans
+            except RuntimeError:  # pragma: no cover - 视图已销毁
+                pass
+        return [
+            (self.width() * start, max(6.0, self.width() * width))
+            for start, width in self.SEGMENTS
+        ]
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        p = palette(current_theme())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor(p.card))
+        row_height = max(1, min(self.ROW_HEIGHT, self.height() // self._rows))
+        bar_color = QColor(p.border_strong)
+        segments = self._segments()
+        for index in range(self._rows):
+            top = index * row_height
+            if top + row_height > self.height():
+                break
+            wave = 0.5 + 0.5 * math.sin((self._phase + index * 0.07) * 2 * math.pi)
+            painter.setOpacity(0.28 + 0.34 * wave)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(bar_color))
+            center_y = top + row_height / 2 - self.BAR_HEIGHT / 2
+            for left, bar_width in segments:
+                painter.drawRoundedRect(
+                    QRectF(left, center_y, bar_width, self.BAR_HEIGHT), 4, 4
+                )
+        painter.setOpacity(1.0)
+
+
+def attach_hot_table_visuals(
+    table: Any, *, title_column: int, rank_column: int, heat_column: int
+) -> dict[str, Any]:
+    """给热榜类表格装配「行底色 + 排名徽章 + 标题图标 + 热度条形图」。"""
+    row = RowBackgroundDelegate(table)
+    table.setItemDelegate(row)
+    rank = RankBadgeDelegate(table)
+    table.setItemDelegateForColumn(rank_column, rank)
+    heat = HeatBarDelegate(table)
+    table.setItemDelegateForColumn(heat_column, heat)
+    title = TitleCellDelegate(table)
+    table.setItemDelegateForColumn(title_column, title)
+    table.viewport().setMouseTracking(True)
+    # 整行悬停 + 按行重绘（见 _RowHoverFilter）
+    hover = _RowHoverFilter(table)
+    return {"row": row, "rank": rank, "heat": heat, "title": title, "hover": hover}
+
+
+class RowActionsDelegate(RowBackgroundDelegate):
+    """操作列：在行内绘制「前往创作 / 打开网页」两个按钮。
+
+    刻意不用 ``setCellWidget``：几百行 × 两个 QPushButton 会带来可观的构建与
+    重绘开销，而这里只需要「画出来 + 命中判断 + 悬停反馈」。
+    """
+
+    GAP = 6
+    PAD = 8
+    HEIGHT = 24
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        column: int = 0,
+        primary_text: str = "前往创作",
+        secondary_text: str = "打开网页",
+    ) -> None:
+        super().__init__(parent)
+        self._column = column
+        self._primary_text = primary_text
+        self._secondary_text = secondary_text
+        self._table: Any = None
+        self._hover: tuple[int, int] | None = None
+        #: 回调入参为行号
+        self.primary_clicked: Callable[[int], None] | None = None
+        self.secondary_clicked: Callable[[int], None] | None = None
+
+    def attach(self, table: Any) -> "RowActionsDelegate":
+        """绑定表格，用于跟踪鼠标悬停到哪个按钮上。"""
+        self._table = table
+        table.viewport().setMouseTracking(True)
+        table.viewport().installEventFilter(self)
+        return self
+
+    # -- 悬停反馈 --------------------------------------------------------
+    def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 - Qt 命名
+        table = self._table
+        if table is None:
+            return False
+        if event.type() in (QEvent.Type.MouseMove, QEvent.Type.Leave):
+            hovered: tuple[int, int] | None = None
+            if event.type() == QEvent.Type.MouseMove:
+                pos = event.position().toPoint()
+                index = table.indexAt(pos)
+                if index.isValid() and index.column() == self._column:
+                    option = QStyleOptionViewItem()
+                    option.font = table.font()
+                    cell = table.visualRect(index)
+                    for slot, box in enumerate(self._button_rects(cell, option)):
+                        if box.contains(pos):
+                            hovered = (index.row(), slot)
+                            break
+            if hovered != self._hover:
+                previous = self._hover
+                self._hover = hovered
+                # 只重绘受影响的两行：整表 update() 在大列表上会明显拖影、掉帧
+                rows = {
+                    row
+                    for row in (
+                        previous[0] if previous else -1,
+                        hovered[0] if hovered else -1,
+                    )
+                    if row >= 0
+                }
+                for row in rows:
+                    item = table.item(row, self._column)
+                    if item is not None:
+                        table.viewport().update(table.visualRect(table.indexFromItem(item)))
+        return False
+
+    # -- 绘制 ------------------------------------------------------------
+    def _button_rects(self, rect: QRect, option: QStyleOptionViewItem) -> tuple[QRect, QRect]:
+        font = QFont(option.font)
+        font.setPixelSize(12)
+        metrics = QFontMetrics(font)
+        available = max(60, rect.width() - self.PAD * 2)
+        space = max(40, available - self.GAP)
+        width_a = metrics.horizontalAdvance(self._primary_text)
+        width_b = metrics.horizontalAdvance(self._secondary_text)
+        total = max(1, width_a + width_b)
+        first_width = int(space * width_a / total)
+        top = int(rect.center().y() - self.HEIGHT / 2)
+        first = QRect(rect.left() + self.PAD, top, first_width, self.HEIGHT)
+        second = QRect(
+            first.right() + 1 + self.GAP, top, space - first_width, self.HEIGHT
+        )
+        return first, second
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        url = str(index.data(Qt.ItemDataRole.UserRole) or "")
+        first, second = self._button_rects(option.rect, option)
+        p = palette(current_theme())
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        font = QFont(option.font)
+        font.setPixelSize(12)
+        painter.setFont(font)
+        specs = (
+            (first, self._primary_text, True, True),
+            (second, self._secondary_text, False, bool(url)),
+        )
+        for slot, (box, label, primary, enabled) in enumerate(specs):
+            hovered = enabled and self._hover == (index.row(), slot)
+            if primary:
+                background = p.accent_soft if enabled else p.bg_alt
+                border = p.accent if enabled else p.border
+                foreground = p.accent if enabled else p.text_faint
+            else:
+                background = p.card_hover if enabled else p.bg_alt
+                border = p.border_strong if enabled else p.border
+                foreground = p.text_sub if enabled else p.text_faint
+            if hovered:
+                background = p.accent_soft
+                border = p.accent
+                foreground = p.accent
+            painter.setPen(QPen(QColor(border), 1))
+            painter.setBrush(QBrush(QColor(background)))
+            painter.drawRoundedRect(QRectF(box), 6, 6)
+            painter.setPen(QPen(QColor(foreground)))
+            painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), label)
+        painter.restore()
+
+    # -- 命中 ------------------------------------------------------------
+    def editorEvent(  # noqa: N802
+        self, event: Any, model: Any, option: QStyleOptionViewItem, index: Any
+    ) -> bool:
+        if index.column() != self._column:
+            return False
+        if event.type() != QEvent.Type.MouseButtonRelease:
+            return False
+        if event.button() != Qt.MouseButton.LeftButton:
+            return False
+        try:
+            pos = event.position().toPoint()
+        except AttributeError:  # pragma: no cover - 极老版本 Qt
+            pos = event.pos()
+        first, second = self._button_rects(option.rect, option)
+        if first.contains(pos):
+            if self.primary_clicked is not None:
+                self.primary_clicked(index.row())
+            return True
+        url = str(index.data(Qt.ItemDataRole.UserRole) or "")
+        if second.contains(pos) and url:
+            if self.secondary_clicked is not None:
+                self.secondary_clicked(index.row())
+            return True
+        return False
+
+
+class CategoryPicker(QPushButton):
+    """垂类选择器：一枚胶囊按钮 + 「两列铺开、可滚动」的复选弹层。
+
+    垂类有二十多个，全部摊在筛选区会把列表挤没；做成弹层后既能一次看全，
+    又不占用列表高度。弹层用自带 ``Qt.Popup`` 的浮层 + 滚动区实现——
+    ``QMenu`` + ``QWidgetAction`` 在条目多时尺寸协商不稳，会出现选项互相压字。
+    """
+
+    changed = Signal()
+
+    #: 弹层最大高度：超出后由滚动条接管（用户明确要求「放不下就给滚动条」）
+    MAX_HEIGHT = 340
+
+    def __init__(self, parent: QWidget | None = None, *, columns: int = 2) -> None:
+        super().__init__("垂类：全部", parent)
+        from PySide6.QtWidgets import QGridLayout, QScrollArea, QVBoxLayout
+
+        self.setObjectName("FilterChip")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._columns = max(1, columns)
+        self._selected: set[str] = set()
+        self._boxes: dict[str, Any] = {}
+
+        self._popup = QFrame(self, Qt.WindowType.Popup)
+        self._popup.setObjectName("PopupPanel")
+        self._popup.setFrameShape(QFrame.Shape.NoFrame)
+        outer = QVBoxLayout(self._popup)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(0)
+
+        self._area = QScrollArea(self._popup)
+        self._area.setWidgetResizable(True)
+        self._area.setFrameShape(QFrame.Shape.NoFrame)
+        self._area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._panel = QWidget()
+        self._grid = QGridLayout(self._panel)
+        self._grid.setContentsMargins(8, 6, 8, 6)
+        self._grid.setHorizontalSpacing(18)
+        self._grid.setVerticalSpacing(4)
+        self._area.setWidget(self._panel)
+        outer.addWidget(self._area)
+
+        self.clicked.connect(self._toggle_popup)
+
+    # -- 数据 ------------------------------------------------------------
+    def set_categories(self, counts: Sequence[tuple[str, int]]) -> None:
+        """按「垂类（数量）」重建两列选项。
+
+        已选中但当前平台下没有数据的垂类会被保留（数量记 0）——否则用户切换平台后
+        勾选项会莫名消失，看起来像是筛选自己失效了。
+        """
+        from PySide6.QtWidgets import QCheckBox
+
+        for box in self._boxes.values():
+            self._grid.removeWidget(box)
+            box.setParent(None)
+            box.deleteLater()
+        self._boxes.clear()
+
+        options = list(counts)
+        known = {name for name, _count in options}
+        options += [(name, 0) for name in sorted(self._selected - known)]
+        for index, (name, count) in enumerate(options):
+            box = QCheckBox(f"{name}（{count}）")
+            box.setChecked(name in self._selected)
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            box.stateChanged.connect(lambda _state, n=name: self._on_toggle(n))
+            self._grid.addWidget(box, index // self._columns, index % self._columns)
+            self._boxes[name] = box
+        self._sync_label()
+        self._resize_popup()
+
+    def selected(self) -> list[str]:
+        return [name for name in self._boxes if name in self._selected]
+
+    def clear_selection(self) -> None:
+        if not self._selected:
+            return
+        self._selected.clear()
+        for box in self._boxes.values():
+            box.blockSignals(True)
+            box.setChecked(False)
+            box.blockSignals(False)
+        self._sync_label()
+        self.changed.emit()
+
+    def _on_toggle(self, name: str) -> None:
+        box = self._boxes.get(name)
+        if box is None:
+            return
+        if box.isChecked():
+            self._selected.add(name)
+        else:
+            self._selected.discard(name)
+        self._sync_label()
+        self.changed.emit()
+
+    def _sync_label(self) -> None:
+        chosen = self.selected()
+        if not chosen:
+            self.setText("垂类：全部")
+            self.setToolTip("当前不限垂类")
+            return
+        if len(chosen) == 1:
+            self.setText(f"垂类：{chosen[0]}")
+        else:
+            self.setText(f"垂类：{chosen[0]} 等 {len(chosen)} 项")
+        self.setToolTip("已选垂类：" + "、".join(chosen))
+
+    # -- 弹层 ------------------------------------------------------------
+    def _resize_popup(self) -> None:
+        """按实际内容定尺寸：装得下就贴合，装不下就固定最大高度并交给滚动条。"""
+        hint = self._panel.sizeHint()
+        margins = self._area.frameWidth() * 2 + 12
+        width = max(220, hint.width() + margins + 18)
+        # 多给 6px 余量，避免内容刚好贴合时冒出一条用不上的滚动条
+        height = hint.height() + margins + 6
+        self._popup.setFixedSize(width, min(self.MAX_HEIGHT, height))
+
+    def _toggle_popup(self) -> None:
+        if self._popup.isVisible():
+            self._popup.hide()
+            return
+        self._resize_popup()
+        # 让浮层尽量与按钮左对齐；右侧越界时向左回收，避免跑出窗口
+        origin = self.mapToGlobal(QPoint(0, self.height() + 4))
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            if origin.x() + self._popup.width() > available.right():
+                origin.setX(max(available.left(), available.right() - self._popup.width()))
+        self._popup.move(origin)
+        self._popup.show()
+        self._popup.raise_()
+
+
+# --------------------------------------------------------------------------
 # 让每个组件成为「构建宿主」
 # --------------------------------------------------------------------------
 # 组件 __init__ 里创建的裸控件（如 QLabel(title)）会直接挂到组件名下，
@@ -858,11 +1966,17 @@ for _component_cls in (
     StatusLight,
     Toast,
     TagChip,
+    EditableTagChip,
+    CollapsibleSection,
+    StepIndicator,
+    FilterChip,
+    CategoryPicker,
     FlowRow,
     LineChart,
     ScrollArea,
     BusyOverlay,
     ConfirmBar,
+    SkeletonList,
 ):
     _qt_guard.guarded_init(_component_cls)
 del _component_cls

@@ -19,6 +19,9 @@ class Palette:
     bg_alt: str
     card: str
     card_hover: str
+    # 输入控件底色：暗色下刻意比卡片再亮一档，
+    # 否则「深灰输入框」压在「深灰卡片」上，边界糊成一片、看不出哪里可以输入
+    input_bg: str
     # 描边
     border: str
     border_strong: str
@@ -26,6 +29,18 @@ class Palette:
     text: str
     text_sub: str
     text_faint: str
+    # 列表选中行底色：浅色主题下「加深」、暗色主题下「提亮」，
+    # 刻意不用强调色铺底——大面积淡紫会让长列表显得刺眼，也难以与文字形成稳定对比。
+    row_selected: str
+    row_hover: str
+    # 热度分级（爆 / 热 / 温）与排名徽章（金 / 银 / 铜）
+    heat_hot: str
+    heat_warm: str
+    heat_cool: str
+    badge_gold: str
+    badge_silver: str
+    badge_bronze: str
+    on_badge: str
     # 强调色（淡紫）
     accent: str
     accent_hover: str
@@ -53,11 +68,21 @@ LIGHT = Palette(
     bg_alt="#EDE9F6",
     card="#FFFFFF",
     card_hover="#F8F6FD",
+    input_bg="#FFFFFF",
     border="#E7E1F3",
     border_strong="#D5CDE7",
     text="#231D33",
     text_sub="#6A6280",
     text_faint="#A29BB5",
+    row_selected="#EFE9FA",
+    row_hover="#F9F7FE",
+    heat_hot="#E5453B",
+    heat_warm="#D98410",
+    heat_cool="#9A93AC",
+    badge_gold="#D9A22B",
+    badge_silver="#98A2B3",
+    badge_bronze="#C07B45",
+    on_badge="#FFFFFF",
     accent="#7C5CE6",
     accent_hover="#6A49D6",
     accent_soft="#F1ECFD",
@@ -82,11 +107,22 @@ DARK = Palette(
     bg_alt="#2A2731",
     card="#2E2B37",
     card_hover="#35323F",
+    # 比卡片亮一档：让「可输入」这件事在暗色下也一眼看得出来
+    input_bg="#3B3748",
     border="#3C3846",
     border_strong="#4B4657",
     text="#EDEAF4",
     text_sub="#ADA7BE",
     text_faint="#7E7891",
+    row_selected="#3A3547",
+    row_hover="#35323F",
+    heat_hot="#F2786F",
+    heat_warm="#E9A93C",
+    heat_cool="#8B85A0",
+    badge_gold="#C99A34",
+    badge_silver="#8E97A8",
+    badge_bronze="#A96C3C",
+    on_badge="#1B1823",
     accent="#A98BF7",
     accent_hover="#B79CF9",
     accent_soft="#382F4E",
@@ -148,9 +184,56 @@ def platform_color(key: str) -> str:
     return PLATFORM_COLORS.get((key or "").lower(), PLATFORM_COLORS["unknown"])
 
 
+# --------------------------------------------------------------------------
+# 勾号图标
+# --------------------------------------------------------------------------
+# QSS 的 ::indicator 只支持贴图片，画不出矢量勾，所以按主题色生成一张 PNG 缓存复用。
+_CHECK_ICON_CACHE: dict[str, str] = {}
+
+
+def check_icon_url(color: str) -> str:
+    """生成勾号图标并返回 QSS 可用的路径；失败时返回空串（退化为纯色块）。"""
+    if color in _CHECK_ICON_CACHE:
+        return _CHECK_ICON_CACHE[color]
+    url = ""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+
+        from .. import paths
+
+        target = paths.cache_dir() / f"check-{color.lstrip('#').lower()}.png"
+        if not target.exists():
+            side = 32  # 2x，缩放到 15px 的指示器仍然清晰
+            pixmap = QPixmap(side, side)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(
+                QPen(
+                    QColor(color),
+                    side * 0.17,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
+            painter.drawLine(int(side * 0.24), int(side * 0.52), int(side * 0.43), int(side * 0.72))
+            painter.drawLine(int(side * 0.43), int(side * 0.72), int(side * 0.77), int(side * 0.28))
+            painter.end()
+            pixmap.save(str(target), "PNG")
+        url = target.as_posix()
+    except Exception:  # noqa: BLE001 - 生成失败不影响主题加载
+        url = ""
+    _CHECK_ICON_CACHE[color] = url
+    return url
+
+
 def build_qss(theme: str) -> str:
     """生成全局样式表。"""
     p = palette(theme)
+    check_url = check_icon_url(p.on_accent)
+    check_image = f"image: url({check_url});" if check_url else ""
     return f"""
 * {{
     font-family: {FONT_FAMILY};
@@ -159,12 +242,18 @@ def build_qss(theme: str) -> str:
     outline: none;
 }}
 
-QWidget {{
+QMainWindow, QDialog {{
     background: {p.bg};
 }}
 
-QMainWindow, QDialog {{
-    background: {p.bg};
+/* 刻意**不**给所有 QWidget 刷背景色。
+   QSS 里一旦写了通配的 QWidget 背景规则，它同样会作用到卡片、顶栏内部那些
+   作为布局容器的裸 QWidget 上：于是白色卡片里会浮出一块比卡片更深的页面底色矩形
+   （平台筛选行、搜索行都中过招）。容器默认透明后，底色统一由卡片/顶栏决定。 */
+
+/* 文本类控件一律透明背景，避免在卡片里形成暗色块（QFormLayout 自动生成的标签尤其明显）。 */
+QLabel, QCheckBox, QRadioButton, QGroupBox {{
+    background: transparent;
 }}
 
 /* ---------- 顶栏 ---------- */
@@ -172,10 +261,18 @@ QMainWindow, QDialog {{
     background: {p.topbar};
     border-bottom: 1px solid {p.border};
 }}
+/* 顶栏内的容器控件必须显式透明：全局 QWidget 规则会把它们的底色刷成页面背景，
+   于是「Stent」品牌区会比顶栏其它地方深一块，看起来像贴了一张脏色块。 */
+#TopBar QWidget {{
+    background: transparent;
+}}
+#BrandBox {{
+    background: transparent;
+}}
 #BrandName {{
     font-size: 16px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
     color: {p.accent};
 }}
 #BrandSub {{
@@ -191,6 +288,33 @@ QMainWindow, QDialog {{
 #TopBar QPushButton:hover {{
     background: {p.accent_soft};
     border-color: {p.border};
+}}
+
+/* ---------- 窗口控制按钮（无边框窗口自绘标题栏）---------- */
+#TopBar QPushButton#WindowButton,
+#TopBar QPushButton#CloseButton {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0;
+}}
+#TopBar QPushButton#WindowButton:hover {{
+    background: {p.bg_alt};
+    border: none;
+}}
+#TopBar QPushButton#WindowButton:pressed {{
+    background: {p.border};
+}}
+#TopBar QPushButton#WindowButton:disabled {{
+    background: transparent;
+}}
+#TopBar QPushButton#CloseButton:hover {{
+    background: {p.danger};
+    border: none;
+}}
+#TopBar QPushButton#CloseButton:pressed {{
+    background: {p.danger};
+    border: none;
 }}
 
 /* ---------- 侧栏 ---------- */
@@ -242,19 +366,20 @@ QMainWindow, QDialog {{
     border-radius: 10px;
 }}
 #CardTitle {{
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
 }}
 #CardHint {{
-    font-size: 12px;
+    font-size: 12.5px;
     color: {p.text_sub};
 }}
 #PageTitle {{
-    font-size: 20px;
-    font-weight: 600;
+    font-size: 23px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
 }}
 #PageSubtitle {{
-    font-size: 12.5px;
+    font-size: 13px;
     color: {p.text_sub};
 }}
 #SectionLabel {{
@@ -286,16 +411,16 @@ QMainWindow, QDialog {{
 }}
 
 /* ---------- 状态指示灯 ---------- */
+/* 健康检查属于低频信息：默认无边框、无底色，只有真正异常时才着色，
+   这样页面右上角的视觉焦点始终留给主操作按钮。 */
 #StatusLight {{
-    background: {p.bg_alt};
-    border: 1px solid {p.border};
-    border-radius: 11px;
-    padding: 2px 10px;
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
     font-size: 11.5px;
     color: {p.text_sub};
 }}
 #StatusLight:hover {{
-    border-color: {p.accent};
     color: {p.text};
 }}
 
@@ -351,27 +476,252 @@ QPushButton#Ghost:hover {{
     color: {p.text};
 }}
 
-/* ---------- 输入控件 ---------- */
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
+/* ---------- 中断按钮 ---------- */
+/* 弱化处理：平时只是一枚安静的灰字按钮，不跟紫色主操作抢焦点；
+   悬停时才亮出红底红字，符合「停止 / 危险操作」的心理模型。 */
+QPushButton#StopButton {{
+    background: transparent;
+    border: 1px solid {p.border};
+    color: {p.text_sub};
+    padding: 6px 13px;
+}}
+QPushButton#StopButton:hover {{
+    background: {p.tint_error};
+    border-color: {p.danger};
+    color: {p.danger};
+}}
+QPushButton#StopButton:pressed {{
+    background: {p.danger};
+    border-color: {p.danger};
+    color: #FFFFFF;
+}}
+QPushButton#StopButton:disabled {{
+    background: transparent;
+    border-color: {p.border};
+    color: {p.text_faint};
+}}
+
+/* ---------- 底部操作栏（吸底） ---------- */
+/* 卡片底部固定一条操作栏：上方用细分隔线切开，即使正文很长也一直可见可点。
+   卡片圆角是 10px，这里要给底边补上同样的圆角，否则矩形会顶出圆角外。 */
+#ActionBar {{
+    background: {p.card};
+    border: none;
+    border-top: 1px solid {p.border};
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+}}
+
+/* ---------- 字段标签 ---------- */
+#FieldLabel {{
+    font-size: 12.5px;
+    font-weight: 600;
+    color: {p.text_sub};
+    background: transparent;
+}}
+#FieldHint {{
+    font-size: 11.5px;
+    color: {p.text_faint};
+    background: transparent;
+}}
+
+/* ---------- 可折叠分组 ---------- */
+QPushButton#CollapsibleHeader {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 6px;
+    color: {p.text_sub};
+    font-size: 12.5px;
+    font-weight: 600;
+    text-align: left;
+}}
+QPushButton#CollapsibleHeader:hover {{
+    background: {p.bg_alt};
+    color: {p.text};
+}}
+
+/* ---------- 生成步骤提示条 ---------- */
+#StepBar {{
+    background: {p.accent_soft};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+}}
+#StepText {{
+    color: {p.accent};
+    font-size: 12.5px;
+    font-weight: 600;
+    background: transparent;
+}}
+#StepBar QProgressBar {{
+    background: {p.border};
+    border: none;
+    border-radius: 2px;
+    height: 4px;
+    max-height: 4px;
+}}
+#StepBar QProgressBar::chunk {{
+    background: {p.accent};
+    border-radius: 2px;
+}}
+
+/* ---------- 标签胶囊（可点击复制 / 可删除） ---------- */
+#TagPill {{
+    background: {p.accent_soft};
+    border: 1px solid transparent;
+    border-radius: 11px;
+}}
+#TagPill:hover {{
+    border-color: {p.accent};
+}}
+#TagPillText {{
+    color: {p.accent};
+    font-size: 12px;
+    background: transparent;
+}}
+#TagPillClose {{
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 0;
+    color: {p.text_faint};
+    font-size: 13px;
+    font-weight: 600;
+}}
+#TagPillClose:hover {{
+    background: {p.danger};
+    color: #FFFFFF;
+}}
+#TagAddEdit {{
+    background: {p.input_bg};
+    border: 1px dashed {p.border_strong};
+    border-radius: 11px;
+    padding: 2px 10px;
+    min-height: 18px;
+    color: {p.text};
+    font-size: 12px;
+}}
+#TagAddEdit:focus {{
+    border: 1px solid {p.accent};
+}}
+
+/* ---------- 标题候选 ---------- */
+QListWidget#TitleList {{
+    background: {p.input_bg};
+    border: 1px solid {p.border_strong};
+    border-radius: 7px;
+    padding: 4px;
+}}
+QListWidget#TitleList::item {{
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: {p.text};
+}}
+QListWidget#TitleList::item:hover {{ background: {p.bg_alt}; }}
+QListWidget#TitleList::item:selected {{
+    background: {p.accent_soft};
+    color: {p.accent};
+    font-weight: 600;
+}}
+
+/* ---------- 筛选胶囊 ---------- */
+/* 选中态用「实心强调色 + 反白文字」，未选中态保持安静的描边胶囊。
+   旧版是白底 + 紫色描边，选中与否几乎看不出来。 */
+QPushButton#FilterChip {{
+    background: transparent;
+    border: 1px solid {p.border_strong};
+    border-radius: 13px;
+    padding: 3px 13px;
+    min-height: 20px;
+    color: {p.text_sub};
+    font-size: 12.5px;
+}}
+QPushButton#FilterChip:hover {{
+    background: {p.bg_alt};
+    border-color: {p.accent};
+    color: {p.text};
+}}
+QPushButton#FilterChip:checked {{
+    background: {p.accent};
+    border-color: {p.accent};
+    color: {p.on_accent};
+    font-weight: 600;
+}}
+QPushButton#FilterChip:checked:hover {{
+    background: {p.accent_hover};
+    border-color: {p.accent_hover};
+}}
+
+/* ---------- 表格行内操作 ---------- */
+QPushButton#RowAction {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 3px 8px;
+    color: {p.accent};
+    font-size: 12px;
+    text-align: center;
+}}
+QPushButton#RowAction:hover {{
+    background: {p.accent_soft};
+    border-color: {p.accent};
+}}
+QPushButton#RowAction:disabled {{
+    color: {p.text_faint};
+    background: transparent;
+    border-color: transparent;
+}}
+
+/* ---------- 表头浮层（两列垂类选择器 / 下拉弹层） ---------- */
+#PopupPanel {{
     background: {p.card};
     border: 1px solid {p.border_strong};
-    border-radius: 6px;
-    padding: 6px 9px;
+    border-radius: 8px;
+}}
+#PopupPanel QScrollArea {{
+    background: transparent;
+    border: none;
+}}
+#PopupPanel QWidget {{
+    background: transparent;
+}}
+#PopupPanel QCheckBox {{
+    padding: 1px 2px;
+}}
+
+/* ---------- 输入控件 ---------- */
+/* 输入框用比卡片更亮的 input_bg + 明确描边：
+   暗色主题下如果沿用卡片底色，输入框会「陷进」卡片里，看不出哪里能打字。 */
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
+    background: {p.input_bg};
+    border: 1px solid {p.border_strong};
+    border-radius: 7px;
+    padding: 7px 10px;
     selection-background-color: {p.accent};
     selection-color: {p.on_accent};
+}}
+QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover,
+QSpinBox:hover, QDoubleSpinBox:hover {{
+    border-color: {p.text_faint};
 }}
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
     border-color: {p.accent};
 }}
-QLineEdit:disabled, QTextEdit:disabled {{
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {{
     background: {p.bg_alt};
     color: {p.text_faint};
+    border-color: {p.border};
+}}
+/* 只读输入框（如「内容类型」自动填充值）：弱化底色，暗示不用手输 */
+QLineEdit:read-only {{
+    background: {p.bg_alt};
+    color: {p.text_sub};
 }}
 QComboBox {{
-    background: {p.card};
+    background: {p.input_bg};
     border: 1px solid {p.border_strong};
-    border-radius: 6px;
-    padding: 5px 10px;
+    border-radius: 7px;
+    padding: 6px 10px;
     min-height: 20px;
 }}
 QComboBox:hover {{ border-color: {p.accent}; }}
@@ -392,9 +742,21 @@ QCheckBox::indicator, QRadioButton::indicator {{
 }}
 QCheckBox::indicator {{ border-radius: 4px; }}
 QRadioButton::indicator {{ border-radius: 8px; }}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+    border-color: {p.accent};
+}}
+QCheckBox::indicator:checked {{
     background: {p.accent};
     border-color: {p.accent};
+    {check_image}
+}}
+QRadioButton::indicator:checked {{
+    background: {p.accent};
+    border-color: {p.accent};
+}}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    background: {p.bg_alt};
+    border-color: {p.border};
 }}
 QSlider::groove:horizontal {{ height: 4px; background: {p.border}; border-radius: 2px; }}
 QSlider::handle:horizontal {{
@@ -418,18 +780,48 @@ QListWidget::item:hover {{ background: {p.card_hover}; }}
 QListWidget::item:selected {{ background: {p.accent_soft}; color: {p.text}; }}
 QTableWidget {{
     gridline-color: {p.border};
-    selection-background-color: {p.accent_soft};
+    background: {p.card};
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    selection-background-color: transparent;
     selection-color: {p.text};
+}}
+/* 选中与悬停的行底色由委托统一绘制（见 RowHoverDelegate）：
+   QSS 只负责"不要用系统高亮色盖住它"，避免出现紫色大色块。 */
+QTableWidget::item {{
+    padding: 7px 10px;
+    border: none;
+    background: transparent;
+}}
+QTableWidget::item:selected,
+QTableWidget::item:hover {{
+    background: transparent;
+    color: {p.text};
+}}
+QHeaderView {{
+    background: transparent;
+    border: none;
 }}
 QHeaderView::section {{
     background: {p.bg_alt};
     border: none;
     border-bottom: 1px solid {p.border};
-    padding: 6px 8px;
+    padding: 9px 10px;
     color: {p.text_sub};
+    font-size: 12px;
     font-weight: 600;
 }}
-QTableWidget::item {{ padding: 4px; }}
+QHeaderView::section:first {{
+    border-top-left-radius: 8px;
+}}
+QHeaderView::section:last {{
+    border-top-right-radius: 8px;
+}}
+QTableCornerButton::section {{
+    background: {p.bg_alt};
+    border: none;
+}}
 
 /* ---------- 滚动条 ---------- */
 QScrollBar:vertical {{

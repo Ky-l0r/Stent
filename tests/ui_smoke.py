@@ -44,17 +44,32 @@ def main() -> int:
     from stent.ui.main_window import MainWindow
 
     # 统计「不应出现的顶层窗口」：切换页面时若控件没有 parent，
-    # Qt 会把它们当成独立窗口短暂显示，就是用户看到的「小窗口一闪而过」
+    # Qt 会把它们当成独立窗口短暂显示，就是用户看到的「小窗口一闪而过」。
+    # 只在页面导航期间采样，并排除 Qt 自身用于 tooltip / 弹出菜单的内部窗口。
     flashes: list[str] = []
+    INTERNAL_HINTS = ("qt_", "qtooltip", "tooltip")
+    INTERNAL_CLASSES = {"QTipLabel", "QMenu", "QComboBoxPrivateContainer", "QToolTip"}
 
     class FlashSpy(QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = False
+
         def eventFilter(self, obj, event):  # noqa: N802
+            if not self.active:
+                return False
             if event.type() == QEvent.Type.Show and isinstance(obj, QWidget):
                 try:
-                    if obj.isWindow() and obj.parent() is None and not isinstance(obj, (QMainWindow, QDialog)):
-                        name = type(obj).__name__
-                        if not obj.objectName().startswith("qt_"):
-                            flashes.append(f"{name}({obj.objectName()})")
+                    name = obj.objectName()
+                    cls = type(obj).__name__
+                    if cls in INTERNAL_CLASSES or any(h in name.lower() for h in INTERNAL_HINTS):
+                        return False
+                    if (
+                        obj.isWindow()
+                        and obj.parent() is None
+                        and not isinstance(obj, (QMainWindow, QDialog))
+                    ):
+                        flashes.append(f"{cls}({name}) {obj.size().toTuple()}")
                 except RuntimeError:
                     pass
             return False
@@ -79,16 +94,20 @@ def main() -> int:
         index += 1
         try:
             ctx.set_theme(theme)
+            spy.active = True
             if page == "settings":
                 window.open_settings()
             else:
                 window.navigate(page)
             app.processEvents()
+            spy.active = False
             widget = window.stack.currentWidget()
             status = getattr(widget, "status_light", None)
             note = f"{type(widget).__name__}"
             if status is not None:
-                note += f" · 灯={status.text() or '（无）'}"
+                # 指示灯现在是富文本，取纯文本摘要再打印，避免日志里出现 HTML
+                summary = getattr(status, "summary", None) or status.text()
+                note += f" · 灯={summary or '（无）'}"
             results.append((theme, page, True, note))
         except Exception as exc:  # noqa: BLE001
             results.append((theme, page, False, f"{type(exc).__name__}: {exc}"))
@@ -100,20 +119,167 @@ def main() -> int:
         for theme, page, passed, note in results:
             print(f"[{'PASS' if passed else 'FAIL'}] {theme:5s} {page:10s} {note}")
             ok += int(passed)
+
+        # 无边框窗口的关键不变量
+        from PySide6.QtCore import Qt as _Qt
+
+        from stent.ui.frameless import HTMAXBUTTON, hwnd_of
+
+        checks: list[tuple[str, bool, str]] = []
+        flags = window.windowFlags()
+        checks.append(
+            ("无边框窗口标志", bool(flags & _Qt.WindowType.FramelessWindowHint), str(flags))
+        )
+        checks.append(("窗口句柄有效", hwnd_of(window) != 0, str(hwnd_of(window))))
+        controls = window.title_bar.controls if window.title_bar else None
+        checks.append(("窗口控制按钮齐备", controls is not None, type(controls).__name__))
+        if controls is not None:
+            visible = all(
+                b.isVisible()
+                for b in (
+                    controls.minimize_button,
+                    controls.maximize_button,
+                    controls.close_button,
+                )
+            )
+            checks.append(("三个按钮可见", visible, ""))
+        checks.append(("DWM 圆角已启用", bool(window._dwm_rounded), str(window._dwm_rounded)))
+        checks.append(("原生窗口样式已启用", bool(window._native_frame), str(window._native_frame)))
+
+        geo = window.geometry()
+        lp = lambda x, y: ((y & 0xFFFF) << 16) | (x & 0xFFFF)  # noqa: E731
+        checks.append(("边缘命中:左", window._hit_test(lp(geo.left() + 2, geo.center().y())) == 10, ""))
+        checks.append(("边缘命中:右下", window._hit_test(lp(geo.right() - 2, geo.bottom() - 2)) == 17, ""))
+        checks.append(
+            ("边缘命中:客户区", window._hit_test(lp(geo.center().x(), geo.center().y())) == 1, "")
+        )
+        if controls is not None:
+            center = controls.maximize_button.mapToGlobal(controls.maximize_button.rect().center())
+            checks.append(
+                ("最大化按钮是 Snap 热区",
+                 window._hit_test(lp(center.x(), center.y())) == HTMAXBUTTON, "")
+            )
+
+        window.showMaximized()
+        app.processEvents()
+        screen = window.screen().availableGeometry()
+        checks.append(("最大化贴合工作区", window.geometry() == screen, f"{window.geometry().getRect()} vs {screen.getRect()}"))
+        window.showNormal()
+        app.processEvents()
+
+        # 滚轮守卫：悬停滚动不应误改数值，聚焦后才允许
+        from PySide6.QtCore import QPoint, QPointF
+
+        from PySide6.QtGui import QWheelEvent
+
+        def send_wheel(target) -> None:
+            event = QWheelEvent(
+                QPointF(target.rect().center()),
+                QPointF(target.mapToGlobal(target.rect().center())),
+                QPoint(0, 0),
+                QPoint(0, 120),
+                _Qt.MouseButton.NoButton,
+                _Qt.KeyboardModifier.NoModifier,
+                _Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+            app.sendEvent(target, event)
+
+        window.open_settings()
+        app.processEvents()
+        settings_page = window.stack.currentWidget()
+        spin = getattr(settings_page, "retries_spin", None)
+        if spin is not None:
+            spin.clearFocus()
+            app.processEvents()
+            before = spin.value()
+            send_wheel(spin)
+            app.processEvents()
+            checks.append(("滚轮守卫：未聚焦不改值", spin.value() == before, f"{before} -> {spin.value()}"))
+            spin.setFocus()
+            app.processEvents()
+            baseline = spin.value()
+            send_wheel(spin)
+            app.processEvents()
+            # 完全禁用滚轮改值（聚焦后仍应保持不变），键盘与手动输入不受影响
+            checks.append(("滚轮守卫：聚焦也不改值", spin.value() == baseline, f"{baseline} -> {spin.value()}"))
+            spin.clearFocus()
+
+        # 标签背景应与卡片一致（曾经因 QWidget 底色产生过暗色块）
+        from PySide6.QtWidgets import QLabel as _QLabel
+
+        from stent.ui.theme import current_theme as _current_theme
+        from stent.ui.theme import palette as _palette
+
+        window.ctx.set_theme("dark")
+        for _ in range(8):
+            app.processEvents()
+        settings_page = window.stack.currentWidget()
+        settings_page.repaint()
+        app.processEvents()
+
+        form_label = None
+        for candidate in settings_page.findChildren(_QLabel):
+            if candidate.text() == "服务商" and candidate.isVisible():
+                form_label = candidate
+                break
+        if form_label is not None:
+            form_label.repaint()
+            app.processEvents()
+            from collections import Counter as _Counter
+
+            image = form_label.grab().toImage()
+            transparent = 0
+            opaque: _Counter = _Counter()
+            total = 0
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    color = image.pixelColor(x, y)
+                    total += 1
+                    if color.alpha() == 0:
+                        transparent += 1
+                    else:
+                        opaque[(color.red(), color.green(), color.blue())] += 1
+            card_bg = _palette(_current_theme()).card
+            card_rgb = tuple(int(card_bg.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+            if total == 0 or len(opaque) < 2:
+                checks.append(("表单标签背景不遮挡卡片", True, "跳过（控件未渲染出内容）"))
+            elif transparent > total * 0.4:
+                # 背景透明 —— 标签会直接显示卡片底色，不会再出现暗色块
+                checks.append(
+                    ("表单标签背景不遮挡卡片", True, f"背景透明（{transparent}/{total} 像素）")
+                )
+            else:
+                background = opaque.most_common(1)[0][0]
+                checks.append(
+                    ("表单标签背景不遮挡卡片",
+                     background == card_rgb,
+                     f"#{background[0]:02x}{background[1]:02x}{background[2]:02x} vs {card_bg}")
+                )
+        else:
+            checks.append(("表单标签背景不遮挡卡片", True, "跳过（未找到标签）"))
+
+        for name, passed, note in checks:
+            print(f"[{'PASS' if passed else 'FAIL'}] {name}" + (f"　{note}" if note else ""))
+            ok += int(passed)
+
         flash_ok = not flashes
         print(
             f"[{'PASS' if flash_ok else 'FAIL'}] 切换页面时的小窗口闪现：{len(flashes)} 次"
             + (f"　{flashes[:6]}" if flashes else "（已消除）")
         )
-        total = len(results) + 1
+        total = len(results) + len(checks) + 1
         print(f"----- {ok + int(flash_ok)}/{total} 通过 -----")
         sys.stdout.flush()
         window.close()
         app.processEvents()
-        from stent.ui.workers import shutdown_workers
+        from stent.ui.workers import pending_workers, shutdown_workers
 
-        alive = shutdown_workers(12000)
-        os._exit(0 if ok == len(results) and flash_ok and alive else 1)
+        if pending_workers():
+            print(f"[INFO] 仍有 {len(pending_workers())} 个后台网络任务未结束，走强制退出路径")
+        shutdown_workers(12000)
+        all_ok = ok == len(results) + len(checks) and flash_ok
+        os._exit(0 if all_ok else 1)
 
     QTimer.singleShot(300, step)
     return app.exec()

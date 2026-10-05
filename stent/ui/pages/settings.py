@@ -201,6 +201,14 @@ class SettingsPage(BasePage):
 
         self.auto_sync_box = QCheckBox("启动后自动同步一次数据分析指标")
         card.add(self.auto_sync_box)
+
+        self.animations_box = QCheckBox("启用窗口过渡动画（最大化 / 还原 / 最小化）")
+        self.animations_box.setToolTip(
+            "Qt 界面为 CPU 渲染，1920×1080 单帧重绘约 29ms，动画帧率上限 35~40fps，\n"
+            "大窗口下可能不够跟手，因此默认关闭（瞬间切换更利落）。\n"
+            "开启后 Snap、圆角、阴影等其余行为不受影响。"
+        )
+        card.add(self.animations_box)
         return card
 
     def _build_storage_card(self) -> QWidget:
@@ -281,6 +289,7 @@ class SettingsPage(BasePage):
         for key_name, box in self.platform_checks.items():
             box.setChecked(key_name in enabled)
         self.auto_sync_box.setChecked(bool(cfg.analytics_auto_sync))
+        self.animations_box.setChecked(bool(getattr(cfg, "ui_animations", False)))
 
         self.paths_label.setText(
             f"数据目录：{paths.data_dir()}\n"
@@ -344,6 +353,7 @@ class SettingsPage(BasePage):
             hotlist_cache_ttl=int(self.cache_spin.value()),
             hotlist_platforms=[k for k, b in self.platform_checks.items() if b.isChecked()] or list(DEFAULT_PLATFORMS),
             analytics_auto_sync=bool(self.auto_sync_box.isChecked()),
+            ui_animations=bool(self.animations_box.isChecked()),
         )
         self.ctx.reload_llm()
         self.ctx.notify_data_changed("settings")

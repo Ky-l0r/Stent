@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMainWindow,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -26,6 +25,7 @@ from .. import __version__
 from . import icons
 from .components import BusyOverlay, Toast, make_button
 from .context import AppContext
+from .frameless import HTMAXBUTTON, FramelessWindow, TitleBar
 from .theme import build_qss, palette, set_current_theme
 from .workers import WorkerHost
 
@@ -41,7 +41,7 @@ NAV_ITEMS: tuple[tuple[str, str, str, str, str], ...] = (
 )
 
 
-class MainWindow(QMainWindow, WorkerHost):
+class MainWindow(FramelessWindow, WorkerHost):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__()
         self.ctx = ctx
@@ -57,7 +57,20 @@ class MainWindow(QMainWindow, WorkerHost):
         self._build_ui()
         self._wire_context()
         self.apply_theme(ctx.theme)
+        self._bind_shortcuts()
         self.navigate("hotsearch")
+
+    def _bind_shortcuts(self) -> None:
+        """F11 全屏、Esc 退出全屏（对齐常见桌面软件习惯）。"""
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        QShortcut(QKeySequence("F11"), self, activated=self.toggle_fullscreen)
+        QShortcut(QKeySequence("Esc"), self, activated=self._escape)
+        QShortcut(QKeySequence("Ctrl+M"), self, activated=self.toggle_maximize)
+
+    def _escape(self) -> None:
+        if self.isFullScreen():
+            self.toggle_fullscreen()
 
     # ------------------------------------------------------------------
     # 构建
@@ -98,18 +111,18 @@ class MainWindow(QMainWindow, WorkerHost):
         self._refresh_llm_status()
 
     def _build_topbar(self) -> QWidget:
-        bar = QFrame()
-        bar.setObjectName("TopBar")
-        bar.setFixedHeight(58)
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(18, 0, 18, 0)
-        layout.setSpacing(12)
+        bar = TitleBar(height=58)
+        self.title_bar = bar
 
         self.logo_label = QLabel()
         self.logo_label.setFixedSize(26, 26)
-        layout.addWidget(self.logo_label)
+        bar.add_left(self.logo_label)
 
-        brand_box = QVBoxLayout()
+        brand = QWidget()
+        # 品牌区是个裸容器，必须显式声明透明：否则它会继承到页面底色，
+        # 在顶栏上形成一块比周围更深的色块
+        brand.setObjectName("BrandBox")
+        brand_box = QVBoxLayout(brand)
         brand_box.setContentsMargins(0, 0, 0, 0)
         brand_box.setSpacing(0)
         name = QLabel("Stent")
@@ -118,23 +131,23 @@ class MainWindow(QMainWindow, WorkerHost):
         sub.setObjectName("BrandSub")
         brand_box.addWidget(name)
         brand_box.addWidget(sub)
-        layout.addLayout(brand_box)
-
-        layout.addStretch(1)
+        bar.add_left(brand)
 
         self.profile_button = make_button("账号画像未设置", icon="user", theme=self.ctx.theme, ghost=True)
         self.profile_button.clicked.connect(lambda: self.navigate("profile"))
-        layout.addWidget(self.profile_button)
+        bar.add_right(self.profile_button)
 
         self.theme_button = make_button("", icon="moon", theme=self.ctx.theme, ghost=True, tooltip="切换深浅色")
         self.theme_button.setFixedWidth(40)
         self.theme_button.clicked.connect(self.ctx.toggle_theme)
-        layout.addWidget(self.theme_button)
+        bar.add_right(self.theme_button)
 
         self.settings_button = make_button("设置", icon="settings", theme=self.ctx.theme, ghost=True)
         self.settings_button.clicked.connect(self.open_settings)
-        layout.addWidget(self.settings_button)
+        bar.add_right(self.settings_button)
 
+        # 让 Windows 11 在悬停「最大化」时呼出 Snap 布局选择器
+        self.register_hit_zone(bar.controls.maximize_button, HTMAXBUTTON)
         return bar
 
     def _build_sidebar(self) -> QWidget:
@@ -300,6 +313,10 @@ class MainWindow(QMainWindow, WorkerHost):
         self.settings_button.setIcon(icons.icon("settings", p.text_sub, 16))
         self.profile_button.setIcon(icons.icon("user", p.text_sub, 16))
         self.changelog_button.setIcon(icons.icon("clock", p.text_sub, 15))
+        if getattr(self, "title_bar", None) is not None:
+            self.title_bar.apply_theme(theme)
+        # 让 DWM 边框色跟随主题（否则系统会画一条与主题不搭的边）
+        self.refresh_corners()
         for page in self._pages.values():
             if hasattr(page, "apply_theme"):
                 try:
@@ -335,13 +352,14 @@ class MainWindow(QMainWindow, WorkerHost):
 
     def _refresh_llm_status(self) -> None:
         cm = self.ctx.config_manager
+        p = palette(self.ctx.theme)
         if cm.ready():
             llm = cm.config.llm
             self._llm_status.setText(f"模型：{llm.model}")
-            self._llm_status.setStyleSheet(f"color: {palette(self.ctx.theme).success};")
+            self._llm_status.setStyleSheet(f"color: {p.accent};")
         else:
             self._llm_status.setText("未配置模型 · 点右上角「设置」")
-            self._llm_status.setStyleSheet(f"color: {palette(self.ctx.theme).warning};")
+            self._llm_status.setStyleSheet(f"color: {p.accent};")
 
     def set_status(self, text: str) -> None:
         self._status_label.setText(text)
@@ -360,11 +378,17 @@ class MainWindow(QMainWindow, WorkerHost):
     # ------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt 命名
         try:
+            self._stop_transition()  # 关闭时中断进行中的过渡动画
+        except Exception:  # pragma: no cover
+            pass
+        try:
             self.cancel_all()
             for page in self._pages.values():
                 if hasattr(page, "cancel_all"):
                     page.cancel_all()  # type: ignore[attr-defined]
-            self.wait_all(5000)
+            # 只做短暂等待：窗口要立刻消失。剩余的后台网络任务由 app.main()
+            # 在事件循环之后统一等待（超时则强制退出），避免卡住用户的关闭操作。
+            self.wait_all(800)
         except Exception:  # pragma: no cover
             log.exception("关闭时清理后台任务失败")
         try:
