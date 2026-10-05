@@ -13,11 +13,13 @@ content_guard / platform_readback / human_pace 等依赖，改为自包含实现
 
 from __future__ import annotations
 
+import re as _re
 import time
 from pathlib import Path
 from typing import Any
 
 from .base import (
+    AccountPost,
     LoginState,
     MetricSnapshot,
     PlatformAdapter,
@@ -186,11 +188,13 @@ from ._browser import (  # noqa: F401 — 平台共用工具
     BrowserSession,
     clear_and_type,
     click_soft,
+    collect_content_links,
     dump_debug,
     extract_metric_from_text,
     first_visible,
     first_visible_text,
     open_browser,
+    page_title,
     parse_cn_number,
     paste_into_focused,
 )
@@ -199,6 +203,19 @@ from ._browser import (  # noqa: F401 — 平台共用工具
 # --------------------------------------------------------------------------- #
 # 纯工具函数（离线可测，不依赖 playwright）
 # --------------------------------------------------------------------------- #
+
+#: 作品页链接规则（账号导入时用它从管理页里筛出自己的作品）。
+#: 抖音有三种写法：``/video/<id>``、弹窗链接 ``?modal_id=<id>``、分享短链
+#: ``/share/video/<id>``，只认第一种会漏掉一大半。
+_WORK_URL_RE = _re.compile(r"(?:douyin\.com/video/(\d+)|[?&]modal_id=(\d+)|/share/video/(\d+))")
+
+
+def _extract_work_id(url: str) -> str:
+    """从抖音的各种作品链接里取出视频 id。"""
+    match = _WORK_URL_RE.search(str(url or ""))
+    if not match:
+        return ""
+    return next((g for g in match.groups() if g), "")
 
 def looks_like_douyin_share_url(url: str) -> bool:
     """判断是否为抖音作品分享链接（www.douyin.com/video/xxx、v.douyin.com 短链）。"""
@@ -221,6 +238,8 @@ class DouYinAdapter(PlatformAdapter):
     publish_url = UPLOAD_URL
     needs_media = True
     supports_auto_publish = True
+    #: 支持从创作中心「内容管理」导入（只含自己的作品，不含推荐流）
+    supports_account_import = True
     metrics_hint = "抖音单篇数据需打开作品分享页；部分账号需登录态才能看到完整数据"
 
     @property
@@ -947,6 +966,54 @@ class DouYinAdapter(PlatformAdapter):
         return False, "发布结果未确认（未跳转、无成功提示），请到抖音创作者中心内容管理页人工核对是否已发出", page.url or ""
 
     # -- 数据 ----------------------------------------------------------
+    def list_account_posts(
+        self, *, headless: bool = True, limit: int = 50
+    ) -> list[AccountPost]:
+        """扫描账号下的作品（需要已登录）。
+
+        **只扫创作中心「内容管理」页**。这里踩过一个坑：早先还扫了个人主页
+        ``/user/self?showTab=post``，但那个页面除了自己的作品，还混着「推荐/猜你喜欢」
+        里别人的视频，结果是「导入了一堆不是我的作品」。创作中心是纯自己的内容，
+        没有推荐流，因此是唯一可靠的来源。
+
+        读不到就返回空列表，由 UI 提示改用粘贴登记。
+        """
+        out: list[AccountPost] = []
+        seen: set[str] = set()
+        try:
+            with open_browser(self, headless=headless) as sess:
+                if sess is None:
+                    return []
+                page = sess.page
+                try:
+                    page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=45_000)
+                except Exception:
+                    return []
+                page.wait_for_timeout(3_000)
+                links = collect_content_links(
+                    page,
+                    _WORK_URL_RE,
+                    base_url="https://www.douyin.com",
+                    scrolls=8,
+                    limit=limit * 2,  # 多收集一些，去重后仍够 limit
+                )
+                for link in links:
+                    work_id = _extract_work_id(link)
+                    if not work_id or work_id in seen:
+                        continue
+                    seen.add(work_id)
+                    out.append(
+                        AccountPost(
+                            url=f"https://www.douyin.com/video/{work_id}",
+                            platform_id=work_id,
+                        )
+                    )
+                    if len(out) >= limit:
+                        break
+        except Exception:
+            return out
+        return out
+
     def fetch_metrics(self, post_url: str, *, headless: bool = True) -> MetricSnapshot | None:
         url = (post_url or "").strip()
         if not url:
@@ -1010,5 +1077,6 @@ class DouYinAdapter(PlatformAdapter):
             comments=data.get("comments", 0),
             collects=data.get("collects", 0),
             shares=data.get("shares", 0),
+            title=page_title(page, strip_suffixes=(" - 抖音", " | 抖音")),
             raw=raw,
         )

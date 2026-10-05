@@ -386,6 +386,90 @@ def resolve_adapter(platform: str) -> tuple[Any | None, str]:
     return adapter, ""
 
 
+def _overrides_account_listing(adapter: Any) -> bool:
+    """判断适配器是否**真的**实现了 ``list_account_posts``。
+
+    基类给了一个返回空列表的默认实现，所以「方法存在」不等于「平台支持」；
+    这里比较函数对象是否被重写，避免把「不支持」误报成「读到 0 篇」。
+    """
+    method = getattr(type(adapter), "list_account_posts", None)
+    if method is None:
+        return False
+    try:
+        from ..platforms.base import PlatformAdapter
+    except Exception:  # noqa: BLE001
+        return False
+    return method is not PlatformAdapter.list_account_posts
+
+
+#: 支持「登记已有作品」的平台白名单。
+#: 只放经过验证、或至少路径可靠的平台；其余（如小红书）不给入口，
+#: 免得用户反复尝试却总是失败。
+IMPORTABLE_PLATFORMS: tuple[str, ...] = ("bilibili", "douyin", "zhihu")
+
+
+def _platform_label(platform: str) -> str:
+    """平台中文名（registry 不可用时退回 key）。"""
+    module = _import_platforms()
+    labeller = getattr(module, "platform_label", None) if module is not None else None
+    if callable(labeller):
+        try:
+            return str(labeller(platform) or platform)
+        except Exception:  # noqa: BLE001
+            pass
+    return platform
+
+
+def _canonical_url(platform: str, url: str) -> str:
+    """把作品链接归一化（去参数、短链还原），用于去重。"""
+    module = _import_platforms()
+    resolver = getattr(module, "canonical_post_url", None) if module is not None else None
+    if not callable(resolver):
+        return str(url or "").strip()
+    try:
+        return str(resolver(platform, url) or "").strip()
+    except Exception:  # noqa: BLE001
+        log.debug("归一化作品链接失败", exc_info=True)
+        return str(url or "").strip()
+
+
+def _post_identity(platform: str, url: str) -> str:
+    """取作品的唯一标识（B 站 BV 号、抖音 video id 等）。"""
+    module = _import_platforms()
+    resolver = getattr(module, "post_identity", None) if module is not None else None
+    if not callable(resolver):
+        return ""
+    try:
+        return str(resolver(platform, url) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _looks_like_url(text: str) -> bool:
+    """判断标题是不是「其实是链接」——早期登记的作品标题被 URL 顶替过。"""
+    value = str(text or "").strip()
+    if not value:
+        return True
+    lowered = value.lower()
+    return lowered.startswith(("http://", "https://", "www.")) or "://" in lowered
+
+
+def _platform_from_url(url: str) -> str:
+    """按作品链接判断所属平台；registry 不可用时退回空串。
+
+    走 ``stent.platforms.platform_from_url``，保持与发布中心同一套域名口径。
+    """
+    module = _import_platforms()
+    resolver = getattr(module, "platform_from_url", None) if module is not None else None
+    if not callable(resolver):
+        return ""
+    try:
+        return str(resolver(url) or "")
+    except Exception:  # noqa: BLE001
+        log.debug("按链接识别平台失败", exc_info=True)
+        return ""
+
+
 def available_platforms() -> list[str]:
     """列出 registry 中已注册的平台 key（registry 不存在时返回空列表）。"""
     module = _import_platforms()
@@ -684,7 +768,13 @@ class AnalyticsService:
 
             try:
                 self.db.add_metric(post_id, payload)
-                self.db.update_post(post_id, last_synced=_now())
+                fields: dict[str, Any] = {"last_synced": _now()}
+                # 顺带用平台标题回填：粘贴链接登记的作品一开始没有标题，
+                # 不补的话内容排行里显示的会是一串 URL
+                snapshot_title = str(getattr(snapshot, "title", "") or "").strip()
+                if snapshot_title and _looks_like_url(post.get("title")):
+                    fields["title"] = snapshot_title
+                self.db.update_post(post_id, **fields)
                 result["synced"] += 1
             except Exception as exc:  # noqa: BLE001
                 result["failed"] += 1
@@ -704,6 +794,341 @@ class AnalyticsService:
             except Exception:  # noqa: BLE001
                 log.debug("写审计日志失败", exc_info=True)
         return result
+
+    # ------------------------------------------------------------------ #
+    # 0. 登记平台已有作品
+    # ------------------------------------------------------------------ #
+    def register_post(
+        self,
+        url: str,
+        *,
+        platform: str = "",
+        title: str = "",
+        content_id: int | None = None,
+    ) -> dict[str, Any]:
+        """登记一篇「已经在平台上发过」的作品，使其纳入指标同步。
+
+        背景：数据分析此前只能看到从 Stent 发布中心发出去的内容；
+        用户如果早就在平台上发过视频，那些数据是拿不到的。这里允许直接粘贴作品链接
+        登记成一条 ``status='published'`` 的记录，后续 ``sync_metrics`` 就会把它
+        一起拉取——**不需要经过 Stent 发布**。
+
+        去重按**归一化后的链接**做：``b23.tv`` 短链、带 ``spm_id_from`` 参数的链接、
+        账号导入返回的规范链接，都会归一到同一个值，因此「先粘链接、再账号导入」
+        不会重复登记同一篇作品。
+
+        :param url: 作品链接（必填，适配器靠它定位作品）
+        :param platform: 平台 key；留空则按链接域名自动识别
+        :param title: 作品标题；留空则先占位，抓指标时会用平台标题回填
+        :param content_id: 可选，关联到某条草稿
+        :return: ``{"ok": bool, "post_id": int, "platform": str, "message": str}``
+        """
+        link = str(url or "").strip()
+        if not link:
+            return {"ok": False, "post_id": 0, "platform": "", "message": "请填写作品链接"}
+
+        key = str(platform or "").strip().lower()
+        if not key:
+            key = _platform_from_url(link)
+        if not key:
+            return {
+                "ok": False,
+                "post_id": 0,
+                "platform": "",
+                "message": "无法从链接识别平台，请手动选择所属平台",
+            }
+        if key not in IMPORTABLE_PLATFORMS:
+            return {
+                "ok": False,
+                "post_id": 0,
+                "platform": key,
+                "message": (
+                    f"{_platform_label(key)}暂不支持登记作品"
+                    "（网页端拿不到可靠数据），请用其它平台或手动记录"
+                ),
+            }
+
+        adapter, reason = resolve_adapter(key)
+        if adapter is None:
+            return {"ok": False, "post_id": 0, "platform": key, "message": reason}
+
+        canonical = _canonical_url(key, link) or link
+
+        # 同一个作品不要重复登记，否则指标会算两遍
+        try:
+            existing = self._find_post_by_identity(key, canonical)
+        except Exception:  # noqa: BLE001 - 查重失败不阻断登记
+            log.debug("登记作品查重失败", exc_info=True)
+            existing = None
+        if existing is not None:
+            return {
+                "ok": True,
+                "post_id": int(existing.get("id") or 0),
+                "platform": key,
+                "message": "这篇作品之前已经登记过了，已跳过",
+                "duplicated": True,
+            }
+
+        try:
+            post_id = self.db.create_post(
+                content_id=content_id,
+                platform=key,
+                title=str(title or "").strip(),
+                body="",
+                url=canonical,
+                status="published",
+                published_at=_now(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("登记作品失败")
+            return {"ok": False, "post_id": 0, "platform": key, "message": f"写入记录失败：{exc}"}
+
+        try:
+            self.db.log_action(key, "register_post", f"登记平台已有作品：{canonical}", post_id=post_id)
+        except Exception:  # noqa: BLE001
+            log.debug("写审计日志失败", exc_info=True)
+
+        return {
+            "ok": True,
+            "post_id": post_id,
+            "platform": key,
+            "message": "已登记，正在拉取该作品的指标",
+        }
+
+    def _find_post_by_identity(self, platform: str, canonical: str) -> dict[str, Any] | None:
+        """按「平台 + 作品唯一标识」查重，兼容历史数据里存的各种链接写法。"""
+        identity = _post_identity(platform, canonical)
+        try:
+            posts = self.db.list_posts(limit=1000)
+        except Exception:  # noqa: BLE001
+            return None
+        for post in posts:
+            if str(post.get("platform") or "").lower() != platform:
+                continue
+            stored = str(post.get("url") or "").strip()
+            if stored == canonical:
+                return post
+            if identity and _post_identity(platform, stored) == identity:
+                return post
+        return None
+
+    def delete_post(self, post_id: int) -> dict[str, Any]:
+        """删除一条记录（含其指标）。用于清掉导入错的作品。"""
+        try:
+            post = self.db.get_post(int(post_id))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": f"读取记录失败：{exc}"}
+        if not post:
+            return {"ok": False, "message": "记录不存在"}
+        try:
+            self.db.delete_post(int(post_id))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": f"删除失败：{exc}"}
+        try:
+            self.db.log_action(
+                str(post.get("platform") or ""),
+                "delete_post",
+                f"删除记录：{post.get('title') or post.get('url') or post_id}",
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("写审计日志失败", exc_info=True)
+        return {"ok": True, "message": "已删除该记录及其指标"}
+
+    def register_posts(self, lines: Iterable[str]) -> dict[str, Any]:
+        """批量登记：一行一个链接，返回汇总结果。"""
+        out: dict[str, Any] = {"added": 0, "skipped": 0, "failed": 0, "details": []}
+        for raw in lines:
+            link = str(raw or "").strip()
+            if not link:
+                continue
+            result = self.register_post(link)
+            if result.get("ok") and result.get("duplicated"):
+                out["skipped"] += 1
+            elif result.get("ok"):
+                out["added"] += 1
+            else:
+                out["failed"] += 1
+            out["details"].append(
+                {"url": link, "platform": result.get("platform", ""), "message": result.get("message", "")}
+            )
+        return out
+
+    def discover_account_posts(
+        self, platform: str, *, limit: int = 50
+    ) -> dict[str, Any]:
+        """从已登录的账号拉取作品列表并自动登记。
+
+        相比逐条粘贴链接，这条路一次就能把历史作品补齐；列表里若已带指标
+        （B 站创作中心就是如此），直接入库，省掉逐条打开播放页的开销。
+
+        平台适配器未实现 ``list_account_posts`` 时返回明确原因，由 UI 提示改用粘贴登记。
+        """
+        key = str(platform or "").strip().lower()
+        out: dict[str, Any] = {
+            "ok": False,
+            "platform": key,
+            "added": 0,
+            "skipped": 0,
+            "failed": 0,
+            "message": "",
+            "posts": [],
+        }
+        if not key:
+            out["message"] = "请先选择要导入的平台"
+            return out
+
+        adapter, reason = resolve_adapter(key)
+        if adapter is None:
+            out["message"] = reason
+            return out
+
+        lister = getattr(adapter, "list_account_posts", None)
+        if not callable(lister) or not _overrides_account_listing(adapter):
+            out["message"] = (
+                f"{_platform_label(key)}暂不支持自动导入作品列表，"
+                "请改用「粘贴作品链接」逐个登记"
+            )
+            return out
+
+        try:
+            posts = lister(limit=limit)
+        except TypeError:
+            try:
+                posts = lister(limit=limit, headless=True)
+            except Exception as exc:  # noqa: BLE001
+                out["message"] = f"读取作品列表失败：{type(exc).__name__}: {exc}"
+                return out
+        except Exception as exc:  # noqa: BLE001
+            out["message"] = f"读取作品列表失败：{type(exc).__name__}: {exc}"
+            return out
+
+        posts = list(posts or [])
+        if not posts:
+            out["message"] = (
+                f"没能从{_platform_label(key)}账号读到作品。"
+                "常见原因：尚未在该平台登录（可在「设置 → 平台账号」登录后重试）、"
+                "账号下还没有已发布内容，或平台页面结构有变化。"
+                "可以改用「粘贴作品链接」逐个登记。"
+            )
+            return out
+
+        out["posts"] = posts
+        for item in posts:
+            url = getattr(item, "url", "") or ""
+            if not url:
+                continue
+            result = self.register_post(
+                url, platform=key, title=getattr(item, "title", "") or ""
+            )
+            if not result.get("ok"):
+                out["failed"] += 1
+                continue
+            post_id = int(result.get("post_id") or 0)
+            if result.get("duplicated"):
+                out["skipped"] += 1
+            else:
+                out["added"] += 1
+
+            # 列表里自带的指标直接落库；发布时间也以平台为准
+            published_at = getattr(item, "published_at", "") or ""
+            try:
+                if published_at and post_id:
+                    self.db.update_post(post_id, published_at=published_at)
+            except Exception:  # noqa: BLE001
+                log.debug("回写发布时间失败 post_id=%s", post_id, exc_info=True)
+            metrics = getattr(item, "metrics", None) or {}
+            if metrics and post_id:
+                try:
+                    self.db.add_metric(post_id, metrics)
+                    self.db.update_post(post_id, last_synced=_now())
+                except Exception:  # noqa: BLE001
+                    log.debug("写入列表指标失败 post_id=%s", post_id, exc_info=True)
+
+        out["ok"] = True
+        out["message"] = (
+            f"从账号导入 {out['added']} 篇作品"
+            + (f"，已有 {out['skipped']} 篇" if out["skipped"] else "")
+            + (f"，失败 {out['failed']} 篇" if out["failed"] else "")
+        )
+        try:
+            self.db.log_action(key, "discover_posts", out["message"])
+        except Exception:  # noqa: BLE001
+            log.debug("写审计日志失败", exc_info=True)
+        return out
+
+    def supports_account_import(self, platform: str) -> bool:
+        """该平台是否支持「从账号导入作品」。
+
+        读适配器上的显式声明（``supports_account_import``），而不是猜「有没有重写方法」：
+        不支持的平台会明确返回 False，UI 据此禁用入口并说明原因。
+        """
+        adapter, _reason = resolve_adapter(platform)
+        if adapter is None:
+            return False
+        return bool(getattr(adapter, "supports_account_import", False))
+
+    @staticmethod
+    def importable_platforms() -> list[str]:
+        """可以出现在「登记已有作品」里的平台。
+
+        小红书被排除：网页版不公开播放量、创作中心接口不稳定，粘贴链接也常常
+        因为登录墙取不到数据。与其给一个「点了没反应」的入口，不如明确不提供。
+        """
+        module = _import_platforms()
+        if module is None:
+            return []
+        keys = getattr(module, "keys", None)
+        if not callable(keys):
+            return []
+        try:
+            return [str(k) for k in keys() if str(k) in IMPORTABLE_PLATFORMS]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def sync_one(self, post_id: int) -> dict[str, Any]:
+        """单独同步一条记录的指标（登记完立刻拉一次，用户不用再点同步）。"""
+        try:
+            post = self.db.get_post(int(post_id))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": f"读取记录失败：{exc}"}
+        if not post:
+            return {"ok": False, "message": "记录不存在"}
+
+        platform = str(post.get("platform") or "")
+        url = str(post.get("url") or "").strip()
+        if not url:
+            return {"ok": False, "message": "该记录没有链接，无法拉取指标"}
+
+        adapter, reason = resolve_adapter(platform)
+        if adapter is None:
+            return {"ok": False, "message": reason}
+        try:
+            snapshot = adapter.fetch_metrics(url)
+        except TypeError:
+            try:
+                snapshot = adapter.fetch_metrics(post_url=url)
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+
+        if snapshot is None:
+            return {"ok": False, "message": "未能读取指标（可能需要先登录该平台账号）"}
+
+        try:
+            payload = snapshot.as_dict() if hasattr(snapshot, "as_dict") else dict(snapshot)
+        except Exception:  # noqa: BLE001
+            payload = {key: getattr(snapshot, key, 0) for key in (*METRIC_KEYS, "raw")}
+        try:
+            self.db.add_metric(int(post_id), payload)
+            fields: dict[str, Any] = {"last_synced": _now()}
+            snapshot_title = str(getattr(snapshot, "title", "") or "").strip()
+            if snapshot_title and _looks_like_url(post.get("title")):
+                fields["title"] = snapshot_title
+            self.db.update_post(int(post_id), **fields)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": f"写入指标失败：{exc}"}
+        return {"ok": True, "message": "指标已更新"}
 
     def sync_account_metrics(self, platforms: Sequence[str] | None = None) -> dict[str, Any]:
         """拉取账号级指标（粉丝数等）并缓存到 KV，供后续环比使用。

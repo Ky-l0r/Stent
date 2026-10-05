@@ -57,6 +57,11 @@ __all__ = [
     "platform_label",
     "platform_labels",
     "platform_limits",
+    "platform_from_url",
+    "canonical_post_url",
+    "post_identity",
+    "PLATFORM_DOMAINS",
+    "POST_ID_PATTERNS",
     "registered_platforms",
     "reset_cache",
 ]
@@ -149,6 +154,106 @@ def _load(key: str) -> PlatformAdapter | None:
 def available_platforms() -> list[str]:
     """适配器可成功加载的平台。"""
     return [p for p in keys() if get_adapter(p) is not None]
+
+
+#: 平台 key → 作品链接的域名特征。
+#: 用于「登记已有作品」：用户直接粘贴平台上已发布作品的链接，
+#: 由域名判断该归到哪个平台，省掉一次手选。
+PLATFORM_DOMAINS: dict[str, tuple[str, ...]] = {
+    "xiaohongshu": ("xiaohongshu.com", "xhslink.com"),
+    "douyin": ("douyin.com", "iesdouyin.com"),
+    "zhihu": ("zhihu.com",),
+    "bilibili": ("bilibili.com", "b23.tv"),
+}
+
+
+def platform_from_url(url: str) -> str:
+    """按作品链接判断所属平台；识别不出返回空串。
+
+    只做域名匹配，不请求网络——调用方据此决定是否让用户手动指定平台。
+    """
+    from urllib.parse import urlparse
+
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    # 用户可能只粘了 "www.bilibili.com/video/BV1xx" 这种不带协议的
+    if "://" not in text:
+        text = "https://" + text
+    try:
+        host = (urlparse(text).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not host:
+        return ""
+    for platform, domains in PLATFORM_DOMAINS.items():
+        for domain in domains:
+            if host == domain or host.endswith("." + domain):
+                return platform
+    return ""
+
+
+#: 各平台作品链接的「唯一标识」规则。
+#: 同一篇作品会有很多种链接写法（带 spm_id_from 参数、b23.tv 短链、modal_id 弹窗链接…），
+#: 直接按字符串比较会把同一篇当成两条——这正是「先粘链接再账号导入就重复」的原因。
+POST_ID_PATTERNS: dict[str, tuple[str, ...]] = {
+    "bilibili": (r"(BV[0-9A-Za-z]{10})", r"av(\d+)"),
+    "xiaohongshu": (r"/(?:explore|discovery/item|note)/([0-9a-zA-Z]+)",),
+    "douyin": (r"/video/(\d+)", r"modal_id=(\d+)", r"/share/video/(\d+)"),
+    "zhihu": (r"/p/(\d+)", r"/answer/(\d+)"),
+}
+
+
+def post_identity(platform: str, url: str) -> str:
+    """取作品的唯一标识（如 B 站的 ``BV1xx411c7mD``）；识别不出返回空串。"""
+    import re
+
+    key = (platform or "").strip().lower()
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    for pattern in POST_ID_PATTERNS.get(key, ()):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def canonical_post_url(platform: str, url: str) -> str:
+    """把作品链接归一化成稳定形式，用于去重与展示。
+
+    归一化规则：优先用作品唯一标识重建标准链接；拿不到标识时退化为
+    「去掉 query / fragment 的链接」。这样同一篇作品的多种写法会落到同一个值上。
+    """
+    from urllib.parse import urlparse
+
+    key = (platform or "").strip().lower()
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    identity = post_identity(key, text)
+    if identity:
+        if key == "bilibili":
+            if identity.startswith("BV"):
+                return f"https://www.bilibili.com/video/{identity}"
+            return f"https://www.bilibili.com/video/av{identity}"
+        if key == "xiaohongshu":
+            return f"https://www.xiaohongshu.com/explore/{identity}"
+        if key == "douyin":
+            return f"https://www.douyin.com/video/{identity}"
+        if key == "zhihu":
+            # 文章与回答的 id 前缀不同，用原链接路径判断
+            if "/answer/" in text:
+                return f"https://www.zhihu.com/answer/{identity}"
+            return f"https://zhuanlan.zhihu.com/p/{identity}"
+    # 兜底：去掉参数与锚点
+    probe = text if "://" in text else "https://" + text
+    try:
+        parsed = urlparse(probe)
+        clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+        return clean
+    except Exception:  # noqa: BLE001
+        return text
 
 
 def all_adapters() -> list[PlatformAdapter]:

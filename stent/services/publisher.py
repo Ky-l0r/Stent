@@ -633,6 +633,93 @@ def browser_status() -> tuple[bool, str]:
     return False, status.detail
 
 
+#: 各平台的登录态「痕迹」域名（Chromium 的 Cookies 库里按 host 存）。
+#: 只用来做**本地快速判断**，不联网、不启动浏览器。
+LOGIN_HINTS: dict[str, tuple[str, ...]] = {
+    "xiaohongshu": ("xiaohongshu.com",),
+    "douyin": ("douyin.com",),
+    "zhihu": ("zhihu.com",),
+    "bilibili": ("bilibili.com",),
+}
+
+
+def local_login_state(platform: str) -> tuple[bool, str]:
+    """本地快速判断某平台是否「看起来已登录」。
+
+    真正的登录校验必须启动浏览器（慢且吃资源），不适合进设置页就一次性跑四个平台。
+    这里只检查持久化目录里有没有对应站点的 Cookie，毫秒级返回，
+    用来给出「大概已登录 / 从未登录」的第一印象；需要确认时再点单平台的「检测」。
+    """
+    import os
+    from pathlib import Path
+
+    key = (platform or "").strip().lower()
+    if not key:
+        return False, "未指定平台"
+    try:
+        from .. import paths
+
+        profile = Path(paths.browser_dir()) / key
+    except Exception:  # noqa: BLE001
+        return False, "无法定位登录态目录"
+    if not profile.exists():
+        return False, "从未登录过"
+
+    cookies = list(profile.glob("**/Cookies")) + list(profile.glob("**/cookies.sqlite"))
+    cookies = [c for c in cookies if c.is_file() and c.stat().st_size > 0]
+    if not cookies:
+        return False, "本地没有登录记录"
+
+    hints = LOGIN_HINTS.get(key, ())
+    if not hints:
+        return True, "本地有登录记录"
+    try:
+        import sqlite3
+
+        found = False
+        for path in cookies:
+            try:
+                # 只读方式打开，避免和浏览器进程抢锁
+                uri = f"file:{path.as_posix()}?mode=ro&immutable=1"
+                with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
+                    for hint in hints:
+                        row = conn.execute(
+                            "SELECT 1 FROM cookies WHERE host_key LIKE ? LIMIT 1", (f"%{hint}%",)
+                        ).fetchone()
+                        if row:
+                            found = True
+                            break
+            except Exception:  # noqa: BLE001 - 库被占用或结构不同都不算错
+                log.debug("读取 Cookie 库失败：%s", path, exc_info=True)
+                continue
+            if found:
+                break
+        if found:
+            return True, "本地有登录记录"
+        return False, "本地没有该站点的登录记录"
+    except Exception:  # noqa: BLE001
+        return True, "本地有登录记录（未能读取明细）"
+
+
+def account_overview() -> list[dict[str, Any]]:
+    """列出各平台的账号状态概览（供设置页「平台账号」栏目渲染）。"""
+    from ..platforms import keys as platform_keys, platform_label
+
+    out: list[dict[str, Any]] = []
+    for key in platform_keys():
+        logged, note = local_login_state(key)
+        out.append(
+            {
+                "key": key,
+                "label": platform_label(key),
+                "logged_in": logged,
+                "note": note,
+                "supported": True,
+            }
+        )
+    return out
+
+
 @dataclass
 class _FallbackReport:
     """检查器不可用时的兜底报告，避免阻断主流程。"""

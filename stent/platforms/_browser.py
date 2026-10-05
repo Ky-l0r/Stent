@@ -354,6 +354,94 @@ def visible(page: Any, selector: str) -> Any:
     return None
 
 
+def page_title(page: Any, *, strip_suffixes: tuple[str, ...] = ()) -> str:
+    """取当前页面代表的作品标题。
+
+    粘贴链接登记的作品一开始只有 URL，标题得从页面上补回来，
+    否则内容排行里显示的会是一串地址。优先级：``og:title`` → ``h1`` → ``<title>``。
+    """
+    for selector, attr in (('meta[property="og:title"]', "content"), ("h1", "")):
+        try:
+            el = page.query_selector(selector)
+            if el is None:
+                continue
+            text = (el.get_attribute(attr) if attr else el.inner_text()) or ""
+            text = " ".join(text.split())
+            if text:
+                return text[:200]
+        except Exception:
+            continue
+    try:
+        raw = " ".join((page.title() or "").split())
+    except Exception:
+        return ""
+    for suffix in strip_suffixes:
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)].strip()
+    return raw[:200]
+
+
+def collect_content_links(
+    page: Any,
+    pattern: Any,
+    *,
+    base_url: str = "",
+    scrolls: int = 4,
+    wait_ms: int = 1_200,
+    limit: int = 100,
+) -> list[str]:
+    """从当前页面里收集匹配 ``pattern`` 的作品链接。
+
+    创作中心 / 个人主页的 DOM 结构各平台不同且经常改版，按元素选择器抓很容易失效；
+    但「页面里存在指向自己作品的链接」这件事是稳定的，因此这里退一步：
+    扫描页面上所有 ``href``，用各平台自己的作品 URL 规则筛出来。
+
+    为触发懒加载，会先滚动若干次再收集。
+    """
+    import re as _re
+
+    if isinstance(pattern, str):
+        pattern = _re.compile(pattern)
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def harvest() -> None:
+        try:
+            hrefs = page.eval_on_selector_all(
+                "a[href]", "els => els.map(e => e.href || e.getAttribute('href') || '')"
+            )
+        except Exception:
+            hrefs = []
+        for href in hrefs or []:
+            text = str(href or "").strip()
+            if not text:
+                continue
+            if text.startswith("/") and base_url:
+                text = base_url.rstrip("/") + text
+            if not text.lower().startswith("http"):
+                continue
+            if not pattern.search(text):
+                continue
+            # 去掉 query / fragment，避免同一篇作品因参数不同被当成两条
+            clean = text.split("#", 1)[0].split("?", 1)[0]
+            if clean in seen:
+                continue
+            seen.add(clean)
+            found.append(clean)
+
+    harvest()
+    for _ in range(max(0, scrolls)):
+        if len(found) >= limit:
+            break
+        try:
+            page.mouse.wheel(0, 2400)
+            page.wait_for_timeout(wait_ms)
+        except Exception:
+            break
+        harvest()
+    return found[:limit]
+
+
 def dump_debug(page: Any, directory: str, prefix: str, tag: str) -> str:
     """把当前页面 DOM + 截图落盘，供选择器校准；返回目录路径（失败返回空串）。"""
     try:

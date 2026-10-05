@@ -74,6 +74,13 @@ class MetricSnapshot:
     comments: int = 0
     collects: int = 0
     shares: int = 0
+    #: 作品标题（抓取时顺带带回来）。
+    #: 「粘贴链接登记」时我们只知道链接，标题只能靠这次抓取补上，
+    #: 否则内容排行里显示的会是一串 URL。
+    title: str = ""
+    #: 该平台是否公开播放量。小红书网页版不公开，此时 views 恒为 0，
+    #: UI 据此显示「—」而不是误导性的「0」。
+    views_public: bool = True
     raw: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -85,6 +92,20 @@ class MetricSnapshot:
             "shares": self.shares,
             "raw": self.raw,
         }
+
+
+@dataclass
+class AccountPost:
+    """账号下的一篇已发布作品（账号级发现的结果）。
+
+    ``metrics`` 可能为空：有的平台在列表页就带数据，有的需要再逐条拉一次。
+    """
+
+    url: str
+    title: str = ""
+    published_at: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
+    platform_id: str = ""
 
 
 class PlatformError(RuntimeError):
@@ -108,6 +129,14 @@ class PlatformAdapter(ABC):
     supports_auto_publish: bool = True
     #: 指标拉取依赖登录态的场景说明
     metrics_hint: str = ""
+    #: 该平台是否对外公开「播放量」。
+    #: 小红书网页版从不公开，此时 views 恒为 0；UI 据此显示「—」，
+    #: 免得用户把「平台不给」误读成「这篇真的 0 播放」。
+    exposes_views: bool = True
+    #: 是否支持「从账号导入作品列表」。
+    #: 显式声明而不是靠「有没有重写方法」推断——不支持的平台也要能明确说「不支持」，
+    #: 否则用户会看到一个点了没反应的按钮。
+    supports_account_import: bool = False
 
     @property
     def limits(self) -> PlatformLimits:
@@ -147,6 +176,18 @@ class PlatformAdapter(ABC):
     def fetch_account_metrics(self, *, headless: bool = True) -> dict[str, Any] | None:
         """拉取账号级指标（粉丝数等），可选实现。"""
         return None
+
+    def list_account_posts(
+        self, *, headless: bool = True, limit: int = 50
+    ) -> list[AccountPost]:
+        """列出账号下已发布的作品，可选实现。
+
+        实现后，用户不必再逐条粘贴链接——数据分析页可以「从账号导入作品」，
+        一次性把历史作品全部纳入指标同步。
+
+        未实现时返回空列表（调用方据此提示「该平台暂不支持自动导入」）。
+        """
+        return []
 
     # -- 辅助 ------------------------------------------------------------
     def profile_dir(self) -> str:

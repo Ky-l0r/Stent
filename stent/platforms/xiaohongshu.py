@@ -28,7 +28,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from ._browser import collect_content_links, page_title
 from .base import (
+    AccountPost,
     LoginState,
     MetricSnapshot,
     PlatformAdapter,
@@ -646,9 +648,11 @@ class XiaoHongShuAdapter(PlatformAdapter):
     publish_url = PUBLISH_URL
     needs_media = True
     supports_auto_publish = True
+    #: 网页版不公开播放量：UI 上显示「—」而不是误导性的 0
+    exposes_views = False
     metrics_hint = (
         "小红书单篇数据需已登录态打开笔记页；官方未在网页版公开「浏览量」，"
-        "取不到时记为 0，可在创作者中心「数据看板」人工查看"
+        "因此该列显示为「—」，可在创作者中心「数据看板」人工查看"
     )
 
     @property
@@ -1489,6 +1493,147 @@ class XiaoHongShuAdapter(PlatformAdapter):
         return ""
 
     # -- 数据 ----------------------------------------------------------
+    def list_account_posts(
+        self, *, headless: bool = True, limit: int = 50
+    ) -> list[AccountPost]:
+        """小红书**不提供**账号导入，请用「粘贴作品链接」登记。
+
+        原因：创作中心的「已发布笔记」接口未公开且随版本变动，实测在真实账号上
+        读不到数据；与其给用户一个「点了没反应」的按钮，不如明确不提供，
+        并把粘贴链接这条路做扎实（标题与互动数据都能正常回填）。
+        """
+        return []
+
+    def _unused_list_account_posts(
+        self, *, headless: bool = True, limit: int = 50
+    ) -> list[AccountPost]:
+        """保留实现备查：创作中心接口 + 页面扫描两条路（当前不启用）。"""
+        out: list[AccountPost] = []
+        try:
+            with open_browser(self, headless=headless) as sess:
+                if sess is None:
+                    return []
+                page = sess.page
+                try:
+                    page.goto(CREATOR_NOTES_URL, wait_until="domcontentloaded", timeout=45_000)
+                except Exception:
+                    return []
+                page.wait_for_timeout(3_000)
+                out = self._list_posts_via_api(page, limit=limit)
+                if not out:
+                    links = collect_content_links(
+                        page,
+                        NOTE_URL_RE,
+                        base_url="https://www.xiaohongshu.com",
+                        scrolls=6,
+                        limit=limit,
+                    )
+                    out = [
+                        AccountPost(url=link, platform_id=link.rsplit("/", 1)[-1])
+                        for link in links
+                    ]
+        except Exception:
+            return out
+        return out
+
+    #: 创作中心「已发布笔记」接口（在已登录页面里 fetch，登录态自动带上）
+    POSTED_API = (
+        "https://creator.xiaohongshu.com/api/galaxy/creator/note/user/posted"
+        "?tab=0&page={page}&page_size=20"
+    )
+
+    def _list_posts_via_api(self, page: Any, *, limit: int) -> list[AccountPost]:
+        """调创作中心接口拉笔记列表；失败返回空列表（由调用方退回扫描）。"""
+        out: list[AccountPost] = []
+        seen: set[str] = set()
+        for page_no in range(1, 6):
+            if len(out) >= limit:
+                break
+            url = self.POSTED_API.format(page=page_no)
+            try:
+                payload = page.evaluate(
+                    """async (target) => {
+                        try {
+                            const resp = await fetch(target, {credentials: 'include'});
+                            return await resp.json();
+                        } catch (err) {
+                            return {success: false, message: String(err)};
+                        }
+                    }""",
+                    url,
+                )
+            except Exception:
+                break
+            if not isinstance(payload, dict):
+                break
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+            rows = (
+                data.get("notes")
+                or data.get("note_list")
+                or data.get("list")
+                or data.get("items")
+                or []
+            )
+            if not isinstance(rows, list) or not rows:
+                break
+            for row in rows:
+                if len(out) >= limit:
+                    break
+                item = self._api_row_to_post(row)
+                if item is None or item.platform_id in seen:
+                    continue
+                seen.add(item.platform_id)
+                out.append(item)
+        return out
+
+    @staticmethod
+    def _api_row_to_post(row: Any) -> AccountPost | None:
+        """把创作中心返回的一行转成 :class:`AccountPost`（字段名容忍多种写法）。"""
+        if not isinstance(row, dict):
+            return None
+        note_id = str(
+            row.get("note_id") or row.get("noteId") or row.get("id") or ""
+        ).strip()
+        if not note_id:
+            return None
+        title = str(
+            row.get("display_title") or row.get("title") or row.get("note_title") or ""
+        ).strip()
+
+        def num(*keys: str) -> int:
+            for key in keys:
+                value = row.get(key)
+                if value is None:
+                    continue
+                try:
+                    return int(float(value))
+                except (TypeError, ValueError):
+                    continue
+            return 0
+
+        published_at = ""
+        stamp = row.get("post_time") or row.get("time") or row.get("create_time")
+        if isinstance(stamp, (int, float)) and stamp > 0:
+            try:
+                seconds = stamp / 1000 if stamp > 10**11 else stamp
+                published_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seconds))
+            except Exception:
+                published_at = ""
+        return AccountPost(
+            url=f"https://www.xiaohongshu.com/explore/{note_id}",
+            title=title,
+            published_at=published_at,
+            platform_id=note_id,
+            metrics={
+                "views": num("view_count", "view_num", "views", "read_count"),
+                "likes": num("likes", "liked_count", "like_count"),
+                "comments": num("comments_count", "comment_count", "comments"),
+                "collects": num("collections_count", "collected_count", "collects"),
+                "shares": num("shared_count", "share_count", "shares"),
+                "raw": {"source": "xiaohongshu-creator-api", "note_id": note_id},
+            },
+        )
+
     def fetch_metrics(self, post_url: str, *, headless: bool = True) -> MetricSnapshot | None:
         """打开笔记页抓取 点赞/收藏/评论/分享/浏览；失败返回 ``None``。"""
         url = (post_url or "").strip()
@@ -1514,7 +1659,13 @@ class XiaoHongShuAdapter(PlatformAdapter):
             return None
 
     def _scrape_metrics(self, page: Any, url: str) -> MetricSnapshot | None:
-        """抓指标：①DOM 精确选择器 ②``__INITIAL_STATE__`` 结构化数据 ③整页文本兜底。"""
+        """抓指标：①DOM 精确选择器 ②``__INITIAL_STATE__`` 结构化数据 ③整页文本兜底。
+
+        注意：小红书**网页版不公开播放量**，因此 ``views`` 只在结构化数据里明确带
+        该字段时才采信。旧实现把「浏览/观看/阅读」丢进整页文本兜底，
+        结果抓到推荐位或侧栏里的无关数字，表现为「播放量明显不对」——
+        宁可显示「—」也不要给一个错的数。
+        """
         data: dict[str, int] = {}
         used: dict[str, str] = {}
 
@@ -1541,14 +1692,14 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 data[key] = val
                 used[key] = "initial_state"
 
-        # ③ 整页文本兜底
+        # ③ 整页文本兜底（仅互动项；播放量不参与，避免抓到无关数字）
         page_text = ""
         try:
             page_text = page.inner_text("body") or ""
         except Exception:
             page_text = ""
         for key, labels in METRIC_LABELS.items():
-            if data.get(key):
+            if key == "views" or data.get(key):
                 continue
             val = extract_metric_from_text(page_text, labels)
             if val:
@@ -1563,6 +1714,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
             comments=data.get("comments", 0),
             collects=data.get("collects", 0),
             shares=data.get("shares", 0),
+            # 顺带带回标题：粘贴链接登记时标题只能靠这一步补上
+            title=page_title(page, strip_suffixes=(" - 小红书", " | 小红书", "小红书")),
+            # 网页版不公开播放量：UI 据此显示「—」而不是 0
+            views_public=False,
             raw={
                 "url": url,
                 "source": "xiaohongshu-note-page",

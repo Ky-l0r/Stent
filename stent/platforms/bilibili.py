@@ -15,7 +15,10 @@
 
 from __future__ import annotations
 
+import json
+import re
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +35,7 @@ from ._browser import (
     paste_into_focused,
 )
 from .base import (
+    AccountPost,
     LoginState,
     MetricSnapshot,
     PlatformAdapter,
@@ -48,6 +52,20 @@ from .base import (
 HOME_URL = "https://member.bilibili.com/platform/home"
 UPLOAD_URL = "https://member.bilibili.com/platform/upload/video/frame"
 LOGIN_URL = "https://passport.bilibili.com/login"
+
+#: 公开的稿件信息 API：无需登录，``stat.reply`` 就是评论数。
+#: 比爬播放页 DOM 更稳——工具栏上本来就没有「评论」这个数字，所以之前一直抓不到。
+VIEW_API = "https://api.bilibili.com/x/web-interface/view"
+#: 创作中心「稿件管理」列表接口（需要登录态，在已登录的页面里 fetch 即可）
+ACCOUNT_API = "https://member.bilibili.com/x/web/archives"
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+_BV_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
+_AV_RE = re.compile(r"av(\d+)", re.IGNORECASE)
 
 #: 分区名 → tid（沿用 Easel bili_upload.py 的 PARTITIONS；B 站改版后有的仍可用）
 PARTITIONS: dict[str, int] = {
@@ -248,6 +266,37 @@ def normalize_video_url(url: str) -> str:
     return f"https://www.bilibili.com/video/{s}"
 
 
+def video_ids(url: str) -> tuple[str, str]:
+    """从播放页链接 / BV 号 / av 号里取出 ``(bvid, aid)``，取不到的部分为空串。"""
+    text = (url or "").strip()
+    if not text:
+        return "", ""
+    bv = _BV_RE.search(text)
+    if bv:
+        return bv.group(1), ""
+    av = _AV_RE.search(text)
+    if av:
+        return "", av.group(1)
+    # 纯数字也当作 aid（用户可能只粘了 av 号里的数字）
+    if text.isdigit():
+        return "", text
+    return "", ""
+
+
+def _http_json(url: str, *, timeout: float = 12.0) -> Any:
+    """极简 JSON GET（B 站公开接口需要 UA 与 Referer，否则可能被拒）。"""
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Referer": "https://www.bilibili.com/",
+            "Accept": "application/json, text/plain, */*",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - 固定可信数据源
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value)
@@ -268,7 +317,9 @@ class BiliBiliAdapter(PlatformAdapter):
     publish_url = UPLOAD_URL
     needs_media = True
     supports_auto_publish = True
-    metrics_hint = "B 站单篇数据取自播放页可见计数（播放/点赞/评论/收藏/分享）"
+    #: 走创作中心接口，列表自带全部指标，是最可靠的一条导入路径
+    supports_account_import = True
+    metrics_hint = "B 站单篇数据取自公开接口（播放/点赞/评论/收藏/分享）"
 
     @property
     def limits(self) -> PlatformLimits:
@@ -784,9 +835,167 @@ class BiliBiliAdapter(PlatformAdapter):
 
     # -- 数据 ----------------------------------------------------------
     def fetch_metrics(self, post_url: str, *, headless: bool = True) -> MetricSnapshot | None:
+        """优先走公开接口，失败再退回爬播放页。
+
+        接口这条路不需要浏览器，秒回，而且**评论数（stat.reply）拿得到**——
+        播放页工具栏上压根没有「评论」这个数字，所以旧实现里 comments 一直是 0。
+        """
         url = normalize_video_url(post_url)
         if not url:
             return None
+        snapshot = self.fetch_metrics_api(url)
+        if snapshot is not None:
+            return snapshot
+        return self._fetch_metrics_page(url, headless=headless)
+
+    def fetch_metrics_api(self, post_url: str) -> MetricSnapshot | None:
+        """通过 ``x/web-interface/view`` 取指标；失败返回 None（不抛异常）。"""
+        bvid, aid = video_ids(post_url)
+        if not bvid and not aid:
+            return None
+        query = f"bvid={bvid}" if bvid else f"aid={aid}"
+        try:
+            payload = _http_json(f"{VIEW_API}?{query}")
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            return None
+        data = payload.get("data") or {}
+        stat = data.get("stat") or {}
+        if not stat:
+            return None
+        return MetricSnapshot(
+            views=_safe_int(stat.get("view")),
+            likes=_safe_int(stat.get("like")),
+            # reply 就是评论数——这是旧实现一直缺失的那一项
+            comments=_safe_int(stat.get("reply")),
+            collects=_safe_int(stat.get("favorite")),
+            shares=_safe_int(stat.get("share")),
+            # 顺带带回标题：粘贴链接登记时标题只能靠这一步补上
+            title=str(data.get("title") or ""),
+            raw={
+                "url": post_url,
+                "source": "bilibili-view-api",
+                "bvid": data.get("bvid") or bvid,
+                "aid": data.get("aid") or aid,
+                "title": data.get("title") or "",
+                "danmaku": _safe_int(stat.get("danmaku")),
+                "coin": _safe_int(stat.get("coin")),
+                "pubdate": data.get("pubdate"),
+            },
+        )
+
+    def list_account_posts(
+        self, *, headless: bool = True, limit: int = 50
+    ) -> list[AccountPost]:
+        """从创作中心「稿件管理」拉取账号下的全部稿件（需要已登录）。
+
+        在已登录的页面里直接 ``fetch`` 创作中心接口，登录态由浏览器自动带上，
+        因此不用自己处理 Cookie 与签名。列表里就带播放/评论等数据，
+        拉下来即可直接入库，不必再逐条打开播放页。
+        """
+        out: list[AccountPost] = []
+        seen: set[str] = set()
+        page_size = 30
+        try:
+            with open_browser(self, headless=headless) as sess:
+                if sess is None:
+                    return []
+                page = sess.page
+                try:
+                    page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
+                except Exception:
+                    return []
+                page.wait_for_timeout(2_000)
+
+                for page_no in range(1, 11):  # 最多翻 10 页，兜住异常分页
+                    if len(out) >= limit:
+                        break
+                    url = (
+                        f"{ACCOUNT_API}?status=pubed&pn={page_no}&ps={page_size}"
+                        "&coop=1&interactive=1"
+                    )
+                    try:
+                        payload = page.evaluate(
+                            """async (target) => {
+                                try {
+                                    const resp = await fetch(target, {credentials: 'include'});
+                                    return await resp.json();
+                                } catch (err) {
+                                    return {code: -1, message: String(err)};
+                                }
+                            }""",
+                            url,
+                        )
+                    except Exception:
+                        break
+                    if not isinstance(payload, dict) or payload.get("code") != 0:
+                        break
+                    data = payload.get("data") or {}
+                    rows = data.get("arc_audits") or data.get("list") or []
+                    if not rows:
+                        break
+                    for row in rows:
+                        if len(out) >= limit:
+                            break
+                        item = self._account_row_to_post(row)
+                        if item is None or item.url in seen:
+                            continue
+                        seen.add(item.url)
+                        out.append(item)
+                    total = _safe_int((data.get("page") or {}).get("count"))
+                    if total and page_no * page_size >= total:
+                        break
+        except Exception:
+            return out
+        return out
+
+    @staticmethod
+    def _account_row_to_post(row: Any) -> AccountPost | None:
+        """把创作中心返回的一行转成 :class:`AccountPost`（字段名兼容两种写法）。"""
+        if not isinstance(row, dict):
+            return None
+        archive = row.get("Archive") if isinstance(row.get("Archive"), dict) else row
+        bvid = str(archive.get("bvid") or "")
+        aid = archive.get("aid")
+        if bvid:
+            link = f"https://www.bilibili.com/video/{bvid}"
+        elif aid:
+            link = f"https://www.bilibili.com/video/av{aid}"
+        else:
+            return None
+        stat = archive.get("stat") or {}
+        ptime = archive.get("ptime") or archive.get("pubtime") or archive.get("ctime")
+        published_at = ""
+        if isinstance(ptime, (int, float)) and ptime > 0:
+            try:
+                published_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ptime))
+            except Exception:
+                published_at = ""
+        return AccountPost(
+            url=link,
+            title=str(archive.get("title") or ""),
+            published_at=published_at,
+            platform_id=bvid or (f"av{aid}" if aid else ""),
+            metrics={
+                "views": _safe_int(stat.get("view")),
+                "likes": _safe_int(stat.get("like")),
+                "comments": _safe_int(stat.get("reply")),
+                # 创作中心接口里收藏叫 fav，公开接口里叫 favorite
+                "collects": _safe_int(stat.get("fav") or stat.get("favorite")),
+                "shares": _safe_int(stat.get("share")),
+                "raw": {
+                    "source": "bilibili-creator-api",
+                    "bvid": bvid,
+                    "aid": aid,
+                    "danmaku": _safe_int(stat.get("danmaku")),
+                    "coin": _safe_int(stat.get("coin")),
+                },
+            },
+        )
+
+    def _fetch_metrics_page(self, url: str, *, headless: bool) -> MetricSnapshot | None:
+        """兜底：爬播放页 DOM（接口不可用时才走这里）。"""
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:

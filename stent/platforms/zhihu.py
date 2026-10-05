@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re as _re
 import time
 from pathlib import Path
 from typing import Any
@@ -22,16 +23,19 @@ from ._browser import (
     clear_and_type,
     click_soft,
     click_text_in,
+    collect_content_links,
     dump_debug,
     extract_metric_from_text,
     first_visible,
     first_visible_text,
     open_browser,
+    page_title,
     parse_cn_number,
     paste_into_focused,
     type_multiline,
 )
 from .base import (
+    AccountPost,
     LoginState,
     MetricSnapshot,
     PlatformAdapter,
@@ -187,6 +191,12 @@ def looks_like_article_url(url: str) -> bool:
     return "zhuanlan.zhihu.com/p/" in low or "/p/" in low
 
 
+#: 作品链接规则（账号导入时用它从创作者中心筛出自己的文章与回答）
+_WORK_URL_RE = _re.compile(
+    r"(?:zhuanlan\.zhihu\.com/p/\d+|zhihu\.com/question/\d+/answer/\d+)"
+)
+
+
 # --------------------------------------------------------------------------- #
 # 适配器
 # --------------------------------------------------------------------------- #
@@ -200,6 +210,8 @@ class ZhiHuAdapter(PlatformAdapter):
     publish_url = WRITE_URL
     needs_media = False
     supports_auto_publish = True
+    #: 支持从创作者中心导入（扫描自己的文章与回答链接）
+    supports_account_import = True
     metrics_hint = "知乎单篇数据取自内容页可见计数（赞同/评论/收藏/分享）"
 
     @property
@@ -717,6 +729,34 @@ class ZhiHuAdapter(PlatformAdapter):
         return False, "知乎发布结果未确认（未跳转到文章/回答页），请到「创作中心 → 内容管理」人工核对是否已发布", page.url or ""
 
     # -- 数据 ----------------------------------------------------------
+    def list_account_posts(
+        self, *, headless: bool = True, limit: int = 50
+    ) -> list[AccountPost]:
+        """从「创作者中心」扫描账号下的文章 / 回答链接（需要已登录）。"""
+        out: list[AccountPost] = []
+        try:
+            with open_browser(self, headless=headless) as sess:
+                if sess is None:
+                    return []
+                page = sess.page
+                try:
+                    page.goto(CREATOR_URL, wait_until="domcontentloaded", timeout=45_000)
+                except Exception:
+                    return []
+                page.wait_for_timeout(3_000)
+                links = collect_content_links(
+                    page,
+                    _WORK_URL_RE,
+                    base_url="https://www.zhihu.com",
+                    scrolls=6,
+                    limit=limit,
+                )
+                for link in links:
+                    out.append(AccountPost(url=link, platform_id=link.rsplit("/", 1)[-1]))
+        except Exception:
+            return out
+        return out
+
     def fetch_metrics(self, post_url: str, *, headless: bool = True) -> MetricSnapshot | None:
         url = (post_url or "").strip()
         if not url:
@@ -789,5 +829,8 @@ class ZhiHuAdapter(PlatformAdapter):
             comments=data.get("comments", 0),
             collects=data.get("collects", 0),
             shares=data.get("shares", 0),
+            title=page_title(page, strip_suffixes=(" - 知乎", " | 知乎")),
+            # 知乎多数形态不公开阅读量，UI 上显示「—」更诚实
+            views_public=bool(data.get("views")),
             raw={"url": url, "source": "zhihu-content-page", "text_hint": content_text[:400]},
         )

@@ -1,6 +1,6 @@
 [project]
 name = "stent"
-version = "1.0.5"
+version = "1.1"
 description = "Stent —— 基于 Easel 的桌面端社媒内容智能体"
 readme = "README.md"
 requires-python = ">=3.10"

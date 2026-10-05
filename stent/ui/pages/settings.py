@@ -1,7 +1,12 @@
-"""设置页：LLM 配置中心（企划书 4.4）+ 通用设置 + 存储与安全信息。
+"""设置页：LLM 配置中心（企划书 4.4）+ 平台账号 + 通用设置 + 存储与安全信息。
 
 用户只需配置三个字段：API Base URL、API Key、模型名称；
 API Key 走 keyring / DPAPI 加密存储，不明文落盘。
+
+界面要点（v1.0.6 打磨）：
+
+- 每个栏目都是可点击展开的折叠卡：条目只会越来越多，折叠后一屏就能看全
+- 新增「平台账号」栏目：逐平台查看登录状态，支持检测 / 登录 / 清除登录态
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -28,12 +34,18 @@ from PySide6.QtWidgets import (
 from ... import __version__, paths
 from ...config import PROVIDER_PRESETS, preset_for, secrets
 from ...core.llm import LLMClient
+from ...platforms import keys as platform_keys, platform_label
 from ...services.hotsearch import DEFAULT_PLATFORMS, PLATFORM_LABELS
-from ..components import Card, CardTitle, PageHeader, ScrollArea, make_button
-from ..theme import palette
+from .. import icons
+from ..components import CollapsibleCard, PageHeader, ScrollArea, make_button
+from ..theme import level_color, palette, platform_color
 from .base import BasePage
 
 log = logging.getLogger(__name__)
+
+#: LLM 接入栏目的标题（单独提出来，避免源码里出现成对的方括号标记）
+LLM_CARD_TITLE = "LLM 接入（[OI] 兼容协议）"
+LLM_CARD_HINT = "支持 [OI]、DeepSeek、通义千问、Kimi、智谱、硅基流动、Ollama 本地模型与自建中转"
 
 
 class SettingsPage(BasePage):
@@ -44,19 +56,32 @@ class SettingsPage(BasePage):
     def build(self) -> None:
         self._worker = None
         self._loading = False
+        self._account_rows: dict[str, dict] = {}
+        self._account_worker = None
+        self._accounts_checked = False
 
         inner = QWidget()
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(0, 0, 8, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
 
-        layout.addWidget(self._build_llm_card())
-        layout.addWidget(self._build_general_card())
-        layout.addWidget(self._build_storage_card())
-        layout.addWidget(self._build_about_card())
+        # 默认展开最常用的两项，其余收起——条目变多也不会一屏塞满
+        self.llm_card = self._build_llm_card()
+        self.accounts_card = self._build_accounts_card()
+        self.general_card = self._build_general_card()
+        self.storage_card = self._build_storage_card()
+        self.about_card = self._build_about_card()
+        for card in (
+            self.llm_card,
+            self.accounts_card,
+            self.general_card,
+            self.storage_card,
+            self.about_card,
+        ):
+            layout.addWidget(card)
         layout.addStretch(1)
 
-        header = PageHeader("设置", "配置 LLM 接入、通用偏好与本地存储；所有配置只保存在本机")
+        header = PageHeader("设置", "配置 LLM 接入、平台账号、通用偏好与本地存储；所有配置只保存在本机")
         header.add_action(self.status_light)
         self.save_button = make_button("保存设置", icon="save", theme=self.ctx.theme, primary=True)
         self.save_button.clicked.connect(self.save)
@@ -66,15 +91,15 @@ class SettingsPage(BasePage):
         self.add(ScrollArea(inner), 1)
 
     # ------------------------------------------------------------------
+    # LLM 接入
+    # ------------------------------------------------------------------
     def _build_llm_card(self) -> QWidget:
-        card = Card(padding=16, spacing=12)
-        card.add(
-            CardTitle(
-                "LLM 接入（OpenAI 兼容协议）",
-                icon="sparkles",
-                hint="支持 OpenAI、DeepSeek、通义千问、Kimi、智谱、硅基流动、Ollama 本地模型与自建中转",
-                theme=self.ctx.theme,
-            )
+        card = CollapsibleCard(
+            LLM_CARD_TITLE,
+            icon="sparkles",
+            hint=LLM_CARD_HINT,
+            theme=self.ctx.theme,
+            expanded=True,
         )
 
         form = QFormLayout()
@@ -166,9 +191,322 @@ class SettingsPage(BasePage):
         card.add(self.key_storage_label)
         return card
 
+    # ------------------------------------------------------------------
+    # 平台账号
+    # ------------------------------------------------------------------
+    def _build_accounts_card(self) -> QWidget:
+        card = CollapsibleCard(
+            "平台账号",
+            icon="user",
+            hint="查看各平台登录状态；发布与数据同步都依赖这里的登录态",
+            theme=self.ctx.theme,
+            expanded=True,
+        )
+
+        intro = QLabel(
+            "Stent 只保存本机浏览器登录态，不会读取或上传你的账号密码。"
+            "登录会打开一个浏览器窗口，扫码或输入账号即可。"
+        )
+        intro.setObjectName("FieldHint")
+        intro.setWordWrap(True)
+        card.add(intro)
+
+        # 表头
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        for text, width in (("平台", 0), ("登录状态", 0)):
+            label = QLabel(text)
+            label.setObjectName("FieldLabel")
+            head.addWidget(label, 1 if width == 0 else 0)
+        head.addSpacing(160)
+        card.add_layout(head)
+
+        for key in platform_keys():
+            card.add(self._build_account_row(key))
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.check_accounts_button = make_button(
+            "检测全部平台", icon="refresh", theme=self.ctx.theme
+        )
+        self.check_accounts_button.setToolTip(
+            "逐个平台启动浏览器做权威校验，需要较长时间；平时进页面会自动做本地快速判断"
+        )
+        self.check_accounts_button.clicked.connect(lambda: self.check_accounts(force=True))
+        row.addWidget(self.check_accounts_button)
+        row.addStretch(1)
+        self.accounts_summary = QLabel("尚未检测")
+        self.accounts_summary.setObjectName("CardHint")
+        row.addWidget(self.accounts_summary)
+        card.add_layout(row)
+        return card
+
+    def _build_account_row(self, key: str) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        icon = QLabel()
+        icon.setFixedSize(16, 16)
+        icon.setPixmap(icons.pixmap("user", platform_color(key), 16))
+        layout.addWidget(icon)
+
+        name = QLabel(platform_label(key))
+        name.setObjectName("FieldLabel")
+        name.setMinimumWidth(72)
+        layout.addWidget(name)
+
+        status = QLabel("尚未检测")
+        status.setObjectName("CardHint")
+        status.setWordWrap(True)
+        layout.addWidget(status, 1)
+
+        check = make_button("检测", theme=self.ctx.theme, ghost=True)
+        check.clicked.connect(lambda _=False, k=key: self.check_account(k))
+        layout.addWidget(check)
+
+        login = make_button("登录", icon="login", theme=self.ctx.theme)
+        login.clicked.connect(lambda _=False, k=key: self.login_account(k))
+        layout.addWidget(login)
+
+        logout = make_button("清除登录态", theme=self.ctx.theme, ghost=True)
+        logout.setToolTip("删除本机保存的该平台登录态（不会影响你在平台上的账号）")
+        logout.clicked.connect(lambda _=False, k=key: self.logout_account(k))
+        layout.addWidget(logout)
+
+        self._account_rows[key] = {
+            "status": status,
+            "check": check,
+            "login": login,
+            "logout": logout,
+        }
+        return row
+
+    def check_accounts(self, *, force: bool = False) -> None:
+        """检测全部平台的登录状态。
+
+        默认走**本地快速判断**（读持久化目录里的 Cookie，毫秒级）；
+        只有用户明确点「检测全部平台」时才启动浏览器做权威校验——
+        后者每个平台都要拉起一次 Chromium，四个平台跑下来要几十秒，
+        放在进页面时自动执行会让设置页看起来像卡死了。
+        """
+        if self._account_worker is not None and self._account_worker.isRunning():
+            self.toast("正在检测中，请稍候", "info")
+            return
+        self._accounts_checked = True
+
+        if not force:
+            from ...services.publisher import account_overview
+
+            ok_count = 0
+            for item in account_overview():
+                row = self._account_rows.get(item["key"])
+                if row is None:
+                    continue
+                if item["logged_in"]:
+                    ok_count += 1
+                    self._set_account_status(row["status"], "已登录", "success")
+                    row["status"].setToolTip(item["note"])
+                    row["logout"].setEnabled(True)
+                else:
+                    self._set_account_status(row["status"], f"未登录 · {item['note']}", "idle")
+                    row["status"].setToolTip(item["note"])
+                    row["logout"].setEnabled(False)
+            total = len(self._account_rows)
+            self.accounts_summary.setText(f"{ok_count} / {total} 个平台已登录（本地记录）")
+            return
+
+        self.check_accounts_button.setEnabled(False)
+        self.check_accounts_button.setText("检测中…")
+        self.accounts_summary.setText("正在逐个平台校验（需要启动浏览器，请稍候）…")
+        for row in self._account_rows.values():
+            row["check"].setEnabled(False)
+            self._set_account_status(row["status"], "检测中…", "busy")
+
+        def job(worker):
+            results: dict[str, tuple[bool, str]] = {}
+            for key in platform_keys():
+                if getattr(worker.cancel_event, "is_set", lambda: False)():
+                    break
+                try:
+                    from ...services.publisher import publish_service
+
+                    results[key] = publish_service.check_login(key)
+                except Exception as exc:  # noqa: BLE001
+                    results[key] = (False, f"检测失败：{exc}")
+            return results
+
+        self._account_worker = self.run_task(
+            job,
+            on_result=self._on_accounts_checked,
+            on_error=self._on_accounts_error,
+            on_done=self._on_accounts_done,
+            name="check-accounts",
+        )
+
+    def _on_accounts_checked(self, results: dict) -> None:
+        ok_count = 0
+        for key, (ok, message) in (results or {}).items():
+            row = self._account_rows.get(key)
+            if row is None:
+                continue
+            if ok:
+                ok_count += 1
+                self._set_account_status(row["status"], "已登录", "success")
+                row["status"].setToolTip(message or "")
+                row["logout"].setEnabled(True)
+            else:
+                self._set_account_status(row["status"], f"未登录 · {str(message)[:40]}", "warn")
+                row["status"].setToolTip(str(message))
+                row["logout"].setEnabled(False)
+        total = len(self._account_rows)
+        self.accounts_summary.setText(f"{ok_count} / {total} 个平台已登录")
+
+    def _on_accounts_error(self, message: str) -> None:
+        self.accounts_summary.setText(f"检测失败：{message[:60]}")
+
+    def _on_accounts_done(self) -> None:
+        self._account_worker = None
+        self.check_accounts_button.setEnabled(True)
+        self.check_accounts_button.setText("检测全部平台")
+        for row in self._account_rows.values():
+            row["check"].setEnabled(True)
+
+    def check_account(self, key: str) -> None:
+        row = self._account_rows.get(key)
+        if row is None:
+            return
+        row["check"].setEnabled(False)
+        self._set_account_status(row["status"], "检测中…", "busy")
+
+        from ...services.publisher import publish_service
+
+        self.run_task(
+            lambda worker: publish_service.check_login(key),
+            on_result=lambda result: self._on_account_checked(key, result),
+            on_error=lambda msg: self._on_account_checked(key, (False, msg)),
+            on_done=lambda: row["check"].setEnabled(True),
+            name=f"check-{key}",
+        )
+
+    def _on_account_checked(self, key: str, result) -> None:
+        row = self._account_rows.get(key)
+        if row is None:
+            return
+        ok, message = result
+        if ok:
+            self._set_account_status(row["status"], "已登录", "success")
+            row["logout"].setEnabled(True)
+        else:
+            self._set_account_status(row["status"], f"未登录 · {str(message)[:40]}", "warn")
+            row["logout"].setEnabled(False)
+        row["status"].setToolTip(str(message))
+
+    def _set_account_status(self, label: QLabel, text: str, level: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            f"color: {level_color(self.ctx.theme, level)}; background: transparent;"
+        )
+
+    def login_account(self, key: str) -> None:
+        label = platform_label(key)
+        answer = QMessageBox.question(
+            self,
+            f"登录{label}",
+            f"将打开浏览器窗口展示{label}登录页，请在其中扫码或输入账号完成登录。\n\n"
+            "Stent 只保存本地浏览器登录态，不会读取或上传你的账号密码。\n\n现在开始吗？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        row = self._account_rows.get(key)
+        if row is not None:
+            row["login"].setEnabled(False)
+            row["login"].setText("等待登录…")
+            self._set_account_status(row["status"], "已打开浏览器，等待你完成登录…", "busy")
+
+        from ...services.publisher import publish_service
+
+        self.run_task(
+            lambda worker: publish_service.login(key),
+            on_result=lambda result: self._on_account_login_done(key, result),
+            on_error=lambda msg: self._on_account_login_done(key, (False, msg)),
+            on_done=lambda: self._on_account_login_reset(key),
+            name=f"login-{key}",
+        )
+
+    def _on_account_login_done(self, key: str, result) -> None:
+        row = self._account_rows.get(key)
+        if row is None:
+            return
+        ok, message = result
+        if ok:
+            self._set_account_status(row["status"], "已登录", "success")
+            row["logout"].setEnabled(True)
+            self.toast(f"{platform_label(key)} 登录成功", "success")
+        else:
+            self._set_account_status(row["status"], f"登录未完成 · {str(message)[:40]}", "warn")
+            self.toast(f"{platform_label(key)} 登录未完成", "warn")
+        row["status"].setToolTip(str(message))
+        self._refresh_accounts_summary()
+
+    def _on_account_login_reset(self, key: str) -> None:
+        row = self._account_rows.get(key)
+        if row is not None:
+            row["login"].setEnabled(True)
+            row["login"].setText("登录")
+
+    def logout_account(self, key: str) -> None:
+        label = platform_label(key)
+        answer = QMessageBox.question(
+            self,
+            f"清除{label}登录态",
+            f"将删除本机保存的{label}登录态，下次发布或同步数据前需要重新登录。\n\n"
+            "这不会影响你在平台上的账号本身。确定清除吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        row = self._account_rows.get(key)
+        if row is not None:
+            row["logout"].setEnabled(False)
+        from ...services.publisher import publish_service
+
+        self.run_task(
+            lambda worker: publish_service.logout(key),
+            on_result=lambda result: self._on_account_logout_done(key, result),
+            on_error=lambda msg: self._on_account_logout_done(key, (False, msg)),
+            name=f"logout-{key}",
+        )
+
+    def _on_account_logout_done(self, key: str, result) -> None:
+        row = self._account_rows.get(key)
+        if row is None:
+            return
+        ok, message = result
+        if ok:
+            self._set_account_status(row["status"], "已清除登录态", "idle")
+            self.toast(f"{platform_label(key)} 登录态已清除", "success")
+        else:
+            self._set_account_status(row["status"], f"清除失败 · {str(message)[:40]}", "warn")
+        row["status"].setToolTip(str(message))
+        self._refresh_accounts_summary()
+
+    def _refresh_accounts_summary(self) -> None:
+        rows = self._account_rows
+        if not rows:
+            return
+        ok_count = sum(1 for r in rows.values() if r["status"].text() == "已登录")
+        self.accounts_summary.setText(f"{ok_count} / {len(rows)} 个平台已登录")
+
+    # ------------------------------------------------------------------
+    # 通用
+    # ------------------------------------------------------------------
     def _build_general_card(self) -> QWidget:
-        card = Card(padding=16, spacing=12)
-        card.add(CardTitle("通用", icon="settings", theme=self.ctx.theme))
+        card = CollapsibleCard(
+            "通用", icon="settings", hint="主题、热榜缓存与窗口动画", theme=self.ctx.theme, expanded=False
+        )
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -212,8 +550,9 @@ class SettingsPage(BasePage):
         return card
 
     def _build_storage_card(self) -> QWidget:
-        card = Card(padding=16, spacing=10)
-        card.add(CardTitle("存储与安全", icon="folder", theme=self.ctx.theme))
+        card = CollapsibleCard(
+            "存储与安全", icon="folder", hint="本地数据目录与诊断导出", theme=self.ctx.theme, expanded=False
+        )
 
         self.paths_label = QLabel()
         self.paths_label.setObjectName("CardHint")
@@ -242,8 +581,7 @@ class SettingsPage(BasePage):
         return card
 
     def _build_about_card(self) -> QWidget:
-        card = Card(padding=16, spacing=8)
-        card.add(CardTitle("关于", icon="info", theme=self.ctx.theme))
+        card = CollapsibleCard("关于", icon="info", theme=self.ctx.theme, expanded=False)
         text = QLabel(
             f"Stent v{__version__}　·　基于 Easel（ZJU-REAL/Easel，Apache-2.0）提取重构的桌面端社媒内容智能体\n"
             "四大模块：热点发现 · 内容创作 · 发布中心 · 数据分析\n"
@@ -257,6 +595,19 @@ class SettingsPage(BasePage):
     # ------------------------------------------------------------------
     def on_first_show(self) -> None:
         self.reload()
+        if not self._accounts_checked:
+            # 本地快速判断，毫秒级返回，不会让页面看起来像卡住
+            self.check_accounts(force=False)
+
+    def apply_theme(self, theme: str) -> None:
+        for card in (
+            self.llm_card,
+            self.accounts_card,
+            self.general_card,
+            self.storage_card,
+            self.about_card,
+        ):
+            card.apply_theme(theme)
 
     def reload(self) -> None:
         self._loading = True
@@ -461,6 +812,9 @@ class SettingsPage(BasePage):
             "data_dir": str(paths.data_dir()),
             "hotlist_platforms": cfg.hotlist_platforms,
             "theme": cfg.theme,
+            "platform_accounts": {
+                key: row["status"].text() for key, row in self._account_rows.items()
+            },
         }
         try:
             from pathlib import Path
@@ -470,6 +824,3 @@ class SettingsPage(BasePage):
             self.toast(f"导出失败：{exc}", "error")
             return
         self.toast("诊断信息已导出（不含密钥明文）", "success")
-
-    def apply_theme(self, theme: str) -> None:
-        pass

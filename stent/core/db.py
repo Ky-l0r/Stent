@@ -289,6 +289,17 @@ class Database:
     def get_post(self, post_id: int) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM posts WHERE id = ?", (post_id,))
 
+    def delete_post(self, post_id: int) -> None:
+        """删除一条发布/导入记录（``metrics`` 里的指标随外键级联删除）。"""
+        self.execute("DELETE FROM posts WHERE id = ?", (post_id,))
+
+    def find_post_by_url(self, url: str) -> dict[str, Any] | None:
+        """按链接精确查一条记录（登记去重 / 删除时定位用）。"""
+        text = str(url or "").strip()
+        if not text:
+            return None
+        return self.query_one("SELECT * FROM posts WHERE url = ? LIMIT 1", (text,))
+
     def list_posts(
         self, *, status: str | None = None, platform: str | None = None, limit: int = 200
     ) -> list[dict[str, Any]]:

@@ -1206,15 +1206,100 @@ class StatusLight(QLabel):
     @property
     def is_idle(self) -> bool:
         return self._level == "idle"
+class RowBackgroundDelegate(QStyledItemDelegate):
+    """统一绘制行底色：悬停微亮、选中加深（暗色主题下变浅）。
+
+    选中态不再铺满强调色——整行淡紫在长列表里既刺眼，也让标题文字对比不稳。
+    改为「行底色加深 + 左侧 3px 强调色竖条」：克制，但一眼能定位到当前行。
+    """
+
+    ACCENT_BAR = 3
+
+    def _paint_row(self, painter: QPainter, option: QStyleOptionViewItem, index: Any) -> None:
+        # 悬停整行而不是「鼠标下的那个单元格」：Qt 的 State_MouseOver 只作用于单个
+        # 单元格，左右移动时整行高亮会一段一段地闪，因此改由 _RowHoverFilter 记录行号。
+        hovered_row = getattr(option.widget, "_hovered_row", -1)
+        hovered = hovered_row == index.row()
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if not (selected or hovered):
+            return
+        p = palette(current_theme())
+        # 只填自己这一格：Qt 不会把委托的画笔裁剪到单元格，若在这里 fillRect 整行，
+        # 后绘制的列会把前面列已经画好的文字整行盖掉（选中/悬停行会「变空白」）。
+        rect = option.rect
+        painter.save()
+        painter.fillRect(rect, QColor(p.row_selected if selected else p.row_hover))
+        if selected and index.column() == 0:
+            # 选中行的左侧强调竖条只由第一列负责，否则每列都会画一条
+            painter.fillRect(
+                QRect(rect.left(), rect.top(), self.ACCENT_BAR, rect.height()), QColor(p.accent)
+            )
+        painter.restore()
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        super().paint(painter, option, index)
+
+
+class _RowHoverFilter(QObject):
+    """跟踪鼠标所在的行，并只重绘受影响的两行。
+
+    整行悬停高亮需要「知道当前在哪一行」，而 Qt 只告诉委托「哪个单元格被悬停」；
+    这里在 viewport 上记录行号，顺便把重绘限制在该行，避免整表刷新造成拖影。
+    """
+
+    def __init__(self, table: Any) -> None:
+        super().__init__(table)
+        self._table = table
+        self._row = -1
+        table._hovered_row = -1
+        table.viewport().installEventFilter(self)
+
+    def _row_rect(self, row: int) -> QRect:
+        table = self._table
+        model = table.model()
+        rect = table.visualRect(model.index(row, 0))
+        last = model.columnCount() - 1
+        if last > 0:
+            rect = rect.united(table.visualRect(model.index(row, last)))
+        return rect
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 - Qt 命名
+        try:
+            if event.type() == QEvent.Type.MouseMove:
+                row = self._table.rowAt(event.position().toPoint().y())
+            elif event.type() == QEvent.Type.Leave:
+                row = -1
+            else:
+                return False
+        except RuntimeError:  # pragma: no cover - 表格已销毁
+            return False
+        if row != self._row:
+            previous, self._row = self._row, row
+            self._table._hovered_row = row
+            for candidate in (previous, row):
+                if candidate >= 0:
+                    self._table.viewport().update(self._row_rect(candidate))
+        return False
+
+
+
 
 
 # --------------------------------------------------------------------------
 # 平台品牌色标签
 # --------------------------------------------------------------------------
-class PlatformBadgeDelegate(QStyledItemDelegate):
+# 注意：PlatformBadgeDelegate 继承 RowBackgroundDelegate，因此它必须定义在
+# 后者之后。这里的顺序不能随意调整，否则模块导入时就会 NameError。
+class PlatformBadgeDelegate(RowBackgroundDelegate):
     """在表格单元格内绘制「平台品牌色圆点 + 文字」。
 
     数据来自单元格的 ``Qt.UserRole``（平台 key）。没有 key 时退回默认绘制。
+
+    必须继承 :class:`RowBackgroundDelegate`：否则选中一行时，其它列都被行底色盖住，
+    唯独平台列还是原样，看起来像「这一格没被选中」。
     """
 
     DOT = 7.0
@@ -1223,10 +1308,25 @@ class PlatformBadgeDelegate(QStyledItemDelegate):
         super().__init__(parent)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: Any) -> None:  # noqa: N802
-        key = index.data(Qt.ItemDataRole.UserRole)
+        self._paint_row(painter, option, index)
+        key = index.data(PLATFORM_ROLE) or index.data(Qt.ItemDataRole.UserRole)
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         if not key:
-            super().paint(painter, option, index)
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            opt.text = ""
+            widget = opt.widget
+            style = widget.style() if widget is not None else QApplication.style()
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+            p = palette(current_theme())
+            painter.save()
+            painter.setPen(QPen(QColor(p.text)))
+            painter.drawText(
+                option.rect.adjusted(8, 0, -4, 0),
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                text,
+            )
+            painter.restore()
             return
 
         opt = QStyleOptionViewItem(option)
@@ -1332,85 +1432,6 @@ def heat_tone(theme: str, ratio: float) -> str:
     if ratio >= 0.3:
         return p.heat_warm
     return p.heat_cool
-
-
-class RowBackgroundDelegate(QStyledItemDelegate):
-    """统一绘制行底色：悬停微亮、选中加深（暗色主题下变浅）。
-
-    选中态不再铺满强调色——整行淡紫在长列表里既刺眼，也让标题文字对比不稳。
-    改为「行底色加深 + 左侧 3px 强调色竖条」：克制，但一眼能定位到当前行。
-    """
-
-    ACCENT_BAR = 3
-
-    def _paint_row(self, painter: QPainter, option: QStyleOptionViewItem, index: Any) -> None:
-        # 悬停整行而不是「鼠标下的那个单元格」：Qt 的 State_MouseOver 只作用于单个
-        # 单元格，左右移动时整行高亮会一段一段地闪，因此改由 _RowHoverFilter 记录行号。
-        hovered_row = getattr(option.widget, "_hovered_row", -1)
-        hovered = hovered_row == index.row()
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        if not (selected or hovered):
-            return
-        p = palette(current_theme())
-        # 只填自己这一格：Qt 不会把委托的画笔裁剪到单元格，若在这里 fillRect 整行，
-        # 后绘制的列会把前面列已经画好的文字整行盖掉（选中/悬停行会「变空白」）。
-        rect = option.rect
-        painter.save()
-        painter.fillRect(rect, QColor(p.row_selected if selected else p.row_hover))
-        if selected and index.column() == 0:
-            # 选中行的左侧强调竖条只由第一列负责，否则每列都会画一条
-            painter.fillRect(
-                QRect(rect.left(), rect.top(), self.ACCENT_BAR, rect.height()), QColor(p.accent)
-            )
-        painter.restore()
-
-    def paint(  # noqa: N802
-        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
-    ) -> None:
-        self._paint_row(painter, option, index)
-        super().paint(painter, option, index)
-
-
-class _RowHoverFilter(QObject):
-    """跟踪鼠标所在的行，并只重绘受影响的两行。
-
-    整行悬停高亮需要「知道当前在哪一行」，而 Qt 只告诉委托「哪个单元格被悬停」；
-    这里在 viewport 上记录行号，顺便把重绘限制在该行，避免整表刷新造成拖影。
-    """
-
-    def __init__(self, table: Any) -> None:
-        super().__init__(table)
-        self._table = table
-        self._row = -1
-        table._hovered_row = -1
-        table.viewport().installEventFilter(self)
-
-    def _row_rect(self, row: int) -> QRect:
-        table = self._table
-        model = table.model()
-        rect = table.visualRect(model.index(row, 0))
-        last = model.columnCount() - 1
-        if last > 0:
-            rect = rect.united(table.visualRect(model.index(row, last)))
-        return rect
-
-    def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 - Qt 命名
-        try:
-            if event.type() == QEvent.Type.MouseMove:
-                row = self._table.rowAt(event.position().toPoint().y())
-            elif event.type() == QEvent.Type.Leave:
-                row = -1
-            else:
-                return False
-        except RuntimeError:  # pragma: no cover - 表格已销毁
-            return False
-        if row != self._row:
-            previous, self._row = self._row, row
-            self._table._hovered_row = row
-            for candidate in (previous, row):
-                if candidate >= 0:
-                    self._table.viewport().update(self._row_rect(candidate))
-        return False
 
 
 class RankBadgeDelegate(RowBackgroundDelegate):
@@ -2491,6 +2512,54 @@ def attach_hot_table_visuals(
     # 整行悬停 + 按行重绘（见 _RowHoverFilter）
     hover = _RowHoverFilter(table)
     return {"row": row, "rank": rank, "heat": heat, "title": title, "hover": hover}
+
+
+def attach_row_visuals(table: Any) -> dict[str, Any]:
+    """给普通数据表装配「行底色加深 + 整行悬停」。
+
+    数据分析 / 发布记录这类表格原本用 Qt 默认的选中样式（一整条系统高亮色），
+    与热点发现列表不一致；统一走同一套委托后，全应用的表格选中观感就对齐了。
+    """
+    row = RowBackgroundDelegate(table)
+    table.setItemDelegate(row)
+    table.viewport().setMouseTracking(True)
+    hover = _RowHoverFilter(table)
+    return {"row": row, "hover": hover}
+
+
+def center_columns(table: Any, columns: Iterable[int]) -> None:
+    """把指定列的数据与表头都设为居中。
+
+    数值列靠左时，个位数与五位数的小数点对不齐，纵向比较很费眼。
+    """
+    for column in columns:
+        header_item = table.horizontalHeaderItem(column)
+        if header_item is not None:
+            header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        for row in range(table.rowCount()):
+            item = table.item(row, column)
+            if item is not None:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+
+def fit_table_height(table: Any, *, min_height: int = 0, max_height: int = 0) -> None:
+    """让表格高度贴合内容，并关掉自己的滚动条。
+
+    表格嵌在页面的滚动区里时，两层滚动会打架：滚到表格底部后事件继续冒泡，
+    页面又跟着滚一下，手感很怪。让表格「不自己滚、长多高就多高」，
+    滚动统一交给页面，就没有这个问题了。
+    """
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    header = table.horizontalHeader()
+    header_height = header.height() if header is not None else 0
+    row_height = table.verticalHeader().defaultSectionSize() if table.verticalHeader() else 30
+    rows = table.rowCount()
+    total = header_height + rows * row_height + 2 * table.frameWidth() + 2
+    if min_height:
+        total = max(total, min_height)
+    if max_height:
+        total = min(total, max_height)
+    table.setFixedHeight(int(total))
 
 
 class RowActionsDelegate(RowBackgroundDelegate):
