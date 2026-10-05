@@ -6,6 +6,16 @@
 - Chromium **不内置**：默认复用系统已安装的 Playwright 浏览器，缺失时由应用提示按需下载，
   以此控制安装体积（企划书 4.3「安装体积小于 200MB」）
 - 裁掉不用的 Qt 模块与科学计算库，进一步瘦身
+
+瘦身说明（v1.1 实测 232.7MB → 约 190MB）：
+``excludes`` 只能挡住 Python 侧的模块导入，**挡不住 Qt 的共享库**——
+只要 PySide6 的 hook 认为某个模块被收集过，对应的 ``Qt6*.dll`` 仍会被拷进来。
+因此这里额外在 ``COLLECT`` 阶段按文件名过滤二进制与数据：
+- QML / Quick / Pdf / VirtualKeyboard：本项目是纯 Widgets + QtSvg，完全用不到
+- ``opengl32sw.dll``：Qt 的软件 OpenGL 兜底实现，仅在使用 QOpenGLWidget /
+  QtQuick 时才需要；纯 QWidget 走光栅绘制，不创建 GL 上下文
+- ``translations/``：应用没有安装 QTranslator，Qt 自带译文永远不会被加载
+若后续引入任何依赖 OpenGL / QML 的组件，请把对应条目从下面的过滤表里移除。
 """
 
 from pathlib import Path
@@ -31,7 +41,40 @@ hiddenimports = [
     "openai",
     "httpx",
     "PySide6.QtSvg",
+    # 以下模块都是**运行时动态导入**的，PyInstaller 的静态分析看不到它们：
+    # - 页面按需懒加载：importlib.import_module(f".pages.{name}")
+    # - 平台适配器按需加载：importlib.import_module(".xiaohongshu", "stent.platforms")
+    # 漏掉的话，打包后的程序会出现「页面加载失败 / 适配器不可用」，
+    # 而源码运行时一切正常（v1.1 打包时踩过）。
+    "stent.ui.pages.hotsearch",
+    "stent.ui.pages.create",
+    "stent.ui.pages.publish",
+    "stent.ui.pages.analytics",
+    "stent.ui.pages.profile",
+    "stent.ui.pages.settings",
+    "stent.ui.pages.onboarding",
+    "stent.platforms.xiaohongshu",
+    "stent.platforms.douyin",
+    "stent.platforms.zhihu",
+    "stent.platforms.bilibili",
 ]
+
+#: 不打包的 Qt 共享库（按文件名匹配，小写比较）
+DROPPED_BINARIES: tuple[str, ...] = (
+    "qt6quick.dll",
+    "qt6qml.dll",
+    "qt6qmlmodels.dll",
+    "qt6qmlmeta.dll",
+    "qt6qmlworkerscript.dll",
+    "qt6pdf.dll",
+    "qt6virtualkeyboard.dll",
+    "opengl32sw.dll",
+)
+
+#: 不打包的数据目录 / 文件（相对 _internal 的路径前缀，小写比较）
+DROPPED_DATA_PREFIXES: tuple[str, ...] = (
+    "pyside6/translations/",
+)
 
 # 明确排除：这些库会显著增大体积且 Stent 不使用
 excludes = [
@@ -109,10 +152,26 @@ exe = EXE(
     icon=None,
 )
 
+def _prune(items):
+    """按名称过滤 PyInstaller 的 (dest, source, type) 三元组。"""
+    kept = []
+    for entry in items:
+        dest = str(entry[0]).replace("\\", "/").lower()
+        if dest.rsplit("/", 1)[-1] in DROPPED_BINARIES:
+            continue
+        if any(dest.startswith(prefix) for prefix in DROPPED_DATA_PREFIXES):
+            continue
+        kept.append(entry)
+    return kept
+
+
+# 剪掉体积大但用不到的 Qt 组件。
+# 放在 excludes 之外，是因为这些是共享库 / 数据文件，不属于 Python 模块，
+# excludes 拦不住它们。
 coll = COLLECT(
     exe,
-    a.binaries,
-    a.datas,
+    _prune(a.binaries),
+    _prune(a.datas),
     strip=False,
     upx=False,
     upx_exclude=[],

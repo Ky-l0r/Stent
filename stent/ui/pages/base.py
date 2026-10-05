@@ -93,6 +93,21 @@ class BasePage(QWidget, WorkerHost):
     def toast(self, text: str, level: str = "info") -> None:
         self.ctx.toast(text, level)
 
+    def set_status_message(self, text: str) -> None:
+        """把进度写到主窗口底部的状态栏。
+
+        放在基类而不是各页面里：页面随时可能被重写，而这个「进度往哪写」的约定
+        不该跟着页面一起被删掉（v1.1 打包实测时就是因为热点页重写后漏了它，
+        进度回调抛 AttributeError）。
+        """
+        window = self.window()
+        setter = getattr(window, "set_status", None)
+        if callable(setter):
+            try:
+                setter(text)
+            except Exception:  # pragma: no cover - 状态栏异常不该影响主流程
+                pass
+
     def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
         self.cancel_all()
         super().closeEvent(event)
