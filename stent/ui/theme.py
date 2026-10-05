@@ -22,6 +22,9 @@ class Palette:
     # 输入控件底色：暗色下刻意比卡片再亮一档，
     # 否则「深灰输入框」压在「深灰卡片」上，边界糊成一片、看不出哪里可以输入
     input_bg: str
+    # 次级内容面：标题候选 / 简介 / 标签这类「辅助信息」用极浅底色，
+    # 与纯白的主输入框（正文）拉开层级，视线自然落在正文上
+    surface: str
     # 描边
     border: str
     border_strong: str
@@ -69,6 +72,7 @@ LIGHT = Palette(
     card="#FFFFFF",
     card_hover="#F8F6FD",
     input_bg="#FFFFFF",
+    surface="#F7F7FB",
     border="#E7E1F3",
     border_strong="#D5CDE7",
     text="#231D33",
@@ -109,6 +113,7 @@ DARK = Palette(
     card_hover="#35323F",
     # 比卡片亮一档：让「可输入」这件事在暗色下也一眼看得出来
     input_bg="#3B3748",
+    surface="#2A2731",
     border="#3C3846",
     border_strong="#4B4657",
     text="#EDEAF4",
@@ -399,6 +404,10 @@ QLabel, QCheckBox, QRadioButton, QGroupBox {{
     font-size: 22px;
     font-weight: 600;
 }}
+#StatValue[empty="true"] {{
+    color: {p.text_faint};
+    font-weight: 500;
+}}
 #StatLabel {{
     font-size: 11.5px;
     color: {p.text_sub};
@@ -525,20 +534,366 @@ QPushButton#StopButton:disabled {{
     background: transparent;
 }}
 
-/* ---------- 可折叠分组 ---------- */
-QPushButton#CollapsibleHeader {{
+/* ---------- 运行环境阻塞提示 ---------- */
+/* 环境没装好 = 后面所有步骤都走不通，所以它必须比任何普通提示都显眼：
+   暖色底 + 实线描边 + 大标题 + 一个主操作按钮。 */
+#EnvCard {{
+    background: {p.tint_warn};
+    border: 1px solid {p.warning};
+    border-radius: 10px;
+}}
+#EnvTitle {{
+    font-size: 14.5px;
+    font-weight: 700;
+    color: {p.text};
+    background: transparent;
+}}
+#EnvDetail {{
+    font-size: 12.5px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+#EnvProgress {{
+    background: {p.border};
+    border: none;
+    border-radius: 3px;
+    height: 6px;
+    max-height: 6px;
+}}
+#EnvProgress::chunk {{
+    background: {p.warning};
+    border-radius: 3px;
+}}
+
+/* ---------- 安全模式标语 ---------- */
+/* 默认行为本身是「安全」的，用让人安心的绿色常驻在操作区上方。 */
+#SafeStrip {{
+    background: {p.tint_success};
+    border: 1px solid {p.success};
+    border-radius: 8px;
+}}
+#SafeStripTitle {{
+    font-size: 12.5px;
+    font-weight: 600;
+    color: {p.success};
+    background: transparent;
+}}
+#SafeStripText {{
+    font-size: 11.5px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+
+/* ---------- 安全模式徽章 ---------- */
+/* 静态提示压成一行小字，贴在「确认发布」旁边，把纵向空间还给预览。 */
+#SafeBadge {{
+    background: {p.tint_success};
+    border: 1px solid {p.success};
+    border-radius: 11px;
+    padding: 3px 10px;
+    color: {p.success};
+    font-size: 11.5px;
+}}
+
+/* ---------- 确认发布按钮 ---------- */
+/* 勾选确认后要一眼看出「现在可以点了」：实心强调色 + 加粗 + 更大的点击面积；
+   未勾选时彻底哑光，避免误以为可以直接点。 */
+QPushButton#ConfirmButton {{
+    background: {p.accent};
+    border: 1px solid {p.accent};
+    color: {p.on_accent};
+    font-weight: 700;
+    font-size: 13.5px;
+    padding: 9px 26px;
+    border-radius: 7px;
+}}
+QPushButton#ConfirmButton:hover {{
+    background: {p.accent_hover};
+    border-color: {p.accent_hover};
+}}
+QPushButton#ConfirmButton:disabled {{
+    background: {p.bg_alt};
+    border-color: {p.border};
+    color: {p.text_faint};
+    font-weight: 600;
+}}
+
+/* ---------- 检查结果列表 ---------- */
+#CheckList {{
+    background: {p.card};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+    padding: 4px;
+}}
+#CheckList::item {{
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: {p.text};
+}}
+#CheckList::item:hover {{ background: {p.card_hover}; }}
+
+/* ---------- 发布记录抽屉 ---------- */
+#Drawer {{
+    background: {p.bg};
+}}
+#DrawerHeader {{
+    background: {p.card};
+    border-bottom: 1px solid {p.border};
+}}
+#DrawerTitle {{
+    font-size: 15px;
+    font-weight: 600;
+    background: transparent;
+}}
+#StatusSummary {{
+    font-size: 12px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+
+/* ---------- 分段切换（Tabs） ---------- */
+/* 用分段控件而不是 QTabWidget：胶囊化的分段更轻，和筛选胶囊视觉同源。 */
+#Segmented {{
+    background: {p.bg_alt};
+    border: none;
+    border-radius: 9px;
+}}
+QPushButton#SegmentTab {{
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 16px;
+    color: {p.text_sub};
+    font-size: 12.5px;
+}}
+QPushButton#SegmentTab:hover {{
+    color: {p.text};
+}}
+QPushButton#SegmentTab:checked {{
+    background: {p.card};
+    color: {p.accent};
+    font-weight: 600;
+}}
+
+/* ---------- 快捷参数胶囊 ---------- */
+QPushButton#ParamChip {{
+    background: {p.card};
+    border: 1px solid {p.border_strong};
+    border-radius: 13px;
+    padding: 4px 12px;
+    min-height: 20px;
+    color: {p.text_sub};
+    font-size: 12.5px;
+}}
+QPushButton#ParamChip:hover {{
+    border-color: {p.accent};
+    color: {p.accent};
+}}
+QPushButton#ParamChip[active="true"] {{
+    background: {p.accent_soft};
+    border-color: {p.accent};
+    color: {p.accent};
+    font-weight: 600;
+}}
+
+/* ---------- 标签云 ---------- */
+#TagCloud {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+}}
+QPushButton#TagAddPill {{
+    background: transparent;
+    border: 1px dashed {p.border_strong};
+    border-radius: 11px;
+    padding: 2px 11px;
+    min-height: 18px;
+    color: {p.text_faint};
+    font-size: 12px;
+}}
+QPushButton#TagAddPill:hover {{
+    border-color: {p.accent};
+    color: {p.accent};
+}}
+
+/* ---------- 检查报告卡 ---------- */
+/* 报告不再用「红字大字」砸用户：整条用浅色底卡片包住，文字回归常规深灰，
+   只有左侧一枚小圆点承担「这是问题」的信号。 */
+#CheckCard {{
+    background: {p.card};
+    border: 1px solid {p.border};
+    border-left: 3px solid {p.border_strong};
+    border-radius: 8px;
+}}
+#CheckCard[level="error"] {{
+    background: {p.tint_error};
+    border: 1px solid {p.border};
+    border-left: 3px solid {p.danger};
+}}
+#CheckCard[level="warn"] {{
+    background: {p.tint_warn};
+    border: 1px solid {p.border};
+    border-left: 3px solid {p.warning};
+}}
+#CheckCard[level="info"] {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-left: 3px solid {p.border_strong};
+}}
+#CheckTitle {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {p.text};
+    background: transparent;
+}}
+#CheckDetail {{
+    font-size: 12.5px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+#CheckSuggestion {{
+    font-size: 12.5px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+#CheckGroup {{
+    font-size: 12px;
+    font-weight: 600;
+    color: {p.text_sub};
+    background: transparent;
+}}
+QPushButton#SuggestionToggle {{
     background: transparent;
     border: none;
     border-radius: 6px;
-    padding: 5px 6px;
+    padding: 4px 8px;
     color: {p.text_sub};
     font-size: 12.5px;
+    text-align: left;
+}}
+QPushButton#SuggestionToggle:hover {{
+    background: {p.bg_alt};
+    color: {p.text};
+}}
+
+/* ---------- AI 自检报告 ---------- */
+#ReportPanel {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: 9px;
+}}
+#ReportScore {{
+    font-size: 30px;
+    font-weight: 700;
+    background: transparent;
+}}
+#ReportScoreUnit {{
+    font-size: 12.5px;
+    color: {p.text_faint};
+    background: transparent;
+}}
+#ReportVerdict {{
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+}}
+#ReportSectionTitle {{
+    font-size: 12.5px;
+    font-weight: 600;
+    color: {p.text_sub};
+    background: transparent;
+}}
+#ReportItem {{
+    font-size: 12.5px;
+    color: {p.text};
+    background: transparent;
+}}
+#ReportMuted {{
+    font-size: 12px;
+    color: {p.text_faint};
+    background: transparent;
+}}
+#DimBar {{
+    background: {p.border};
+    border: none;
+    border-radius: 3px;
+    height: 5px;
+    max-height: 5px;
+}}
+#DimBar::chunk {{
+    background: {p.accent};
+    border-radius: 3px;
+}}
+
+/* ---------- 可折叠卡片 ---------- */
+QPushButton#CardFold {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: {p.text};
+    font-size: 13.5px;
     font-weight: 600;
     text-align: left;
 }}
-QPushButton#CollapsibleHeader:hover {{
+QPushButton#CardFold:hover {{
     background: {p.bg_alt};
+}}
+
+/* ---------- 数据分析：空状态任务清单 ---------- */
+#GuideCard {{
+    background: {p.surface};
+    border: 1px dashed {p.border_strong};
+    border-radius: 10px;
+}}
+#GuideStep {{
+    font-size: 13px;
     color: {p.text};
+    background: transparent;
+}}
+#GuideStepDone {{
+    font-size: 13px;
+    color: {p.text_faint};
+    background: transparent;
+}}
+#GuideHint {{
+    font-size: 12px;
+    color: {p.text_faint};
+    background: transparent;
+}}
+
+/* ---------- 高级设置入口按钮 ---------- */
+/* 虚线描边 = 「这里还能展开」，默认不抢视线，但一眼能看出是可点的补充项 */
+QPushButton#AdvancedButton {{
+    background: transparent;
+    border: 1px dashed {p.border_strong};
+    border-radius: 7px;
+    padding: 8px 12px;
+    color: {p.text_sub};
+    text-align: left;
+}}
+QPushButton#AdvancedButton:hover {{
+    background: {p.accent_soft};
+    border-color: {p.accent};
+    color: {p.accent};
+}}
+
+/* ---------- 高级设置弹窗 ---------- */
+#DialogSection {{
+    background: {p.bg_alt};
+    border: 1px solid {p.border};
+    border-radius: 9px;
+}}
+#DialogSectionTitle {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {p.text};
+    background: transparent;
+}}
+#DialogHint {{
+    font-size: 11.5px;
+    color: {p.text_faint};
+    background: transparent;
 }}
 
 /* ---------- 生成步骤提示条 ---------- */
@@ -607,8 +962,8 @@ QPushButton#CollapsibleHeader:hover {{
 
 /* ---------- 标题候选 ---------- */
 QListWidget#TitleList {{
-    background: {p.input_bg};
-    border: 1px solid {p.border_strong};
+    background: {p.surface};
+    border: 1px solid {p.border};
     border-radius: 7px;
     padding: 4px;
 }}
@@ -717,6 +1072,15 @@ QLineEdit:read-only {{
     background: {p.bg_alt};
     color: {p.text_sub};
 }}
+/* 次级输入框：简介这类辅助信息用极浅底色，和纯白的正文拉开层级 */
+QTextEdit#SurfaceInput {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+}}
+QTextEdit#SurfaceInput:focus {{
+    border-color: {p.accent};
+    background: {p.input_bg};
+}}
 QComboBox {{
     background: {p.input_bg};
     border: 1px solid {p.border_strong};
@@ -824,18 +1188,30 @@ QTableCornerButton::section {{
 }}
 
 /* ---------- 滚动条 ---------- */
+/* 默认几乎隐形（只留一条极淡的槽），鼠标移到滚动区域上才显形：
+   预览区那种大块文本里，一条粗滚动条比内容本身还抢眼。 */
 QScrollBar:vertical {{
     background: transparent; width: 9px; margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: {p.border_strong}; border-radius: 4px; min-height: 28px;
+    background: transparent; border-radius: 4px; min-height: 28px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {p.text_faint}; }}
+*:hover > QScrollBar::handle:vertical,
+QScrollArea:hover QScrollBar::handle:vertical,
+QTextEdit:hover QScrollBar::handle:vertical,
+QAbstractScrollArea:hover QScrollBar::handle:vertical {{
+    background: {p.border_strong};
+}}
 QScrollBar:horizontal {{
     background: transparent; height: 9px; margin: 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {p.border_strong}; border-radius: 4px; min-width: 28px;
+    background: transparent; border-radius: 4px; min-width: 28px;
+}}
+QScrollBar::handle:horizontal:hover {{ background: {p.text_faint}; }}
+QAbstractScrollArea:hover QScrollBar::handle:horizontal {{
+    background: {p.border_strong};
 }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}

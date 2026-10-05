@@ -76,6 +76,20 @@ PATHS: dict[str, str] = {
     "chevron-down": '<path d="m6 9 6 6 6-6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
     "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    "download": (
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
+    ),
+    "shield": (
+        '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6'
+        'a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5'
+        'a1 1 0 0 1 1 1z"/>'
+    ),
+    "help": (
+        '<circle cx="12" cy="12" r="10"/>'
+        '<path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>'
+        '<path d="M12 17h.01"/>'
+    ),
     "sliders": (
         '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/>'
         '<path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/>'

@@ -32,6 +32,36 @@ from ..platforms import (
 
 log = logging.getLogger(__name__)
 
+#: 发布记录状态 → 中文文案。
+#: 统一放在服务层，避免 UI 与日志各写一套导致「同一个状态两种说法」。
+POST_STATUS_LABELS: dict[str, str] = {
+    "pending": "进行中",
+    "draft_filled": "待你确认",
+    "published": "已发布",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+
+#: 状态 → 语义色键（UI 据此上色，见 theme.level_color）
+POST_STATUS_TONES: dict[str, str] = {
+    "pending": "busy",
+    "draft_filled": "warn",
+    "published": "success",
+    "failed": "error",
+    "cancelled": "idle",
+}
+
+#: 需要用户处理（回浏览器确认或重试）的状态
+POST_STATUS_OPEN: tuple[str, ...] = ("pending", "draft_filled")
+
+
+def post_status_label(status: str) -> str:
+    return POST_STATUS_LABELS.get(status or "", status or "未知")
+
+
+def post_status_tone(status: str) -> str:
+    return POST_STATUS_TONES.get(status or "", "idle")
+
 
 class PublishDenied(RuntimeError):
     """发布被拒绝（缺少人工确认或存在阻断性问题）。"""
@@ -374,6 +404,144 @@ class PublishService:
         self._db.update_post(post_id, status="published", url=url, published_at=now(), error="")
         self._db.log_action("", "manual_confirm", f"用户在浏览器中完成发布，url={url}", post_id=post_id)
 
+    def mark_failed_manually(self, post_id: int, reason: str = "") -> None:
+        """用户回浏览器发现没发成功，手动标记失败（避免记录一直挂在「待确认」）。"""
+        self._db.update_post(post_id, status="failed", error=reason or "用户标记为发布失败")
+        self._db.log_action("", "manual_failed", reason or "用户标记为发布失败", post_id=post_id)
+
+    def cancel_post(self, post_id: int, reason: str = "") -> None:
+        """取消这次发布：记录保留但归档为「已取消」，不再占用待办。"""
+        self._db.update_post(post_id, status="cancelled", error=reason or "用户取消了这次发布")
+        self._db.log_action("", "cancel_post", reason or "用户取消发布", post_id=post_id)
+
+    def open_posts(self) -> list[dict[str, Any]]:
+        """仍需要用户处理的记录（进行中 / 待确认）。"""
+        return [p for p in self._db.list_posts(limit=200) if p.get("status") in POST_STATUS_OPEN]
+
+    # -- 运行环境 --------------------------------------------------------
+    def install_environment(
+        self,
+        *,
+        on_progress: Callable[[str, int], None] | None = None,
+        cancel: Any = None,
+    ) -> tuple[bool, str]:
+        """一键安装发布运行环境（Playwright 组件 + Chromium 内核）。
+
+        面向非技术用户：这里把「该敲哪条命令」变成一次点击。命令仍然会执行，
+        只是不再需要用户自己复制粘贴——失败时把原始输出回传给界面供排查。
+        """
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        def report(message: str, percent: int = -1) -> None:
+            if on_progress is None:
+                return
+            try:
+                on_progress(message, percent)
+            except Exception:  # pragma: no cover - 进度回调不应影响安装
+                pass
+
+        status = environment_status()
+        if status.ready:
+            return True, "发布环境已就绪"
+
+        steps: list[tuple[str, list[str], int]] = []
+        if status.code == "no_playwright":
+            steps.append(
+                (
+                    "正在安装 Playwright 组件…",
+                    [sys.executable, "-m", "pip", "install", "playwright"],
+                    40,
+                )
+            )
+        steps.append(
+            (
+                "正在下载浏览器内核（约 150 MB，请保持网络畅通）…",
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                100,
+            )
+        )
+
+        for message, command, percent in steps:
+            report(message, percent)
+            ok, output = self._run_command(command, cancel=cancel)
+            if not ok:
+                tail = output.strip().splitlines()[-1:] or [""]
+                return False, f"{message.rstrip('…')}失败：{tail[0][:200]}"
+
+        # 装完之后必须清掉适配器缓存：首次探测失败时缓存里存的是 None，
+        # 不清掉的话平台依旧显示「适配器不可用」。
+        try:
+            from ..platforms import reset_cache  # noqa: PLC0415
+
+            reset_cache()
+        except Exception:  # pragma: no cover
+            log.debug("重置适配器缓存失败", exc_info=True)
+
+        if environment_status().ready:
+            return True, "发布环境安装完成，现在可以登录并发布了"
+        return False, "安装命令已执行，但仍未检测到浏览器内核，请查看日志了解详情"
+
+    @staticmethod
+    def _run_command(
+        command: list[str], *, cancel: Any = None, timeout_sec: int = 1800
+    ) -> tuple[bool, str]:
+        """执行外部命令并回收输出（供一键安装使用）。
+
+        用后台线程读 stdout：主循环负责轮询取消与超时，这样即使用户中途点「中断」
+        也能立刻杀掉子进程，不会被阻塞在 readline 上。
+        """
+        import subprocess  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+        import time  # noqa: PLC0415
+
+        flags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):  # Windows：不要弹黑框
+            flags = subprocess.CREATE_NO_WINDOW
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, f"无法启动安装程序：{exc}"
+
+        collected: list[str] = []
+
+        def pump() -> None:
+            try:
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        collected.append(line.rstrip())
+            except Exception:  # pragma: no cover - 管道关闭
+                pass
+
+        reader = threading.Thread(target=pump, daemon=True, name="stent-install-reader")
+        reader.start()
+
+        deadline = time.monotonic() + timeout_sec
+        cancelled = False
+        while process.poll() is None:
+            if cancel is not None and getattr(cancel, "is_set", lambda: False)():
+                cancelled = True
+                process.kill()
+                break
+            if time.monotonic() > deadline:
+                process.kill()
+                return False, "安装超时，请检查网络后重试"
+            time.sleep(0.2)
+
+        reader.join(timeout=3)
+        output = "\n".join(collected[-40:])
+        if cancelled:
+            return False, "安装已取消"
+        return process.returncode == 0, output
+
     def export_text(self, preparation: PublishPreparation) -> str:
         """导出可粘贴的纯文本（适配器不可用或用户选择人工发布时使用）。"""
         payload = preparation.payload
@@ -393,34 +561,76 @@ class PublishError(RuntimeError):
 # --------------------------------------------------------------------------
 # 浏览器内核检测
 # --------------------------------------------------------------------------
-def browser_status() -> tuple[bool, str]:
-    """检测 Playwright 的 Chromium 内核是否就绪（发布功能依赖它）。
+@dataclass
+class EnvironmentStatus:
+    """发布运行环境的就绪状态。
 
-    只做文件系统探测，不启动 driver 进程，因此可以在 UI 线程安全调用。
+    刻意与 :func:`browser_status` 分开：后者返回的是给开发者看的路径/命令，
+    这里返回的是**给用户看的措辞**——普通用户不需要知道 Playwright 是什么。
     """
+
+    ready: bool
+    code: str = "ok"  # ok / no_playwright / no_chromium
+    title: str = "发布环境已就绪"
+    detail: str = ""
+    #: 一键安装失败时供排查用的原始命令
+    command: str = ""
+    size_hint: str = ""
+
+
+def _chromium_root():
     import os
     from pathlib import Path
 
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if base:
+        return Path(base)
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def environment_status() -> EnvironmentStatus:
+    """检测发布环境，返回面向用户的结论（只做文件系统探测，可在 UI 线程调用）。"""
     try:
         import playwright  # noqa: F401
     except ImportError:
-        return False, "未安装 playwright，请执行：pip install playwright"
+        return EnvironmentStatus(
+            ready=False,
+            code="no_playwright",
+            title="缺少发布组件",
+            detail="发布功能需要一个配套组件，当前还没有装上。点下面的按钮自动装好，不需要你敲任何命令。",
+            command="pip install playwright",
+        )
 
-    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if base:
-        root = Path(base)
-    elif os.name == "nt":
-        root = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
-    else:
-        root = Path.home() / ".cache" / "ms-playwright"
+    root = _chromium_root()
+    if root.exists():
+        candidates = list(root.glob("chromium*/**/chrome.exe")) + list(
+            root.glob("chromium*/**/chrome")
+        )
+        if candidates:
+            return EnvironmentStatus(
+                ready=True,
+                code="ok",
+                title="发布环境已就绪",
+                detail="浏览器内核已安装，登录与发布都可以正常使用。",
+            )
+    return EnvironmentStatus(
+        ready=False,
+        code="no_chromium",
+        title="未检测到浏览器内核",
+        detail="发布时需要浏览器内核来打开平台页面并填写表单，当前还没有下载。",
+        command="python -m playwright install chromium",
+        size_hint="约 150 MB",
+    )
 
-    if not root.exists():
-        return False, "尚未下载 Chromium 内核，请执行：python -m playwright install chromium"
 
-    candidates = list(root.glob("chromium*/**/chrome.exe")) + list(root.glob("chromium*/**/chrome"))
-    if candidates:
-        return True, str(candidates[0])
-    return False, "尚未下载 Chromium 内核，请执行：python -m playwright install chromium"
+def browser_status() -> tuple[bool, str]:
+    """兼容旧接口：返回 (是否就绪, 说明)。"""
+    status = environment_status()
+    if status.ready:
+        return True, ""
+    return False, status.detail
 
 
 @dataclass

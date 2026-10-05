@@ -28,10 +28,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
     QLayoutItem,
+    QLineEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -51,6 +53,8 @@ from .theme import current_theme, level_color, level_tint, palette, platform_col
 PLATFORM_ROLE = Qt.ItemDataRole.UserRole + 1
 #: 热度原始数值（float），供微型条形图计算比例
 HEAT_ROLE = Qt.ItemDataRole.UserRole + 2
+#: 状态语义（success / warn / error / busy / idle），供状态徽章取色
+STATUS_ROLE = Qt.ItemDataRole.UserRole + 3
 
 
 class Card(QFrame):
@@ -97,7 +101,8 @@ class CardTitle(QWidget):
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(18, 18)
         self.icon_label.setVisible(bool(icon))
-        layout.addWidget(self.icon_label)
+        # 顶对齐：标题带副说明时，居中会让图标看起来「浮在两行之间」
+        layout.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignTop)
 
         text_box = QVBoxLayout()
         text_box.setContentsMargins(0, 0, 0, 0)
@@ -192,9 +197,27 @@ class StatCard(Card):
 
     def set_value(self, value: str, sub: str = "") -> None:
         self.value_label.setText(value)
+        self.value_label.setProperty("empty", "false")
+        style = self.value_label.style()
+        style.unpolish(self.value_label)
+        style.polish(self.value_label)
         if sub:
             self.sub_label.setText(sub)
             self.sub_label.setVisible(True)
+
+    def set_empty(self, text: str = "暂无数据") -> None:
+        """无数据态：显示「--」而不是「0」。
+
+        一整排「0」看起来像系统坏了；「--」明确表达「这里还没有数据」，
+        把「还没开始」和「真的是 0」区分开。
+        """
+        self.value_label.setText("--")
+        self.value_label.setProperty("empty", "true")
+        style = self.value_label.style()
+        style.unpolish(self.value_label)
+        style.polish(self.value_label)
+        self.sub_label.setText(text)
+        self.sub_label.setVisible(True)
 
 
 class EmptyState(QWidget):
@@ -491,75 +514,6 @@ class EditableTagChip(QFrame):
         super().mouseReleaseEvent(event)
 
 
-class CollapsibleSection(QWidget):
-    """可折叠分组：一行标题 + 可收起的正文区。
-
-    输入面板控件一多就会「又长又挤」，把低频项收进折叠区，
-    常用项就能拿到更大的空间。
-    """
-
-    def __init__(
-        self,
-        title: str,
-        *,
-        icon: str = "sliders",
-        theme: str = "light",
-        expanded: bool = False,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._theme = theme
-        self._icon_name = icon
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self.header = QPushButton(f"  {title}")
-        self.header.setObjectName("CollapsibleHeader")
-        self.header.setCheckable(True)
-        self.header.setChecked(expanded)
-        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.header.setIconSize(QSize(14, 14))
-        self.header.toggled.connect(self._on_toggled)
-        layout.addWidget(self.header)
-
-        self.body = QWidget()
-        self.body_layout = QVBoxLayout(self.body)
-        self.body_layout.setContentsMargins(2, 0, 0, 0)
-        self.body_layout.setSpacing(8)
-        layout.addWidget(self.body)
-        self.body.setVisible(expanded)
-
-        self._refresh_icon()
-
-    def add(self, widget: QWidget) -> QWidget:
-        self.body_layout.addWidget(widget)
-        return widget
-
-    def add_layout(self, layout: Any) -> Any:
-        self.body_layout.addLayout(layout)
-        return layout
-
-    def set_expanded(self, expanded: bool) -> None:
-        self.header.setChecked(expanded)
-
-    def is_expanded(self) -> bool:
-        return self.header.isChecked()
-
-    def _on_toggled(self, checked: bool) -> None:
-        self.body.setVisible(checked)
-        self._refresh_icon()
-
-    def _refresh_icon(self) -> None:
-        p = palette(self._theme)
-        name = "chevron-down" if self.header.isChecked() else "chevron-right"
-        self.header.setIcon(icons.icon(name, p.text_sub, 14))
-
-    def apply_theme(self, theme: str) -> None:
-        self._theme = theme
-        self._refresh_icon()
-
-
 class StepIndicator(QFrame):
     """生成步骤提示条：把「模型正在做什么」明明白白写出来。
 
@@ -717,12 +671,18 @@ class FlowRow(QWidget):
         self._items: list[QWidget] = []
 
     def set_items(self, widgets: Iterable[QWidget], per_row: int | None = None) -> None:
-        """替换全部子项。``per_row`` 仅作兼容保留：换行由布局按宽度自动决定。"""
+        """替换全部子项。``per_row`` 仅作兼容保留：换行由布局按宽度自动决定。
+
+        只销毁「本次不再使用」的控件：调用方可能持有常驻控件（如标签云的输入框），
+        无差别 deleteLater 会把它们一起干掉。
+        """
+        new_items = list(widgets)
         for widget in self._items:
             self._flow.removeWidget(widget)
             widget.setParent(None)
-            widget.deleteLater()
-        self._items = list(widgets)
+            if widget not in new_items:
+                widget.deleteLater()
+        self._items = new_items
         for widget in self._items:
             widget.setParent(self)
             self._flow.addWidget(widget)
@@ -877,25 +837,95 @@ def labeled_row(label: str, widget: QWidget, *, label_width: int = 88) -> QWidge
     return row
 
 
-def field_label(text: str, hint: str = "") -> QWidget:
-    """字段标题行：加粗字段名 + 右侧可选说明。
+class FieldRow(QWidget):
+    """字段标题行：加粗字段名 + 右侧可选说明文字 / 问号帮助图标。
 
-    表单里字段一多，「标签」和「内容」就容易糊成一片；统一用 #FieldLabel
-    把字段名立起来，视线可以按标题快速跳读。
+    表单里字段一多，「标签」和「内容」就容易糊成一片，统一用 #FieldLabel 把
+    字段名立起来，视线可以按标题快速跳读。
+
+    长段的规范说明不再横在字段之间打断填写节奏，而是收进右侧的问号 tooltip：
+    不占版面，需要核对限制时悬停即可。
     """
-    row = QWidget()
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
-    name = QLabel(text)
-    name.setObjectName("FieldLabel")
-    layout.addWidget(name)
-    layout.addStretch(1)
-    if hint:
-        note = QLabel(hint)
-        note.setObjectName("FieldHint")
-        layout.addWidget(note)
-    return row
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        hint: str = "",
+        help_text: str = "",
+        theme: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._theme = theme or current_theme()
+        self._help_text = help_text or ""
+        self._hover = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.name_label = QLabel(text)
+        self.name_label.setObjectName("FieldLabel")
+        layout.addWidget(self.name_label)
+        layout.addStretch(1)
+
+        self.hint_label = QLabel(hint)
+        self.hint_label.setObjectName("FieldHint")
+        self.hint_label.setVisible(bool(hint))
+        layout.addWidget(self.hint_label)
+
+        self.help_label = QLabel()
+        self.help_label.setFixedSize(15, 15)
+        self.help_label.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.help_label.setVisible(bool(self._help_text))
+        layout.addWidget(self.help_label)
+        if self._help_text:
+            self.help_label.setToolTip(self._help_text)
+        self._refresh_icon()
+
+    # -- 帮助提示 --------------------------------------------------------
+    def set_help_text(self, text: str) -> None:
+        self._help_text = text or ""
+        self.help_label.setVisible(bool(self._help_text))
+        if self._help_text:
+            self.help_label.setToolTip(self._help_text)
+        else:
+            self.help_label.setToolTip("")
+        self._refresh_icon()
+
+    def set_hint(self, text: str) -> None:
+        self.hint_label.setText(text)
+        self.hint_label.setVisible(bool(text))
+
+    def _refresh_icon(self) -> None:
+        if not self._help_text:
+            self.help_label.clear()
+            return
+        p = palette(self._theme)
+        color = p.accent if self._hover else p.text_faint
+        self.help_label.setPixmap(icons.pixmap("help", color, 15, 2.0))
+
+    def enterEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        self._hover = True
+        self._refresh_icon()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        self._hover = False
+        self._refresh_icon()
+        super().leaveEvent(event)
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self._refresh_icon()
+
+
+def field_label(
+    text: str, hint: str = "", *, help_text: str = "", theme: str = ""
+) -> FieldRow:
+    """字段标题行工厂（见 :class:`FieldRow`）。"""
+    return FieldRow(text, hint=hint, help_text=help_text, theme=theme)
 
 
 def hline() -> QFrame:
@@ -941,39 +971,74 @@ class BusyOverlay(QLabel):
 
 
 class ConfirmBar(QFrame):
-    """人工确认条：勾选 + 主操作按钮（发布中心风控核心 UI）。"""
+    """人工确认条：勾选 + 主操作按钮（发布中心风控核心 UI）。
+
+    按钮可用性由「勾选」与「外部条件」共同决定：即使勾了确认，只要发布前检查
+    还有阻断项或适配器不可用，按钮也必须保持禁用——否则勾选本身会变成绕过检查的后门。
+    """
 
     confirmed = Signal(bool)
     triggered = Signal()
 
-    def __init__(self, text: str, button_text: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str,
+        button_text: str,
+        parent: QWidget | None = None,
+        *,
+        button_style: str = "Primary",
+        badge: str = "",
+    ) -> None:
         super().__init__(parent)
         from PySide6.QtWidgets import QCheckBox
 
         self.setObjectName("Card")
+        self._button_text = button_text
+        self._allowed = True
+        self._busy = False
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(12)
         self.checkbox = QCheckBox(text)
         self.checkbox.setToolTip(text)
-        self.checkbox.stateChanged.connect(lambda _: self.confirmed.emit(self.checkbox.isChecked()))
+        self.checkbox.stateChanged.connect(self._on_checkbox)
         layout.addWidget(self.checkbox, 1)
+        # 安全模式说明做成一行小徽章，贴着主按钮——静态提示不该占掉一整块版面
+        self.badge_label = QLabel(badge)
+        self.badge_label.setObjectName("SafeBadge")
+        self.badge_label.setVisible(bool(badge))
+        layout.addWidget(self.badge_label, 0)
         self.button = QPushButton(button_text)
-        self.button.setObjectName("Primary")
+        # 允许调用方换成更醒目的样式（发布页用 #ConfirmButton）
+        self.button.setObjectName(button_style)
         self.button.setEnabled(False)
         self.button.clicked.connect(self.triggered.emit)
         layout.addWidget(self.button)
-        self.checkbox.stateChanged.connect(lambda _: self.button.setEnabled(self.checkbox.isChecked()))
+
+    def _on_checkbox(self, _state: int) -> None:
+        self._sync_button()
+        self.confirmed.emit(self.checkbox.isChecked())
+
+    def _sync_button(self) -> None:
+        self.button.setEnabled(self._allowed and not self._busy and self.checkbox.isChecked())
+
+    def set_allowed(self, allowed: bool) -> None:
+        """设置外部前置条件（检查是否通过、适配器是否可用）。"""
+        self._allowed = bool(allowed)
+        self._sync_button()
 
     def set_text(self, text: str) -> None:
         self.checkbox.setText(text)
+        self.checkbox.setToolTip(text)
 
     def reset(self) -> None:
         self.checkbox.setChecked(False)
 
     def set_busy(self, busy: bool, text: str = "正在执行…") -> None:
-        self.button.setEnabled(not busy and self.checkbox.isChecked())
-        self.button.setText(text if busy else "确认发布")
+        self._busy = bool(busy)
+        self.button.setText(text if busy else self._button_text)
+        self._sync_button()
 
 
 def make_button(
@@ -1214,6 +1279,16 @@ def platform_item(label: str, key: str) -> Any:
 
     item = QTableWidgetItem(label)
     item.setData(Qt.ItemDataRole.UserRole, key or "")
+    return item
+
+
+def status_item(label: str, tone: str) -> Any:
+    """构造带语义色的状态单元格（供 StatusBadgeDelegate 绘制徽章）。"""
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    item = QTableWidgetItem(label)
+    item.setData(STATUS_ROLE, tone or "idle")
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     return item
 
 
@@ -1533,6 +1608,50 @@ class TitleCellDelegate(RowBackgroundDelegate):
         painter.restore()
 
 
+class StatusBadgeDelegate(RowBackgroundDelegate):
+    """状态列：把「待你确认 / 已发布 / 失败 / 已取消」画成带语义色的圆角徽章。
+
+    发布记录的闭环靠状态说话，纯文字很容易被当成普通一列扫过去；
+    徽章让「哪几条还等着我处理」一眼可见。
+    """
+
+    HEIGHT = 20
+    PAD_X = 9
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        self._paint_row(painter, option, index)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "").strip()
+        if not text:
+            return
+        tone = str(index.data(STATUS_ROLE) or "idle")
+        theme = current_theme()
+        color = level_color(theme, tone)
+        background = level_tint(theme, tone)
+
+        font = QFont(option.font)
+        font.setPixelSize(12)
+        font.setBold(True)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        width = min(option.rect.width() - 8, metrics.horizontalAdvance(text) + self.PAD_X * 2)
+        box = QRectF(
+            option.rect.left() + 4,
+            option.rect.center().y() - self.HEIGHT / 2 + 1,
+            max(28, width),
+            self.HEIGHT,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(background)))
+        painter.drawRoundedRect(box, self.HEIGHT / 2, self.HEIGHT / 2)
+        painter.setPen(QPen(QColor(color)))
+        painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), text)
+        painter.restore()
+
+
 class SkeletonList(QWidget):
     """列表骨架屏：刷新期间用占位条撑住表格区域，避免留白或闪烁。"""
 
@@ -1638,6 +1757,722 @@ class SkeletonList(QWidget):
                     QRectF(left, center_y, bar_width, self.BAR_HEIGHT), 4, 4
                 )
         painter.setOpacity(1.0)
+
+
+# --------------------------------------------------------------------------
+# 分段切换 / 快捷参数 / 标签云 / 报告卡（v1.0.5 起）
+# --------------------------------------------------------------------------
+class TwoLineItemDelegate(QStyledItemDelegate):
+    """两行式列表项：第一行标题，第二行小字灰色元信息。
+
+    把「#3 [B站] 2026-10-05 595字」全揉在一行里，编号与平台会随标题长度错位；
+    拆成两行后左对齐干净，扫读也快。数据通过 TITLE_ROLE / META_ROLE 传入。
+    """
+
+    TITLE_ROLE = Qt.ItemDataRole.UserRole + 11
+    META_ROLE = Qt.ItemDataRole.UserRole + 12
+    PAD_X = 10
+    PAD_Y = 7
+
+    def paint(  # noqa: N802
+        self, painter: QPainter, option: QStyleOptionViewItem, index: Any
+    ) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+        title = str(index.data(self.TITLE_ROLE) or index.data(Qt.ItemDataRole.DisplayRole) or "")
+        meta = str(index.data(self.META_ROLE) or "")
+        p = palette(current_theme())
+        rect = option.rect
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        title_font = QFont(option.font)
+        title_font.setPixelSize(13)
+        meta_font = QFont(option.font)
+        meta_font.setPixelSize(11)
+        metrics = QFontMetrics(title_font)
+        available = max(20, rect.width() - self.PAD_X * 2)
+        elided = metrics.elidedText(title, Qt.TextElideMode.ElideRight, available)
+
+        painter.setFont(title_font)
+        painter.setPen(QPen(QColor(p.text)))
+        painter.drawText(
+            QRect(rect.left() + self.PAD_X, rect.top() + self.PAD_Y, available, 18),
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            elided,
+        )
+        if meta:
+            painter.setFont(meta_font)
+            painter.setPen(QPen(QColor(p.text_faint)))
+            painter.drawText(
+                QRect(rect.left() + self.PAD_X, rect.top() + self.PAD_Y + 18, available, 16),
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                QFontMetrics(meta_font).elidedText(meta, Qt.TextElideMode.ElideRight, available),
+            )
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: Any) -> QSize:  # noqa: N802
+        size = super().sizeHint(option, index)
+        size.setHeight(max(size.height(), 48))
+        return size
+
+
+class SegmentedTabs(QWidget):
+    """分段切换：同一区域里切换「正文编辑 / AI 质量自检」这类视图。
+
+    用按钮组而不是 QTabWidget——分段更轻，也更容易塞进卡片顶部与其它操作并排。
+    """
+
+    changed = Signal(str)
+
+    def __init__(
+        self,
+        items: Sequence[tuple[str, str]],
+        *,
+        theme: str = "light",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("Segmented")
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(2)
+        self._buttons: dict[str, QPushButton] = {}
+        self._current = ""
+        for key, label in items:
+            button = QPushButton(label)
+            button.setObjectName("SegmentTab")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _=False, k=key: self.set_current(k))
+            layout.addWidget(button)
+            self._buttons[key] = button
+        if items:
+            self.set_current(items[0][0], emit=False)
+
+    def set_current(self, key: str, *, emit: bool = True) -> None:
+        if key not in self._buttons:
+            return
+        self._current = key
+        for name, button in self._buttons.items():
+            button.setChecked(name == key)
+        if emit:
+            self.changed.emit(key)
+
+    def current(self) -> str:
+        return self._current
+
+    def set_label(self, key: str, label: str) -> None:
+        button = self._buttons.get(key)
+        if button is not None:
+            button.setText(label)
+
+
+class ParamChip(QPushButton):
+    """快捷参数胶囊：点开小菜单选预设，也能自己填。
+
+    把「内容目标 / 受众 / 调性」摊在输入区里，比塞进弹窗好用：一眼看得到当前设定，
+    改动只是一次点击；有值时胶囊会点亮，不点开也知道设过什么。
+    """
+
+    changed = Signal(str)
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        options: Sequence[str] = (),
+        theme: str = "light",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("ParamChip")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._label = label
+        self._value = ""
+        self._options = list(options)
+        self.clicked.connect(self._open_menu)
+        self._sync()
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: str, *, emit: bool = False) -> None:
+        self._value = (value or "").strip()
+        self._sync()
+        if emit:
+            self.changed.emit(self._value)
+
+    def _sync(self) -> None:
+        self.setText(f"{self._label}：{self._value}" if self._value else f"{self._label}：不限")
+        self.setToolTip(f"{self._label}：{self._value or '未设置（点此选择）'}")
+        self.setProperty("active", "true" if self._value else "false")
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+
+    def _open_menu(self) -> None:
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        for option in self._options:
+            action = menu.addAction(option)
+            action.setCheckable(True)
+            action.setChecked(option == self._value)
+            action.triggered.connect(lambda _=False, o=option: self.set_value(o, emit=True))
+        menu.addSeparator()
+        menu.addAction("自定义…", self._ask_custom)
+        if self._value:
+            menu.addAction("清除", lambda: self.set_value("", emit=True))
+        menu.exec(self.mapToGlobal(QPoint(0, self.height() + 4)))
+
+    def _ask_custom(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        text, ok = QInputDialog.getText(self, self._label, f"输入{self._label}：", text=self._value)
+        if ok:
+            self.set_value(text, emit=True)
+
+
+class CopyMenuButton(QPushButton):
+    """复制按钮 + 下拉菜单：把「复制正文 / 复制全文 / 复制标题」收成一个入口。"""
+
+    def __init__(
+        self,
+        options: Sequence[tuple[str, Callable[[], None]]],
+        *,
+        text: str = "复制",
+        icon: str = "copy",
+        theme: str = "light",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("Ghost")
+        self.setText(text)
+        self.setIcon(icons.icon(icon, palette(theme).text_sub, 16))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._options = list(options)
+        self.clicked.connect(self._open_menu)
+
+    def _open_menu(self) -> None:
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        for label, callback in self._options:
+            menu.addAction(label, callback)
+        menu.exec(self.mapToGlobal(QPoint(0, self.height() + 4)))
+
+
+class TagCloud(QWidget):
+    """标签云：胶囊平铺 + 末尾「+ 添加标签」，过多时自动折叠。
+
+    旧版标签放在一行文本框里，既数不出几个、也删不掉单个，还得单独占一行输入框；
+    这里改成真正的标签云：点胶囊复制、点 × 删除、末尾 + 号就地变输入框，
+    标签一多就收成「展开其余 N 个」，不跟正文抢空间。
+    """
+
+    changed = Signal(list)
+
+    #: 超过这个数量就折叠（约两行）
+    COLLAPSE_AT = 12
+
+    def __init__(
+        self,
+        *,
+        theme: str = "light",
+        placeholder: str = "输入标签后回车",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("TagCloud")
+        self._theme = theme
+        self._tags: list[str] = []
+        self._expanded = False
+        self._editing = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(6)
+
+        self.flow = FlowRow(spacing=6)
+        outer.addWidget(self.flow)
+
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.setSpacing(6)
+        self.toggle_button = QPushButton("展开")
+        self.toggle_button.setObjectName("Ghost")
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.clicked.connect(self._toggle_expand)
+        self.toggle_button.setVisible(False)
+        bottom.addWidget(self.toggle_button)
+        bottom.addStretch(1)
+        outer.addLayout(bottom)
+
+        # 常驻控件：不参与重建，只被 FlowRow 反复挂载
+        self.editor = QLineEdit()
+        self.editor.setObjectName("TagAddEdit")
+        self.editor.setPlaceholderText(placeholder)
+        self.editor.returnPressed.connect(self._commit_editor)
+        self.editor.editingFinished.connect(self._commit_editor)
+        self.add_pill = QPushButton("＋ 添加标签")
+        self.add_pill.setObjectName("TagAddPill")
+        self.add_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_pill.clicked.connect(self._begin_edit)
+
+        self._rebuild()
+
+    # -- 数据 ------------------------------------------------------------
+    def tags(self) -> list[str]:
+        return list(self._tags)
+
+    def set_tags(self, tags: Sequence[str]) -> None:
+        self._tags = [str(t).strip() for t in tags if str(t).strip()]
+        self._editing = False
+        self._rebuild()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+
+    # -- 交互 ------------------------------------------------------------
+    def _make_chip(self, tag: str) -> EditableTagChip:
+        chip = EditableTagChip(tag, theme=self._theme)
+        chip.clicked.connect(lambda name: self._copy(name))
+        chip.removed.connect(self._remove)
+        return chip
+
+    def _copy(self, tag: str) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(f"#{tag}")
+        window = self.window()
+        if hasattr(window, "show_toast"):
+            window.show_toast(f"已复制 #{tag}", "success")  # type: ignore[attr-defined]
+
+    def _remove(self, tag: str) -> None:
+        if tag in self._tags:
+            self._tags.remove(tag)
+            self._rebuild()
+            self.changed.emit(self.tags())
+
+    def _begin_edit(self) -> None:
+        self._editing = True
+        self._rebuild()
+        self.editor.setFocus()
+
+    def _commit_editor(self) -> None:
+        if not self._editing:
+            return
+        raw = self.editor.text().strip()
+        if raw:
+            from ..services.creator import parse_tags
+
+            for tag in parse_tags(raw):
+                if tag and tag not in self._tags:
+                    self._tags.append(tag)
+        self.editor.clear()
+        self._editing = False
+        self._rebuild()
+        self.changed.emit(self.tags())
+
+    def _toggle_expand(self) -> None:
+        self._expanded = not self._expanded
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        chips = [self._make_chip(tag) for tag in self._tags]
+        overflow = len(chips) > self.COLLAPSE_AT
+        visible = chips
+        if overflow and not self._expanded:
+            visible = chips[: self.COLLAPSE_AT]
+            self.toggle_button.setText(f"展开其余 {len(chips) - self.COLLAPSE_AT} 个")
+        elif overflow:
+            self.toggle_button.setText("收起")
+        self.toggle_button.setVisible(overflow)
+
+        items: list[QWidget] = list(visible)
+        if self._editing:
+            self.editor.setVisible(True)
+            items.append(self.editor)
+        else:
+            self.add_pill.setVisible(True)
+            items.append(self.add_pill)
+        self.flow.set_items(items)
+        if self._editing:
+            self.editor.setFocus()
+
+
+class CheckReportView(QWidget):
+    """发布前检查结果：一条一张浅色卡，级别交给左侧小圆点。
+
+    旧版把「必须修改 / 建议修改」写成红字黄字刷满列表，看起来像程序崩了；
+    这里整条用极浅底色包住，文字回归常规深灰，只有左侧色条承担级别信号。
+    阻断项常驻并带「去修改」按钮（哪个错就修哪个），建议项默认折叠成一行。
+    """
+
+    fix_requested = Signal(object)
+
+    def __init__(self, *, theme: str = "light", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._theme = theme
+        self._errors: list[Any] = []
+        self._advisories: list[Any] = []
+        self._suggest_open = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        holder = QWidget()
+        self.column = QVBoxLayout(holder)
+        self.column.setContentsMargins(0, 0, 6, 0)
+        self.column.setSpacing(8)
+        self.column.addStretch(1)
+        self.scroll.setWidget(holder)
+        outer.addWidget(self.scroll, 1)
+
+        self.toggle = QPushButton("")
+        self.toggle.setObjectName("SuggestionToggle")
+        self.toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle.setVisible(False)
+        self.toggle.clicked.connect(self._toggle_suggestions)
+        outer.addWidget(self.toggle)
+        self.suggestion_box = QWidget()
+        self.suggestion_layout = QVBoxLayout(self.suggestion_box)
+        self.suggestion_layout.setContentsMargins(0, 0, 0, 0)
+        self.suggestion_layout.setSpacing(8)
+        self.suggestion_box.setVisible(False)
+        outer.addWidget(self.suggestion_box)
+
+    # -- 数据 ------------------------------------------------------------
+    def set_items(self, items: Sequence[Any]) -> None:
+        self._errors = [it for it in items if getattr(it, "level", "") == "error"]
+        self._advisories = [
+            it for it in items if getattr(it, "level", "") in ("warn", "warning", "info")
+        ]
+        self._rebuild()
+
+    def set_message(self, text: str, level: str = "info") -> None:
+        self._errors = []
+        self._advisories = []
+        self._clear(self.column)
+        self._clear(self.suggestion_layout)
+        self.toggle.setVisible(False)
+        self.suggestion_box.setVisible(False)
+        self.column.insertWidget(0, self._card(None, text, level=level))
+
+    def _clear(self, layout: QVBoxLayout) -> None:
+        while layout.count() > 1:  # 保留末尾的 stretch
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _rebuild(self) -> None:
+        self._clear(self.column)
+        self._clear(self.suggestion_layout)
+        index = 0
+        if not self._errors and not self._advisories:
+            self.column.insertWidget(index, self._card(None, "未发现问题，可以发布", level="ok"))
+            index += 1
+        for item in self._errors:
+            self.column.insertWidget(index, self._card(item, getattr(item, "title", ""), level="error"))
+            index += 1
+        for item in self._advisories:
+            self.suggestion_layout.addWidget(self._card(item, getattr(item, "title", ""), level="warn"))
+
+        count = len(self._advisories)
+        self.toggle.setVisible(count > 0)
+        if count:
+            arrow = "▾" if self._suggest_open else "▸"
+            self.toggle.setText(f"{arrow} 有 {count} 条建议修改（不阻断发布）")
+        self.suggestion_box.setVisible(count > 0 and self._suggest_open)
+
+    def _toggle_suggestions(self) -> None:
+        self._suggest_open = not self._suggest_open
+        self._rebuild()
+
+    def _card(self, item: Any, title: str, *, level: str) -> QWidget:
+        card = QFrame()
+        card.setObjectName("CheckCard")
+        card.setProperty("level", level)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(5)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        dot = QLabel()
+        dot.setFixedSize(8, 8)
+        dot_color = {
+            "error": palette(self._theme).danger,
+            "warn": palette(self._theme).warning,
+            "info": palette(self._theme).accent,
+            "ok": palette(self._theme).success,
+        }.get(level, palette(self._theme).text_faint)
+        dot.setStyleSheet(f"background: {dot_color}; border-radius: 4px;")
+        head.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+        name = QLabel(title or "检查结果")
+        name.setObjectName("CheckTitle")
+        name.setWordWrap(True)
+        head.addWidget(name, 1)
+        if level == "error" and item is not None:
+            fix = make_button("去修改", icon="pen-line", theme=self._theme, ghost=True)
+            fix.setToolTip("回到创作页修改这条内容")
+            fix.clicked.connect(lambda _=False, it=item: self.fix_requested.emit(it))
+            head.addWidget(fix, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(head)
+
+        detail = getattr(item, "detail", "") if item is not None else ""
+        if detail:
+            label = QLabel(detail)
+            label.setObjectName("CheckDetail")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        suggestion = getattr(item, "suggestion", "") if item is not None else ""
+        if suggestion:
+            tip = QLabel(f"建议：{suggestion}")
+            tip.setObjectName("CheckSuggestion")
+            tip.setWordWrap(True)
+            layout.addWidget(tip)
+        return card
+
+
+class ScoreReport(QWidget):
+    """AI 质量自检报告：大号总分 + 四维条 + 问题/建议分列。
+
+    自检结果原本是一坨没排版的文字，用户第一反应是「太长不看」，等于把算力白花了。
+    这里拆成「分数 → 需要改进 → 优化建议」三段，重点先给结论，细节再往下看。
+    """
+
+    DIMENSIONS: tuple[tuple[str, str], ...] = (
+        ("hook", "钩子强度"),
+        ("platform_fit", "平台匹配"),
+        ("value", "信息价值"),
+        ("human", "真人感"),
+    )
+
+    def __init__(self, *, theme: str = "light", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._theme = theme
+        self.setObjectName("ReportPanel")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(12)
+
+        # 总分
+        score_row = QHBoxLayout()
+        score_row.setSpacing(6)
+        self.score_label = QLabel("—")
+        self.score_label.setObjectName("ReportScore")
+        score_row.addWidget(self.score_label, 0, Qt.AlignmentFlag.AlignBottom)
+        unit = QLabel("/ 40")
+        unit.setObjectName("ReportScoreUnit")
+        score_row.addWidget(unit, 0, Qt.AlignmentFlag.AlignBottom)
+        score_row.addSpacing(12)
+        self.verdict_label = QLabel("尚未自检")
+        self.verdict_label.setObjectName("ReportVerdict")
+        score_row.addWidget(self.verdict_label, 0, Qt.AlignmentFlag.AlignBottom)
+        score_row.addStretch(1)
+        outer.addLayout(score_row)
+
+        # 四维
+        self.dim_bars: dict[str, QProgressBar] = {}
+        self.dim_values: dict[str, QLabel] = {}
+        dims = QGridLayout()
+        dims.setHorizontalSpacing(14)
+        dims.setVerticalSpacing(6)
+        for row, (key, label) in enumerate(self.DIMENSIONS):
+            name = QLabel(label)
+            name.setObjectName("ReportMuted")
+            name.setFixedWidth(62)
+            dims.addWidget(name, row, 0)
+            bar = QProgressBar()
+            bar.setObjectName("DimBar")
+            bar.setRange(0, 10)
+            bar.setValue(0)
+            bar.setTextVisible(False)
+            dims.addWidget(bar, row, 1)
+            value = QLabel("—")
+            value.setObjectName("ReportMuted")
+            value.setFixedWidth(34)
+            dims.addWidget(value, row, 2)
+            self.dim_bars[key] = bar
+            self.dim_values[key] = value
+        dims.setColumnStretch(1, 1)
+        outer.addLayout(dims)
+
+        # 问题 / 建议
+        self.issues_title = QLabel("需要改进")
+        self.issues_title.setObjectName("ReportSectionTitle")
+        outer.addWidget(self.issues_title)
+        self.issues_box = QVBoxLayout()
+        self.issues_box.setContentsMargins(0, 0, 0, 0)
+        self.issues_box.setSpacing(4)
+        outer.addLayout(self.issues_box)
+
+        self.suggestions_title = QLabel("优化建议")
+        self.suggestions_title.setObjectName("ReportSectionTitle")
+        outer.addWidget(self.suggestions_title)
+        self.suggestions_box = QVBoxLayout()
+        self.suggestions_box.setContentsMargins(0, 0, 0, 0)
+        self.suggestions_box.setSpacing(4)
+        outer.addLayout(self.suggestions_box)
+        outer.addStretch(1)
+
+        self.reset()
+
+    def reset(self) -> None:
+        self.set_report({})
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+
+    def set_report(self, data: dict[str, Any]) -> None:
+        p = palette(self._theme)
+        total = data.get("total")
+        try:
+            total_value = int(total) if total is not None else None
+        except (TypeError, ValueError):
+            total_value = None
+        if total_value is None:
+            raw = [data.get(k) for k, _ in self.DIMENSIONS]
+            nums = [int(v) for v in raw if isinstance(v, (int, float))]
+            total_value = sum(nums) if nums else None
+
+        if total_value is None:
+            self.score_label.setText("—")
+            self.score_label.setStyleSheet(f"color: {p.text_faint}; background: transparent;")
+            self.verdict_label.setText("尚未自检")
+            self.verdict_label.setStyleSheet(f"color: {p.text_faint}; background: transparent;")
+        else:
+            ratio = total_value / 40
+            color = p.success if ratio >= 0.8 else (p.accent if ratio >= 0.6 else (p.warning if ratio >= 0.4 else p.danger))
+            verdict = "很好，可以直接发" if ratio >= 0.8 else ("不错，微调即可" if ratio >= 0.6 else ("一般，建议按下面改" if ratio >= 0.4 else "偏弱，建议重写关键段"))
+            self.score_label.setText(str(total_value))
+            self.score_label.setStyleSheet(f"color: {color}; background: transparent;")
+            self.verdict_label.setText(verdict)
+            self.verdict_label.setStyleSheet(f"color: {color}; background: transparent;")
+
+        for key, _label in self.DIMENSIONS:
+            raw = data.get(key)
+            try:
+                value = int(raw) if raw is not None else 0
+            except (TypeError, ValueError):
+                value = 0
+            self.dim_bars[key].setValue(max(0, min(10, value)))
+            self.dim_values[key].setText(str(value) if raw is not None else "—")
+
+        self._fill(self.issues_box, data.get("issues") or [], "•", p.danger)
+        self._fill(self.suggestions_box, data.get("suggestions") or [], "→", p.success)
+        self.issues_title.setVisible(bool(data.get("issues")))
+        self.suggestions_title.setVisible(bool(data.get("suggestions")))
+
+    def _fill(self, layout: QVBoxLayout, items: Sequence[Any], bullet: str, color: str) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        for text in items:
+            label = QLabel(f"{bullet}　{text}")
+            label.setObjectName("ReportItem")
+            label.setWordWrap(True)
+            label.setStyleSheet(f"color: {palette(self._theme).text}; background: transparent;")
+            layout.addWidget(label)
+
+
+class CollapsibleCard(Card):
+    """可折叠卡片：标题行常驻，内容区可收起。
+
+    账号画像有六维 + 记忆，全部展开会把页面撑得很长；折叠后一屏看全，
+    需要哪一维再展开，也顺带解决了「内容堆叠在一起」的问题。
+    """
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        icon: str = "",
+        hint: str = "",
+        theme: str = "light",
+        expanded: bool = True,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, padding=14, spacing=10)
+        self._theme = theme
+        self._icon_name = icon
+        self._title = title
+        self._hint = hint
+
+        self.header = QPushButton()
+        self.header.setObjectName("CardFold")
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setIconSize(QSize(16, 16))
+        self.header.toggled.connect(self._on_toggled)
+        self._layout.addWidget(self.header)
+
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(10)
+        self.content_widget.setVisible(expanded)
+        self._layout.addWidget(self.content_widget)
+        self._refresh_header()
+
+    # -- Card 接口重定向到内容区 -----------------------------------------
+    def add(self, widget: QWidget, stretch: int = 0) -> QWidget:
+        self.content_layout.addWidget(widget, stretch)
+        return widget
+
+    def add_layout(self, layout: Any, stretch: int = 0) -> Any:
+        self.content_layout.addLayout(layout, stretch)
+        return layout
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.header.setChecked(expanded)
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self._refresh_header()
+
+    def set_hint(self, hint: str) -> None:
+        self._hint = hint
+        self.header.setToolTip(hint or self._title)
+
+    def is_expanded(self) -> bool:
+        return self.header.isChecked()
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.content_widget.setVisible(checked)
+        self._refresh_header()
+
+    def _refresh_header(self) -> None:
+        p = palette(self._theme)
+        arrow = "▾" if self.header.isChecked() else "▸"
+        self.header.setText(f"  {arrow}  {self._title}")
+        if self._icon_name:
+            self.header.setIcon(icons.icon(self._icon_name, p.text_sub, 16))
+        self.header.setToolTip(self._hint or self._title)
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self._refresh_header()
 
 
 def attach_hot_table_visuals(
@@ -1967,7 +2802,7 @@ for _component_cls in (
     Toast,
     TagChip,
     EditableTagChip,
-    CollapsibleSection,
+    FieldRow,
     StepIndicator,
     FilterChip,
     CategoryPicker,
@@ -1977,6 +2812,13 @@ for _component_cls in (
     BusyOverlay,
     ConfirmBar,
     SkeletonList,
+    SegmentedTabs,
+    ParamChip,
+    CopyMenuButton,
+    TagCloud,
+    CheckReportView,
+    ScoreReport,
+    CollapsibleCard,
 ):
     _qt_guard.guarded_init(_component_cls)
 del _component_cls

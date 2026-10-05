@@ -4,7 +4,7 @@
 两大支撑：账号画像 / 配置中心
 """
 
-__version__ = "1.0.2"
+__version__ = "1.0.5"
 __app_name__ = "Stent"
 
 __all__ = ["__version__", "__app_name__"]

@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core.db import db
 from ...platforms import platform_label
 from ...services.analytics import AnalyticsService
 from ..components import (
@@ -44,6 +46,52 @@ from .base import BasePage
 log = logging.getLogger(__name__)
 
 
+class _GuideStep(QWidget):
+    """引导清单里的一步：左侧状态点 + 主文案 + 小字说明。"""
+
+    def __init__(self, theme: str = "light", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._theme = theme
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        self.dot = QLabel()
+        self.dot.setFixedSize(9, 9)
+        layout.addWidget(self.dot)
+        box = QVBoxLayout()
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(1)
+        self.label = QLabel()
+        self.label.setObjectName("GuideStep")
+        box.addWidget(self.label)
+        self.hint = QLabel()
+        self.hint.setObjectName("GuideHint")
+        box.addWidget(self.hint)
+        layout.addLayout(box, 1)
+        self._done = False
+
+    def set_text(self, label: str, hint: str) -> None:
+        self.label.setText(label)
+        self.hint.setText(hint)
+
+    def set_done(self, done: bool) -> None:
+        self._done = done
+        p = palette(self._theme)
+        color = p.success if done else p.text_faint
+        self.dot.setStyleSheet(
+            f"background: {color if done else 'transparent'};"
+            f" border: 1px solid {color}; border-radius: 5px;"
+        )
+        self.label.setObjectName("GuideStepDone" if done else "GuideStep")
+        style = self.label.style()
+        style.unpolish(self.label)
+        style.polish(self.label)
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.set_done(self._done)
+
+
 class AnalyticsPage(BasePage):
     key = "analytics"
     title = "数据分析"
@@ -52,11 +100,17 @@ class AnalyticsPage(BasePage):
     def build(self) -> None:
         self._service = AnalyticsService()
         self._worker = None
+        self._has_data = False
 
         inner = QWidget()
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(16)
+
+        # ---- 零数据引导（任务清单）----
+        self.guide_card, self.guide_rows, self.guide_action = self._build_guide()
+        layout.addWidget(self.guide_card)
+        self.guide_card.setVisible(False)
 
         # ---- 概览 ----
         stat_row = QHBoxLayout()
@@ -134,6 +188,16 @@ class AnalyticsPage(BasePage):
 
         self.chart = LineChart(theme=self.ctx.theme)
         trend_card.add(self.chart, 1)
+        # 图表空着时给一张占位插画 + 一条去路，而不是一行几乎看不见的「暂无数据」
+        self.trend_empty = EmptyState(
+            "还没有可绘制的趋势",
+            hint="完成发布并同步指标后，这里会按天画出变化曲线",
+            icon="chart",
+            theme=self.ctx.theme,
+            action=("去发布中心", lambda: self._goto("publish")),
+        )
+        trend_card.add(self.trend_empty)
+        self.trend_empty.setVisible(False)
         layout.addWidget(trend_card)
 
         # ---- 排行 ----
@@ -174,6 +238,7 @@ class AnalyticsPage(BasePage):
             hint="先在「发布中心」完成发布并标记为已发布，再回到这里点击「同步指标」",
             icon="chart",
             theme=self.ctx.theme,
+            action=("去发布中心", lambda: self._goto("publish")),
         )
         rank_card.add(self.rank_empty)
         self.rank_empty.setVisible(False)
@@ -223,10 +288,51 @@ class AnalyticsPage(BasePage):
         self.sync_button = make_button("同步指标", icon="refresh", theme=self.ctx.theme, primary=True)
         self.sync_button.clicked.connect(lambda: self.sync(force=False))
         header.add_action(self.sync_button)
-        self.full_sync_button = make_button("全量刷新", theme=self.ctx.theme, ghost=True)
+        # 全量刷新是「数据对不上时的补救手段」，加图标与明确措辞，别再让它隐形
+        self.full_sync_button = make_button(
+            "强制全量刷新", icon="refresh", theme=self.ctx.theme, ghost=True,
+            tooltip="忽略增量间隔，重新拉取全部已发布内容的指标",
+        )
         self.full_sync_button.clicked.connect(lambda: self.sync(force=True))
         header.add_action(self.full_sync_button)
         self._root.insertWidget(0, header)
+
+    # ------------------------------------------------------------------
+    # 零数据引导
+    # ------------------------------------------------------------------
+    def _build_guide(self) -> tuple[QWidget, list, QPushButton]:
+        card = QFrame()
+        card.setObjectName("GuideCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("还没有数据，先走完这三步")
+        title.setObjectName("CardTitle")
+        layout.addWidget(title)
+
+        rows = []
+        for _ in range(3):
+            row = _GuideStep(self.ctx.theme)
+            layout.addWidget(row)
+            rows.append(row)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        action = make_button("去创作页", icon="pen-line", theme=self.ctx.theme, primary=True)
+        action.clicked.connect(self._on_guide_action)
+        row.addWidget(action)
+        layout.addLayout(row)
+        return card, rows, action
+
+    def _on_guide_action(self) -> None:
+        has_drafts = bool(db.list_contents(limit=1))
+        self._goto("create" if not has_drafts else "publish")
+
+    def _goto(self, key: str) -> None:
+        window = self.window()
+        if hasattr(window, "navigate"):
+            window.navigate(key)  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     def on_first_show(self) -> None:
@@ -254,39 +360,86 @@ class AnalyticsPage(BasePage):
 
     def _render_overview(self, overview: dict) -> None:
         totals = overview.get("totals") or {}
-        self.stat_cards["views"].set_value(_short(totals.get("views", 0)))
-        self.stat_cards["likes"].set_value(_short(totals.get("likes", 0)))
-        self.stat_cards["comments"].set_value(_short(totals.get("comments", 0)))
-        self.stat_cards["collects"].set_value(_short(totals.get("collects", 0)))
-        self.stat_cards["posts"].set_value(str(overview.get("post_count", 0)))
+        post_count = int(overview.get("post_count", 0) or 0)
+        # 一条数据都没有时不要甩五个「0」给用户：那看起来像系统坏了。
+        # 用「--」+ 一句引导，把「还没开始」和「真的是 0」区分开。
+        has_data = post_count > 0 or any(
+            float(totals.get(k) or 0) for k in ("views", "likes", "comments", "collects")
+        )
+        self._has_data = has_data
+        if has_data:
+            self.stat_cards["views"].set_value(_short(totals.get("views", 0)))
+            self.stat_cards["likes"].set_value(_short(totals.get("likes", 0)))
+            self.stat_cards["comments"].set_value(_short(totals.get("comments", 0)))
+            self.stat_cards["collects"].set_value(_short(totals.get("collects", 0)))
+            self.stat_cards["posts"].set_value(str(post_count))
+        else:
+            for card in self.stat_cards.values():
+                card.set_empty()
 
         rate = overview.get("aggregate_engagement_rate")
         avg = overview.get("avg_engagement_rate")
         self.rate_label.setText(
-            f"平均互动率 {_pct(avg)}　·　加权互动率 {_pct(rate)}"
+            f"平均互动率 {_pct(avg)}　·　加权互动率 {_pct(rate)}" if has_data else "平均互动率 —"
         )
         benchmark = overview.get("benchmark") or {}
         rating = benchmark.get("rating") or "—"
         ranges = benchmark.get("engagement_ranges") or []
         range_text = "~".join(f"{r:g}%" for r in ranges) if ranges else "—"
-        self.benchmark_label.setText(f"平台水平：{rating}（参考区间 {range_text}）")
+        self.benchmark_label.setText(
+            f"平台水平：{rating}（参考区间 {range_text}）" if has_data else "发布并同步后，这里会显示你的平台水平"
+        )
         self.latest_label.setText(f"数据截至：{overview.get('latest_captured_at') or '暂无'}")
 
+        self._refresh_guide(overview)
+        self._set_filters_enabled(has_data)
+
         warnings = overview.get("warnings") or []
-        if warnings:
+        if not has_data:
+            # 没数据属于「还没开始」而不是「出错了」，不要用黄点制造焦虑
+            self.banner.clear()
+        elif warnings:
             self.banner.show_message(
                 "；".join(str(w) for w in warnings), "warn", summary=f"{len(warnings)} 项数据提示"
             )
         else:
             self.banner.clear()
 
+    def _set_filters_enabled(self, enabled: bool) -> None:
+        """零数据时把筛选器置灰：能点但点了没反应，比灰着更让人困惑。"""
+        for combo in (self.days_combo, self.metric_combo, self.platform_combo, self.cumulative_combo):
+            combo.setEnabled(enabled)
+        tip = "" if enabled else "同步数据后可用"
+        for combo in (self.days_combo, self.metric_combo, self.platform_combo, self.cumulative_combo):
+            combo.setToolTip(tip)
+
+    def _refresh_guide(self, overview: dict) -> None:
+        """零数据时把页面变成一张「任务清单」，告诉用户下一步该做什么。"""
+        published = len([p for p in db.list_posts(limit=200) if p.get("status") == "published"])
+        drafts = len(db.list_contents(limit=1))
+        synced = bool(overview.get("latest_captured_at"))
+        steps = [
+            (drafts > 0, "创作并保存一篇内容", "去创作页写第一篇"),
+            (published > 0, "在发布中心完成发布，并标记为「已发布」", "去发布中心"),
+            (synced, "点击右上角「同步指标」拉取平台数据", "同步后这里会出现图表"),
+        ]
+        for index, (done, label, hint) in enumerate(steps):
+            row = self.guide_rows[index]
+            row.set_done(done)
+            row.set_text(f"{index + 1}. {label}", hint)
+        self.guide_card.setVisible(not (drafts and published and synced))
+        self.guide_action.setText("去创作页" if drafts == 0 else "去发布中心")
+
     def _render_trend(self, trend: list[dict], metric: str) -> None:
         label = self.metric_combo.currentText()
         points = [(str(row.get("date", "")), float(row.get("value") or 0)) for row in trend or []]
         self.chart.apply_theme(self.ctx.theme)
         self.chart.set_data(points, metric_label=label)
-        if not points:
-            self.trend_card_title.set_hint("当前筛选条件下没有时间序列数据（需要已发布内容 + 已同步指标）")
+        has = bool(points)
+        self.chart.setVisible(has)
+        self.trend_empty.setVisible(not has)
+        if not has:
+            self.trend_card_title.set_hint("完成发布并同步指标后，这里会按天画出变化曲线")
         else:
             self.trend_card_title.set_hint(f"共 {len(points)} 个数据点")
 
@@ -445,8 +598,12 @@ class AnalyticsPage(BasePage):
     def apply_theme(self, theme: str) -> None:
         if hasattr(self, "chart"):
             self.chart.apply_theme(theme)
-        if hasattr(self, "rank_empty"):
-            self.rank_empty.apply_theme(theme)
+        for name in ("rank_empty", "trend_empty"):
+            empty = getattr(self, name, None)
+            if empty is not None:
+                empty.apply_theme(theme)
+        for row in getattr(self, "guide_rows", []):
+            row.apply_theme(theme)
 
 
 def _short(value) -> str:

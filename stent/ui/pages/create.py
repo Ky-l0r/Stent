@@ -3,14 +3,15 @@
 输入主题/热点/素材 + 目标平台 → 输出正文、多个标题候选、简介与标签。
 账号画像影响输出风格；流式输出，可随时中断；可复制、可存草稿、可送发布。
 
-界面要点（v1.0.2 打磨）：
+界面要点（v1.0.5 打磨）：
 
-- 左侧只留高频项，低频项收进「高级设置」折叠区；「补充要求」给足高度
-- 内容类型默认跟随平台（只读），需要覆盖时勾选「自定义」才解锁编辑
-- 标题候选单击选用，选中项右侧出现勾号；「当前标题」可直接编辑
-- 正文与标签的字数超限即刻变红；标签改成一颗颗可复制、可删除的胶囊
-- 生成过程给出步骤反馈（正在撰写正文 → 正在构思标题 …），不再是空白等待
-- 底部操作栏吸底，正文再长也能随时「送入发布中心」
+- 左侧：只留高频项；「内容类型 / 内容目标 / 受众 / 语气」做成快捷参数胶囊，点开即选
+- 右侧分两层：顶部固定「正文编辑 / AI 质量自检」分段切换，中间内容可独立滚动，
+  底部操作栏吸底——正文再长也不用滚到底去找「送入发布中心」
+- 标题候选单击选用（右侧出现勾号），双击直接在行内改字，不再单占一个「当前标题」输入框
+- 标签是真正的标签云：点胶囊复制、点 × 删除、末尾 + 号就地变输入框，过多自动折叠
+- 正文纯白、辅助信息（标题候选 / 简介 / 标签）极浅灰，视线自然落在正文上
+- AI 自检拆成「总分 → 四维 → 问题 → 建议」结构化展示，不再是一坨没排版的文字
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ import logging
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -48,11 +49,15 @@ from ...services.profile import profile_service
 from ..components import (
     Card,
     CardTitle,
-    CollapsibleSection,
-    EditableTagChip,
+    CopyMenuButton,
     FlowRow,
     PageHeader,
+    ParamChip,
+    ScoreReport,
+    ScrollArea,
+    SegmentedTabs,
     StepIndicator,
+    TagCloud,
     TitleCandidateDelegate,
     field_label,
     make_button,
@@ -61,6 +66,17 @@ from ..theme import palette
 from .base import BasePage
 
 log = logging.getLogger(__name__)
+
+#: 快捷参数的默认值（也是「是否已自定义」的判断基准）
+DEFAULT_GOAL = "互动涨粉"
+
+#: 快捷参数胶囊：(key, 显示名, 预设选项)
+QUICK_PARAMS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("content_type", "内容类型", ("图文笔记", "口播稿", "长文", "视频简介", "短博")),
+    ("goal", "内容目标", ("互动涨粉", "建立专业形象", "直接带货", "活动引流")),
+    ("audience", "目标受众", ("学生党", "职场新人", "宝妈", "一二线白领", "中年男性")),
+    ("tone", "语气风格", ("轻松口语", "犀利点评", "专业理性", "温暖治愈")),
+)
 
 
 class CreatePage(BasePage):
@@ -84,8 +100,10 @@ class CreatePage(BasePage):
         self._tags_buffer = ""
         self._summary_buffer = ""
         self._body_buffer = ""
-        self._tags: list[str] = []
         self._syncing_title = False
+        #: 正在编辑的草稿 id（从草稿箱或发布中心载入时设置；再次保存走更新）
+        self._editing_id: int | None = None
+        self._quality: dict | None = None
 
         header = PageHeader(
             "内容创作",
@@ -112,10 +130,9 @@ class CreatePage(BasePage):
         # 输出区是「预览/编辑」主场，给它更多宽度与高度
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
-        splitter.setSizes([400, 720])
+        splitter.setSizes([390, 730])
         self.add(splitter, 1)
 
-        # 两侧控件都就位后再做一次平台联动（会同步右侧的字数提示）
         self._on_platform_changed()
 
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.generate)
@@ -126,43 +143,52 @@ class CreatePage(BasePage):
     # ------------------------------------------------------------------
     def _build_input_panel(self) -> QWidget:
         card = Card(padding=16, spacing=10)
-        card.setMinimumWidth(320)
+        card.setMinimumWidth(310)
         card.add(CardTitle("创作输入", icon="pen-line", theme=self.ctx.theme))
 
         self.topic_edit = QTextEdit()
         self.topic_edit.setPlaceholderText("想写什么？例如「通勤穿搭的 3 个显瘦技巧」")
-        self.topic_edit.setFixedHeight(62)
+        self.topic_edit.setFixedHeight(60)
         card.add(field_label("主题 / 选题", "必填"))
         card.add(self.topic_edit)
 
         self.source_edit = QTextEdit()
         self.source_edit.setPlaceholderText("可选：热点原文、素材片段或参考链接说明")
-        self.source_edit.setFixedHeight(68)
+        self.source_edit.setFixedHeight(64)
         card.add(field_label("热点 / 素材", "可选"))
         card.add(self.source_edit)
 
         self.platform_combo = QComboBox()
         for item in creator_service.platforms():
-            self.platform_combo.addItem(f"{item['label']}（{item['content_type']}）", item["key"])
+            self.platform_combo.addItem(item["label"], item["key"])
         self.platform_combo.currentIndexChanged.connect(self._on_platform_changed)
-        card.add(field_label("目标平台"))
+        self.platform_field = field_label(
+            "目标平台", help_text=self._platform_tooltip(self._platform_key())
+        )
+        card.add(self.platform_field)
         card.add(self.platform_combo)
 
-        self.style_hint = QLabel()
-        self.style_hint.setObjectName("Faint")
-        self.style_hint.setWordWrap(True)
-        card.add(self.style_hint)
-
-        # 补充要求是权重最高的 prompt 输入区，给足高度，避免长文本频繁滚动
+        # 补充要求：给足但不过量的高度，长 prompt 够写又不挤占下面的快捷参数
         self.extra_edit = QTextEdit()
         self.extra_edit.setPlaceholderText(
-            "例如：必须提到三个具体品牌；面向 25-35 岁通勤女性；不要出现价格"
+            "例如：必须提到三个具体品牌；不要出现价格；结尾引导评论"
         )
-        self.extra_edit.setMinimumHeight(112)
+        self.extra_edit.setMinimumHeight(86)
         card.add(field_label("补充要求", "越具体越贴近预期"))
         card.add(self.extra_edit)
 
-        card.add(self._build_advanced_section())
+        # 快捷参数：摊成胶囊平铺，一眼看得到当前设定，改动只要一次点击
+        card.add(field_label("快捷参数", "点开选择"))
+        self.params_row = FlowRow(spacing=6)
+        self.param_chips: dict[str, ParamChip] = {}
+        chips: list[QWidget] = []
+        for key, label, options in QUICK_PARAMS:
+            chip = ParamChip(label, options=options, theme=self.ctx.theme)
+            chip.changed.connect(lambda _v, k=key: self._on_param_changed(k))
+            self.param_chips[key] = chip
+            chips.append(chip)
+        self.params_row.set_items(chips)
+        card.add(self.params_row)
 
         self.profile_hint = QLabel()
         self.profile_hint.setObjectName("Faint")
@@ -172,201 +198,145 @@ class CreatePage(BasePage):
         card.body().addStretch(1)
         return card
 
-    def _build_advanced_section(self) -> QWidget:
-        """低频项收进折叠区：默认收起，左侧面板才不至于又长又挤。"""
-        section = CollapsibleSection("高级设置", icon="sliders", theme=self.ctx.theme, expanded=False)
+    def _on_param_changed(self, key: str) -> None:
+        # 内容类型直接跟随参数变化；其余参数只影响下次生成
+        if key == "content_type":
+            self._refresh_param_placeholder()
+        self._update_counts()
 
-        # 内容类型默认由平台决定，这里只读展示；要覆盖时勾选「自定义」
-        self.content_type_edit = QLineEdit()
-        self.content_type_edit.setReadOnly(True)
-        self.content_type_custom = QCheckBox("自定义")
-        self.content_type_custom.setToolTip("勾选后可覆盖平台默认的内容类型")
-        self.content_type_custom.toggled.connect(self._on_content_type_custom)
-        type_row = QWidget()
-        type_layout = QHBoxLayout(type_row)
-        type_layout.setContentsMargins(0, 0, 0, 0)
-        type_layout.setSpacing(8)
-        type_layout.addWidget(self.content_type_edit, 1)
-        type_layout.addWidget(self.content_type_custom)
-        self.content_type_hint = QLabel()
-        self.content_type_hint.setObjectName("FieldHint")
-        self.content_type_hint.setWordWrap(True)
-        section.add(field_label("内容类型"))
-        section.add(type_row)
-        section.add(self.content_type_hint)
-
-        self.goal_edit = QLineEdit("互动涨粉")
-        section.add(field_label("内容目标"))
-        section.add(self.goal_edit)
-
-        self.tone_edit = QLineEdit()
-        self.tone_edit.setPlaceholderText("可选，例如：轻松、犀利、专业")
-        section.add(field_label("调性"))
-        section.add(self.tone_edit)
-
-        self.advanced_section = section
-        return section
+    def _refresh_param_placeholder(self) -> None:
+        style = style_for(self._platform_key())
+        chip = self.param_chips["content_type"]
+        chip.setToolTip(f"内容类型：{chip.value() or f'跟随平台（{style.content_type}）'}")
 
     # ------------------------------------------------------------------
     # 右侧：输出面板
     # ------------------------------------------------------------------
     def _build_output_panel(self) -> QWidget:
-        # padding=0：内容区与底部吸底操作栏各自管理内边距
+        # padding=0：顶部固定栏、中部滚动区、底部吸底栏各自管理内边距
         card = Card(padding=0, spacing=0)
         root = card.body()
 
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 14, 16, 10)
-        layout.setSpacing(10)
-        layout.addWidget(
-            CardTitle(
-                "创作结果",
-                icon="sparkles",
-                hint="正文流式生成，可随时中断后直接编辑",
-                theme=self.ctx.theme,
-            )
-        )
+        root.addWidget(self._build_output_header())
+        root.addWidget(self._build_step_bar())
 
-        # 生成步骤提示：等待期间给出持续的活动反馈，而不是一片空白
-        self.step_bar = StepIndicator(theme=self.ctx.theme)
-        layout.addWidget(self.step_bar)
+        # 两个视图共用同一块区域：正文编辑 / AI 自检报告
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self._build_editor_view())
+        self.report_view = ScoreReport(theme=self.ctx.theme)
+        report_holder = ScrollArea()
+        report_inner = QWidget()
+        report_layout = QVBoxLayout(report_inner)
+        report_layout.setContentsMargins(16, 12, 16, 12)
+        report_layout.addWidget(self.report_view)
+        report_layout.addStretch(1)
+        report_holder.setWidget(report_inner)
+        self.view_stack.addWidget(report_holder)
+        root.addWidget(self.view_stack, 1)
 
-        self.result_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.result_splitter.setChildrenCollapsible(False)
-        self.result_splitter.addWidget(self._build_body_box())
-        self.result_splitter.addWidget(self._build_meta_box())
-        # 正文占更多高度，符合「预览/编辑」的阅读习惯
-        self.result_splitter.setStretchFactor(0, 5)
-        self.result_splitter.setStretchFactor(1, 3)
-        self.result_splitter.setSizes([420, 260])
-        layout.addWidget(self.result_splitter, 1)
-
-        self.quality_result = QLabel()
-        self.quality_result.setObjectName("Faint")
-        self.quality_result.setWordWrap(True)
-        layout.addWidget(self.quality_result)
-
-        self.result_hint = QLabel("尚未生成内容")
-        self.result_hint.setObjectName("Faint")
-        self.result_hint.setWordWrap(True)
-        layout.addWidget(self.result_hint)
-
-        root.addWidget(content, 1)
         root.addWidget(self._build_action_bar())
         return card
 
-    def _build_body_box(self) -> QWidget:
-        box = QWidget()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        head = QWidget()
-        head_layout = QHBoxLayout(head)
-        head_layout.setContentsMargins(0, 0, 0, 0)
-        head_layout.setSpacing(8)
-        head_layout.addWidget(field_label("正文", "可直接编辑"))
-        head_layout.addStretch(1)
-        self.body_count = QLabel("0 字")
-        self.body_count.setObjectName("FieldHint")
-        head_layout.addWidget(self.body_count)
-        layout.addWidget(head)
-
-        self.body_edit = QTextEdit()
-        self.body_edit.setPlaceholderText("生成结果会在这里实时出现，你可以直接在此编辑")
-        self.body_edit.textChanged.connect(self._update_counts)
-        layout.addWidget(self.body_edit, 1)
-        return box
-
-    def _build_meta_box(self) -> QWidget:
-        box = QWidget()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        # 标题候选：单击选用（不再要求双击）
-        head = QWidget()
-        head_layout = QHBoxLayout(head)
-        head_layout.setContentsMargins(0, 0, 0, 0)
-        head_layout.setSpacing(8)
-        head_layout.addWidget(field_label("标题候选", "单击选用"))
-        head_layout.addStretch(1)
-        self.regen_button = make_button("重新生成", icon="refresh", theme=self.ctx.theme, ghost=True)
+    def _build_output_header(self) -> QWidget:
+        """顶部固定栏：视图切换常驻，切到哪儿都不用滚动。"""
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 12, 16, 8)
+        layout.setSpacing(10)
+        self.view_tabs = SegmentedTabs(
+            (("editor", "正文编辑"), ("report", "AI 质量自检")), theme=self.ctx.theme
+        )
+        self.view_tabs.changed.connect(self._on_view_changed)
+        layout.addWidget(self.view_tabs)
+        layout.addStretch(1)
+        self.regen_button = make_button("重新生成标题", icon="refresh", theme=self.ctx.theme, ghost=True)
         self.regen_button.clicked.connect(self.regenerate_titles)
         self.regen_button.setEnabled(False)
-        head_layout.addWidget(self.regen_button)
-        layout.addWidget(head)
+        layout.addWidget(self.regen_button)
+        return bar
 
+    def _build_step_bar(self) -> QWidget:
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(0)
+        self.step_bar = StepIndicator(theme=self.ctx.theme)
+        layout.addWidget(self.step_bar)
+        return holder
+
+    def _build_editor_view(self) -> QWidget:
+        scroll = ScrollArea()
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(16, 6, 16, 12)
+        layout.setSpacing(14)
+
+        # ---- 正文（最亮的一层）----
+        layout.addWidget(field_label("正文", "可直接编辑"))
+        self.body_edit = QTextEdit()
+        self.body_edit.setPlaceholderText("生成结果会在这里实时出现，你可以直接在此编辑")
+        self.body_edit.setMinimumHeight(240)
+        self.body_edit.textChanged.connect(self._update_counts)
+        layout.addWidget(self.body_edit, 1)
+
+        # ---- 标题候选（单击选用 / 双击改字）----
+        layout.addWidget(field_label("标题候选", "单击选用 · 双击改字"))
         self.titles_list = QListWidget()
         self.titles_list.setObjectName("TitleList")
-        self.titles_list.setMaximumHeight(94)
+        self.titles_list.setMaximumHeight(96)
         self.titles_list.setItemDelegate(TitleCandidateDelegate(self.titles_list))
-        self.titles_list.itemClicked.connect(self._use_title)
-        self.titles_list.currentItemChanged.connect(lambda current, _prev: self._use_title(current))
+        self.titles_list.itemClicked.connect(self._on_title_clicked)
+        self.titles_list.itemChanged.connect(self._on_title_edited)
         layout.addWidget(self.titles_list)
 
-        title_row = QWidget()
-        title_layout = QHBoxLayout(title_row)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(8)
-        title_layout.addWidget(field_label("当前标题"))
-        self.title_edit = QLineEdit()
-        self.title_edit.setPlaceholderText("选中上方候选，或直接在这里写")
-        self.title_edit.textChanged.connect(self._update_counts)
-        title_layout.addWidget(self.title_edit, 1)
-        layout.addWidget(title_row)
-
-        layout.addWidget(field_label("简介"))
+        # ---- 简介 ----
+        layout.addWidget(field_label("简介", "发布时的摘要字段"))
         self.summary_edit = QTextEdit()
+        self.summary_edit.setObjectName("SurfaceInput")
         self.summary_edit.setPlaceholderText("用于发布时的摘要/简介字段")
-        self.summary_edit.setFixedHeight(54)
+        self.summary_edit.setFixedHeight(62)
         layout.addWidget(self.summary_edit)
 
-        # 标签：胶囊化，点一下复制、点 × 删除
-        tag_head = QWidget()
-        tag_head_layout = QHBoxLayout(tag_head)
-        tag_head_layout.setContentsMargins(0, 0, 0, 0)
-        tag_head_layout.setSpacing(8)
-        tag_head_layout.addWidget(field_label("标签", "点击复制 · × 删除"))
-        tag_head_layout.addStretch(1)
-        self.tags_count = QLabel("0 个")
-        self.tags_count.setObjectName("FieldHint")
-        tag_head_layout.addWidget(self.tags_count)
-        layout.addWidget(tag_head)
+        # ---- 标签云 ----
+        layout.addWidget(field_label("标签", "点击复制 · × 删除"))
+        self.tag_cloud = TagCloud(theme=self.ctx.theme, placeholder="输入标签后回车")
+        self.tag_cloud.changed.connect(lambda _tags: self._update_counts())
+        layout.addWidget(self.tag_cloud)
 
-        self.tags_flow = FlowRow(spacing=6)
-        layout.addWidget(self.tags_flow)
-
-        self.tag_add_edit = QLineEdit()
-        self.tag_add_edit.setObjectName("TagAddEdit")
-        self.tag_add_edit.setPlaceholderText("＋ 输入标签后回车添加")
-        self.tag_add_edit.returnPressed.connect(self._add_tag)
-        layout.addWidget(self.tag_add_edit)
-        return box
+        layout.addStretch(1)
+        scroll.setWidget(inner)
+        return scroll
 
     def _build_action_bar(self) -> QWidget:
         """吸底操作栏：正文再长，这两个按钮也一直可见可点。"""
         bar = QFrame()
         bar.setObjectName("ActionBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 11, 16, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 10, 16, 12)
+        layout.setSpacing(10)
 
-        self.quality_button = make_button("AI 质量自检", icon="check", theme=self.ctx.theme, ghost=True)
-        self.quality_button.setEnabled(False)
-        self.quality_button.clicked.connect(self.quality_check)
+        # 字数状态：实时反映是否超出平台建议区间
+        self.body_count = QLabel("0 字")
+        self.body_count.setObjectName("FieldHint")
+        layout.addWidget(self.body_count)
+        layout.addStretch(1)
+
+        # 质量自检：平时是安静的入口，出分后变成状态徽章，紧挨主操作
+        self.quality_button = make_button("质量自检", icon="sparkles", theme=self.ctx.theme, ghost=True)
+        self.quality_button.clicked.connect(self._on_quality_clicked)
         layout.addWidget(self.quality_button)
 
-        self.copy_body_button = make_button("复制正文", icon="copy", theme=self.ctx.theme, ghost=True)
-        self.copy_body_button.clicked.connect(lambda: self._copy(self.body_edit.toPlainText(), "正文已复制"))
-        layout.addWidget(self.copy_body_button)
+        self.copy_button = CopyMenuButton(
+            (
+                ("复制正文", lambda: self._copy(self.body_edit.toPlainText(), "正文已复制")),
+                ("复制标题", lambda: self._copy(self._current_title(), "标题已复制")),
+                ("复制全文", lambda: self._copy(self._full_text(), "全文已复制")),
+            ),
+            text="复制",
+            theme=self.ctx.theme,
+        )
+        layout.addWidget(self.copy_button)
 
-        self.copy_all_button = make_button("复制全文", icon="copy", theme=self.ctx.theme, ghost=True)
-        self.copy_all_button.clicked.connect(lambda: self._copy(self._full_text(), "全文已复制"))
-        layout.addWidget(self.copy_all_button)
-
-        layout.addStretch(1)
         self.save_button = make_button("存为草稿", icon="save", theme=self.ctx.theme)
         self.save_button.clicked.connect(lambda: self.save_draft(to_publish=False))
         layout.addWidget(self.save_button)
@@ -376,34 +346,63 @@ class CreatePage(BasePage):
         return bar
 
     # ------------------------------------------------------------------
+    # 视图切换
+    # ------------------------------------------------------------------
+    def _on_view_changed(self, key: str) -> None:
+        self.view_stack.setCurrentIndex(0 if key == "editor" else 1)
+        if key == "report" and self._quality is None:
+            self._refresh_report()
+
+    def _show_report_tab(self) -> None:
+        self.view_tabs.set_current("report")
+        self.view_stack.setCurrentIndex(1)
+
+    def _on_quality_clicked(self) -> None:
+        """有分数就跳到报告页看；没跑过就先跑一次自检。"""
+        if self._quality is not None:
+            self._show_report_tab()
+        else:
+            self.quality_check()
+
+    def _refresh_report(self) -> None:
+        self.report_view.apply_theme(self.ctx.theme)
+        self.report_view.set_report(self._quality or {})
+
+    # ------------------------------------------------------------------
     # 平台联动
     # ------------------------------------------------------------------
+    def _platform_key(self) -> str:
+        if hasattr(self, "platform_combo"):
+            return self.platform_combo.currentData() or "xiaohongshu"
+        return "xiaohongshu"
+
+    @staticmethod
+    def _platform_tooltip(platform: str) -> str:
+        style = style_for(platform)
+        return (
+            f"<b>{style.label} · 平台规范</b><br>"
+            f"标题：≤ {style.title_max} 字<br>"
+            f"正文：{style.body_min}-{style.body_max} 字<br>"
+            f"标签：≤ {style.tags_max} 个<br>"
+            f"建议发布：{style.best_hours}<br><br>"
+            f"<b>平台禁忌</b><br>{style.taboos}"
+        )
+
     def _on_platform_changed(self) -> None:
-        key = self.platform_combo.currentData()
-        style = style_for(key)
-        # 内容类型与平台是强关联的：默认自动跟随，用户不必重复选择
-        if not self.content_type_custom.isChecked():
-            self.content_type_edit.setText(style.content_type)
-        self.content_type_hint.setText(
-            f"已按「{style.label}」自动设为「{style.content_type}」；"
-            "如需改写请勾选右侧「自定义」"
-            if not self.content_type_custom.isChecked()
-            else f"自定义中（平台默认为「{style.content_type}」）"
-        )
-        self.style_hint.setText(
-            f"平台规范：标题 ≤{style.title_max} 字；正文 {style.body_min}-{style.body_max} 字；"
-            f"标签 ≤{style.tags_max} 个；建议发布时段 {style.best_hours}"
-        )
+        # 平台规范不占版面：只在问号 tooltip 里按当前平台更新
+        self.platform_field.set_help_text(self._platform_tooltip(self._platform_key()))
+        self._refresh_param_placeholder()
         self._update_counts()
 
-    def _on_content_type_custom(self, checked: bool) -> None:
-        self.content_type_edit.setReadOnly(not checked)
-        if not checked:
-            self.content_type_edit.setText(style_for(self.platform_combo.currentData()).content_type)
-        self._on_platform_changed()
+    def _effective_content_type(self) -> str:
+        """内容类型默认跟随平台；用快捷参数改过才用自定义值。"""
+        custom = self.param_chips["content_type"].value() if hasattr(self, "param_chips") else ""
+        return custom or style_for(self._platform_key()).content_type
 
     def apply_theme(self, theme: str) -> None:
-        self.advanced_section.apply_theme(theme)
+        self.platform_field.apply_theme(theme)
+        self.report_view.apply_theme(theme)
+        self.tag_cloud.apply_theme(theme)
         self._update_counts()
 
     def on_first_show(self) -> None:
@@ -440,6 +439,21 @@ class CreatePage(BasePage):
             self.banner.show_message(f"已载入热点：{seed.get('topic', '')[:40]}", "info")
             self._refresh_profile_hint()
 
+        # 发布中心「去修改」会带上 content_id，直接把这版草稿载回来改
+        content_id = kwargs.get("content_id")
+        if content_id:
+            try:
+                content = db.get_content(int(content_id))
+            except Exception:  # noqa: BLE001
+                content = None
+            if content:
+                self._load_content(content)
+                self.banner.show_message(
+                    f"已载入待修改的草稿 #{content_id}，改完记得重新「存为草稿」", "info"
+                )
+            else:
+                self.toast(f"草稿 #{content_id} 不存在", "warn")
+
     # ------------------------------------------------------------------
     # 生成
     # ------------------------------------------------------------------
@@ -448,12 +462,14 @@ class CreatePage(BasePage):
         if not topic:
             self.toast("请先填写主题", "warn")
             return None
+        values = {key: chip.value() for key, chip in self.param_chips.items()}
         return CreationRequest(
             topic=topic,
             platform=self.platform_combo.currentData() or "xiaohongshu",
-            content_type=self.content_type_edit.text().strip(),
-            goal=self.goal_edit.text().strip() or "互动涨粉",
-            tone=self.tone_edit.text().strip(),
+            content_type=self._effective_content_type(),
+            goal=values.get("goal") or DEFAULT_GOAL,
+            audience=values.get("audience", ""),
+            tone=values.get("tone", ""),
             source_text=self.source_edit.toPlainText().strip(),
             extra=self.extra_edit.toPlainText().strip(),
         )
@@ -472,6 +488,7 @@ class CreatePage(BasePage):
         self._reset_output()
         self._set_generating(True)
         self.step_bar.start("正在连接模型…")
+        self.view_tabs.set_current("editor")
         self.banner.show_message(f"正在为「{style_for(req.platform).label}」生成内容…", "info", closable=False)
 
         def job(worker):
@@ -503,16 +520,13 @@ class CreatePage(BasePage):
         self._summary_buffer = ""
         self._body_buffer = ""
         self._last_result = None
-        self._tags = []
+        self._quality = None
         self.body_edit.clear()
         self.summary_edit.clear()
-        self.title_edit.clear()
         self.titles_list.clear()
-        self.tag_add_edit.clear()
-        self._render_tags()
-        self.quality_result.clear()
-        self.quality_button.setEnabled(False)
-        self.result_hint.setText("生成中…")
+        self.tag_cloud.set_tags([])
+        self._refresh_report()
+        self._refresh_quality_button()
         self.body_edit.setPlaceholderText("正在生成，内容会实时出现…")
         self._update_counts()
 
@@ -556,7 +570,8 @@ class CreatePage(BasePage):
             self.titles_list.clear()
             for title in titles:
                 item = QListWidgetItem(title)
-                item.setToolTip(title)
+                item.setToolTip(f"{title}\n（单击选用，双击可直接改字）")
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
                 self.titles_list.addItem(item)
             if titles and select_first:
                 self.titles_list.setCurrentRow(0)
@@ -567,9 +582,9 @@ class CreatePage(BasePage):
 
     def _render_tags_live(self) -> None:
         tags = parse_tags(self._tags_buffer)
-        if tags != self._tags:
-            self._tags = tags
-            self._render_tags()
+        if tags != self.tag_cloud.tags():
+            self.tag_cloud.set_tags(tags)
+            self._update_counts()
 
     def _on_result(self, result) -> None:
         self._last_result = result
@@ -584,12 +599,9 @@ class CreatePage(BasePage):
         if summary and self.summary_edit.toPlainText().strip() != summary:
             self.summary_edit.setPlainText(summary)
 
-        self._tags = result.tags or parse_tags(self._tags_buffer)
-        self._render_tags()
+        self.tag_cloud.set_tags(result.tags or parse_tags(self._tags_buffer))
 
         self.body_edit.setPlaceholderText("生成结果会在这里实时出现，你可以直接在此编辑")
-        self.result_hint.setText(result.usage_hint or "生成完成")
-        self.quality_button.setEnabled(True)
         self.regen_button.setEnabled(True)
         self.banner.show_message(
             "生成完成，可直接编辑后「存为草稿」或「送入发布中心」", "success", summary="生成完成"
@@ -599,7 +611,6 @@ class CreatePage(BasePage):
 
     def _on_error(self, message: str) -> None:
         self.banner.show_message(f"生成失败：{message}", "error")
-        self.result_hint.setText("生成失败")
         self.toast("生成失败", "error")
 
     def _on_done(self) -> None:
@@ -617,61 +628,44 @@ class CreatePage(BasePage):
             self.source_edit,
             self.platform_combo,
             self.extra_edit,
-            self.content_type_edit,
-            self.goal_edit,
-            self.tone_edit,
         ):
             widget.setEnabled(not busy)
+        for chip in self.param_chips.values():
+            chip.setEnabled(not busy)
 
     # ------------------------------------------------------------------
     # 输出操作
     # ------------------------------------------------------------------
+    def _on_title_clicked(self, item: QListWidgetItem | None) -> None:
+        self._use_title(item)
+
+    def _on_title_edited(self, item: QListWidgetItem) -> None:
+        """双击改字后就地生效：把新标题写回候选与当前标题。"""
+        if self._syncing_title:
+            return
+        text = item.text().strip()
+        if not text:
+            return
+        item.setToolTip(f"{text}\n（单击选用，双击可直接改字）")
+        self.titles_list.viewport().update()
+        self._update_counts()
+
     def _use_title(self, item: QListWidgetItem | None) -> None:
         if self._syncing_title or item is None:
             return
-        self.title_edit.setText(item.text())
+        self.titles_list.setCurrentItem(item)
         self.titles_list.viewport().update()
-
-    def _current_title(self) -> str:
-        """以「当前标题」输入框为准：用户可以直接改它。"""
-        text = self.title_edit.text().strip()
-        if text:
-            return text
-        item = self.titles_list.currentItem()
-        return item.text() if item is not None else ""
-
-    def _current_tags(self) -> list[str]:
-        return list(self._tags)
-
-    def _render_tags(self) -> None:
-        chips = [self._make_tag_chip(tag) for tag in self._tags]
-        self.tags_flow.set_items(chips)
         self._update_counts()
 
-    def _make_tag_chip(self, tag: str) -> EditableTagChip:
-        chip = EditableTagChip(tag, theme=self.ctx.theme)
-        chip.clicked.connect(lambda name: self._copy(f"#{name}", f"已复制 #{name}"))
-        chip.removed.connect(self._remove_tag)
-        return chip
+    def _current_title(self) -> str:
+        """当前标题 = 候选里选中的那一条（列表为空时可从正文首行兜底）。"""
+        item = self.titles_list.currentItem()
+        if item is not None:
+            return item.text().strip()
+        return ""
 
-    def _remove_tag(self, tag: str) -> None:
-        if tag in self._tags:
-            self._tags.remove(tag)
-            self._render_tags()
-
-    def _add_tag(self) -> None:
-        raw = self.tag_add_edit.text().strip()
-        if not raw:
-            return
-        added = [t for t in parse_tags(raw) if t]
-        new = [t for t in added if t not in self._tags]
-        if not new:
-            self.toast("标签已存在", "info")
-            self.tag_add_edit.clear()
-            return
-        self._tags.extend(new)
-        self.tag_add_edit.clear()
-        self._render_tags()
+    def _current_tags(self) -> list[str]:
+        return self.tag_cloud.tags()
 
     def _full_text(self) -> str:
         title = self._current_title()
@@ -689,12 +683,12 @@ class CreatePage(BasePage):
         QApplication.clipboard().setText(text)
         self.toast(message, "success")
 
-    def _update_counts(self, *_args) -> None:
+    def _update_counts(self) -> None:
         """字数提示：超出平台建议区间时立刻变红，不用等发布前检查。"""
         if not hasattr(self, "body_count"):
-            return  # 面板尚未构建完（平台联动的首次调用）
+            return
         p = palette(self.ctx.theme)
-        style = style_for(self.platform_combo.currentData() or "xiaohongshu")
+        style = style_for(self._platform_key())
 
         body_len = len(self.body_edit.toPlainText())
         over_max = body_len > style.body_max
@@ -706,28 +700,12 @@ class CreatePage(BasePage):
         else:
             text = f"{body_len} 字 / 建议 {style.body_min}-{style.body_max}"
         color = p.danger if over_max else (p.warning if under_min and body_len else p.text_faint)
-        self._set_hint(self.body_count, text, color)
-
-        tag_count = len(self._tags)
-        self._set_hint(
-            self.tags_count,
-            f"{tag_count} 个 / 上限 {style.tags_max}",
-            p.danger if tag_count > style.tags_max else p.text_faint,
-        )
 
         title_len = len(self._current_title())
         if title_len > style.title_max:
-            self._set_hint(
-                self.result_hint,
-                f"标题 {title_len} 字，超出「{style.label}」上限 {style.title_max} 字，发布前需精简",
-                p.danger,
-            )
-        elif self.result_hint.property("hintColor") is not None:
-            # 标题回到合规区间，撤掉红色警示并还原常规提示
-            self.result_hint.setProperty("hintColor", None)
-            self.result_hint.setStyleSheet("")
-            if self._last_result is not None:
-                self.result_hint.setText(self._last_result.usage_hint or "生成完成")
+            text += f"　·　标题 {title_len}/{style.title_max} 字超出"
+            color = p.danger
+        self._set_hint(self.body_count, text, color)
 
     def _set_hint(self, label: QLabel, text: str, color: str) -> None:
         """只在颜色变化时重设样式：QSS 重解析不便宜，而 textChanged 触发很频繁。"""
@@ -771,8 +749,18 @@ class CreatePage(BasePage):
     def _on_regen_done(self) -> None:
         self.step_bar.stop()
         self.regen_button.setEnabled(True)
-        self.regen_button.setText("重新生成")
+        self.regen_button.setText("重新生成标题")
         self._worker = None
+
+    def _refresh_quality_button(self) -> None:
+        """自检完成后收成状态徽章：不再是一个抢眼的大按钮。"""
+        if self._quality:
+            total = self._quality.get("total")
+            self.quality_button.setText(f"✨ 自检 {total}/40" if total is not None else "✨ 自检已完成")
+            self.quality_button.setToolTip("点击查看完整自检报告")
+        else:
+            self.quality_button.setText("质量自检")
+            self.quality_button.setToolTip("让 AI 按钩子/平台匹配/信息价值/真人感四项打分")
 
     def quality_check(self) -> None:
         if self._last_result is None:
@@ -803,29 +791,28 @@ class CreatePage(BasePage):
         )
 
     def _on_quality(self, data: dict) -> None:
-        total = data.get("total") or sum(
-            int(data.get(k) or 0) for k in ("hook", "platform_fit", "value", "human")
-        )
-        issues = data.get("issues") or []
-        suggestions = data.get("suggestions") or []
-        lines = [
-            f"总分 {total}/40　钩子 {data.get('hook', '-')}　平台匹配 {data.get('platform_fit', '-')}"
-            f"　信息价值 {data.get('value', '-')}　真人感 {data.get('human', '-')}"
-        ]
-        if issues:
-            lines.append("问题：" + "；".join(str(i) for i in issues[:4]))
-        if suggestions:
-            lines.append("建议：" + "；".join(str(s) for s in suggestions[:4]))
-        self.quality_result.setText("\n".join(lines))
+        self._quality = data or {}
+        self._refresh_report()
+        self._refresh_quality_button()
+        self._show_report_tab()
         self.banner.show_message("质量自检完成", "success")
 
     def _on_quality_done(self) -> None:
         self.step_bar.stop()
         self.quality_button.setEnabled(True)
-        self.quality_button.setText("AI 质量自检")
+        self._refresh_quality_button()
         self._worker = None
 
     # ------------------------------------------------------------------
+    def _refresh_save_button(self) -> None:
+        """正在编辑已有草稿时，把「会覆盖哪一条」写在按钮上，避免误存出重复内容。"""
+        if self._editing_id:
+            self.save_button.setText(f"更新草稿 #{self._editing_id}")
+            self.save_button.setToolTip("将覆盖这条已有草稿，而不是新建一条")
+        else:
+            self.save_button.setText("存为草稿")
+            self.save_button.setToolTip("")
+
     def save_draft(self, *, to_publish: bool) -> None:
         body = self.body_edit.toPlainText().strip()
         if not body:
@@ -834,19 +821,28 @@ class CreatePage(BasePage):
         titles = [self.titles_list.item(i).text() for i in range(self.titles_list.count())]
         title = self._current_title() or (titles[0] if titles else "")
         seed = self._seed or {}
+        fields = dict(
+            topic=self.topic_edit.toPlainText().strip(),
+            platform=self.platform_combo.currentData() or "",
+            title=title,
+            titles=titles,
+            body=body,
+            summary=self.summary_edit.toPlainText().strip(),
+            tags=self._current_tags(),
+            status="ready",
+        )
         try:
-            content_id = db.create_content(
-                topic=self.topic_edit.toPlainText().strip(),
-                platform=self.platform_combo.currentData() or "",
-                title=title,
-                titles=titles,
-                body=body,
-                summary=self.summary_edit.toPlainText().strip(),
-                tags=self._current_tags(),
-                status="ready",
-                source="hot" if seed else "manual",
-                source_ref=str(seed.get("source_ref", "")),
-            )
+            if self._editing_id:
+                # 从发布中心「去修改」进来的：更新原草稿，而不是又存出一条新的
+                db.update_content(self._editing_id, **fields)
+                content_id = self._editing_id
+                self.ctx.db.log_action("create", "update_draft", f"id={content_id}")
+            else:
+                content_id = db.create_content(
+                    **fields,
+                    source="hot" if seed else "manual",
+                    source_ref=str(seed.get("source_ref", "")),
+                )
         except Exception as exc:  # noqa: BLE001
             self.banner.show_message(f"保存失败：{exc}", "error")
             return
@@ -863,18 +859,24 @@ class CreatePage(BasePage):
     # ------------------------------------------------------------------
     def open_drafts(self) -> None:
         dialog = DraftDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected:
-            self._load_content(dialog.selected)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        content = dialog.selected if accepted else None
+        dialog.setParent(None)
+        dialog.deleteLater()
+        if content is not None:
+            self._load_content(content)
 
     def _load_content(self, content: dict) -> None:
+        # 记住来源草稿 id：再次保存时更新这一条，避免「去修改」改出一堆重复草稿
+        self._editing_id = int(content.get("id") or 0) or None
+        self._refresh_save_button()
         self.topic_edit.setPlainText(content.get("topic", ""))
         index = self.platform_combo.findData(content.get("platform", ""))
         if index >= 0:
             self.platform_combo.setCurrentIndex(index)
         self.body_edit.setPlainText(content.get("body", ""))
         self.summary_edit.setPlainText(content.get("summary", ""))
-        self._tags = list(content.get("tags") or [])
-        self._render_tags()
+        self.tag_cloud.set_tags(list(content.get("tags") or []))
         self._fill_titles(list(content.get("titles") or []), select_first=False)
         if content.get("title"):
             if not content.get("titles"):
@@ -883,7 +885,6 @@ class CreatePage(BasePage):
                 if self.titles_list.item(row).text() == content["title"]:
                     self.titles_list.setCurrentRow(row)
                     break
-            self.title_edit.setText(content["title"])
         self.banner.show_message(f"已载入草稿 #{content.get('id')}", "info")
         self._update_counts()
 

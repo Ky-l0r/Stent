@@ -2,6 +2,14 @@
 
 六维配置：定位 / 风格 / 受众 / 平台 / 偏好 / 记忆。
 画像影响内容创作的风格与选题，并接收数据分析回流的经验。
+
+界面要点（v1.0.5 打磨）：
+
+- 六维改成一张张可折叠卡片：一屏能看全，点开哪一维就填哪一维，
+  标题上直接标出「已填写 / 待补充」，不用展开也知道缺什么
+- AI 草稿输入框加高到能写几行，并给一个「填入示例」降低启动成本
+- 「记忆」的说明改成人话，并给一个直接跳到「数据分析 · 归因回流」的按钮
+- 清空记忆是破坏性操作，改为二次确认
 """
 
 from __future__ import annotations
@@ -13,8 +21,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -22,8 +30,22 @@ from PySide6.QtWidgets import (
 )
 
 from ...services.profile import DIMENSIONS, profile_service
-from ..components import Card, CardTitle, EmptyState, PageHeader, make_button, hline
+from ..components import (
+    Card,
+    CollapsibleCard,
+    EmptyState,
+    PageHeader,
+    make_button,
+)
 from .base import BasePage
+
+#: 「填入示例」用的自我介绍样例
+SAMPLE_INTRO = (
+    "我做小红书平价通勤穿搭，粉丝主要是一二线城市 25-35 岁女生，"
+    "预算大多在 300 元以内。内容以「实拍 + 上身对比」为主，"
+    "语气像闺蜜聊天，喜欢用数字和具体价格说话，不做硬广。"
+    "希望多接平价品牌的合作，也在抖音同步发短视频。"
+)
 
 
 class ProfilePage(BasePage):
@@ -33,7 +55,9 @@ class ProfilePage(BasePage):
 
     def build(self) -> None:
         self._editors: dict[str, QTextEdit] = {}
+        self._dim_cards: dict[str, CollapsibleCard] = {}
         self._worker = None
+        self._auto_expanded = False
 
         header = PageHeader(
             "账号画像",
@@ -48,7 +72,7 @@ class ProfilePage(BasePage):
         header.add_action(self.export_button)
         self.add(header)
 
-        # ---- 完整度 ----
+        # ---- 完整度（常驻，很轻）----
         progress_card = Card(padding=14, spacing=6)
         self.add(progress_card)
         row = QHBoxLayout()
@@ -66,102 +90,145 @@ class ProfilePage(BasePage):
         self.progress.setFixedHeight(7)
         progress_card.add(self.progress)
 
-        # ---- 一键生成 ----
-        assist_card = Card(padding=14, spacing=8)
-        self.add(assist_card)
-        assist_title = CardTitle(
-            "用 AI 生成画像草稿",
-            icon="sparkles",
-            hint="粘贴一段自我介绍或账号说明（例如「我做通勤穿搭，粉丝是 25-35 岁女生…」），AI 会整理成六维画像",
-            theme=self.ctx.theme,
-        )
-        assist_card.add(assist_title)
-        self.assist_input = QTextEdit()
-        self.assist_input.setPlaceholderText("例：我做小红书平价通勤穿搭，粉丝主要是一二线城市 25-35 岁女生，预算 300 以内，语气像闺蜜聊天…")
-        self.assist_input.setFixedHeight(74)
-        assist_card.add(self.assist_input)
-        assist_row = QHBoxLayout()
-        assist_row.addStretch(1)
-        self.assist_button = make_button("生成画像草稿", icon="sparkles", theme=self.ctx.theme)
-        self.assist_button.clicked.connect(self.generate_draft)
-        assist_row.addWidget(self.assist_button)
-        assist_card.add_layout(assist_row)
+        # ---- 滚动区：折叠卡片一张张排下去 ----
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(12)
 
-        # ---- 六维表单 ----
-        form_card = Card(padding=16, spacing=12)
-        self.add(form_card, 1)
-        form_card.add(CardTitle("六维画像", icon="user", theme=self.ctx.theme))
+        layout.addWidget(self._build_assist_card())
+        for dim in DIMENSIONS:
+            if dim.key == "memory":
+                continue
+            layout.addWidget(self._build_dimension_card(dim))
+        layout.addWidget(self._build_memory_card())
+        layout.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        inner = QWidget()
-        inner_layout = QVBoxLayout(inner)
-        inner_layout.setContentsMargins(0, 0, 8, 0)
-        inner_layout.setSpacing(14)
-
-        for dim in DIMENSIONS:
-            if dim.key == "memory":
-                continue
-            block = QWidget()
-            block_layout = QVBoxLayout(block)
-            block_layout.setContentsMargins(0, 0, 0, 0)
-            block_layout.setSpacing(4)
-            label = QLabel(f"{dim.label}　·　{dim.hint}")
-            label.setObjectName("SectionLabel")
-            label.setWordWrap(True)
-            block_layout.addWidget(label)
-            editor = QTextEdit()
-            editor.setPlaceholderText(dim.placeholder)
-            editor.setFixedHeight(66 if dim.key != "style" else 78)
-            self._editors[dim.key] = editor
-            block_layout.addWidget(editor)
-            inner_layout.addWidget(block)
-
-        # 平台维度用一行输入更合适
-        self.platforms_edit = QLineEdit()
-        self.platforms_edit.setPlaceholderText("例：小红书（主）、抖音、知乎")
-        inner_layout.addWidget(QLabel("补充：常用平台（逗号分隔）"))
-        inner_layout.addWidget(self.platforms_edit)
-
-        inner_layout.addStretch(1)
         scroll.setWidget(inner)
-        form_card.add(scroll, 1)
+        self.add(scroll, 1)
 
-        # ---- 记忆 ----
-        memory_card = Card(padding=16, spacing=8)
-        self.add(memory_card, 1)
-        memory_title = CardTitle(
-            "记忆 · 数据分析回流",
-            icon="chart",
-            hint="由「数据分析 → 归因回流」自动写入，也可手动添加；创作时优先级最高",
+    # ------------------------------------------------------------------
+    def _build_assist_card(self) -> QWidget:
+        card = CollapsibleCard(
+            "用 AI 生成画像草稿",
+            icon="sparkles",
+            hint="粘贴一段自我介绍，AI 会整理成六维画像",
             theme=self.ctx.theme,
+            expanded=False,
         )
-        memory_card.add(memory_title)
-        memory_input_row = QHBoxLayout()
-        memory_input_row.setSpacing(8)
+        intro = QLabel(
+            "把自我介绍、账号说明或过往内容风格粘进来，AI 会拆成六维填好草稿，"
+            "你再逐条确认修改即可。"
+        )
+        intro.setObjectName("FieldHint")
+        intro.setWordWrap(True)
+        card.add(intro)
+
+        self.assist_input = QTextEdit()
+        self.assist_input.setPlaceholderText(
+            "例：我做小红书平价通勤穿搭，粉丝主要是一二线城市 25-35 岁女生，"
+            "预算 300 以内，语气像闺蜜聊天…"
+        )
+        # 这里可能一次粘贴几百字，给足高度免得边写边滚
+        self.assist_input.setMinimumHeight(132)
+        card.add(self.assist_input)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        sample = make_button("填入示例", theme=self.ctx.theme, ghost=True)
+        sample.setToolTip("填一段示例自我介绍，可在此基础上改写")
+        sample.clicked.connect(lambda: self.assist_input.setPlainText(SAMPLE_INTRO))
+        row.addWidget(sample)
+        row.addStretch(1)
+        self.assist_button = make_button("生成画像草稿", icon="sparkles", theme=self.ctx.theme, primary=True)
+        self.assist_button.clicked.connect(self.generate_draft)
+        row.addWidget(self.assist_button)
+        card.add_layout(row)
+        return card
+
+    def _build_dimension_card(self, dim) -> QWidget:
+        card = CollapsibleCard(
+            dim.label, icon="user", hint=dim.hint, theme=self.ctx.theme, expanded=False
+        )
+        hint = QLabel(dim.hint)
+        hint.setObjectName("FieldHint")
+        hint.setWordWrap(True)
+        card.add(hint)
+        editor = QTextEdit()
+        editor.setPlaceholderText(dim.placeholder)
+        editor.setFixedHeight(84 if dim.key != "style" else 96)
+        self._editors[dim.key] = editor
+        card.add(editor)
+        self._dim_cards[dim.key] = card
+        return card
+
+    def _build_memory_card(self) -> QWidget:
+        card = CollapsibleCard("记忆 · 创作经验", icon="chart", theme=self.ctx.theme, expanded=True)
+        # 说明改成人话：不解释「归因回流」是什么，只讲它对你有什么用
+        hint = QLabel(
+            "这里记录你的创作经验，AI 生成内容时会优先参考。"
+            "数据表现好的内容会自动总结成经验写进来，你也可以手动补一条。"
+        )
+        hint.setObjectName("FieldHint")
+        hint.setWordWrap(True)
+        card.add(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
         self.memory_input = QLineEdit()
-        self.memory_input.setPlaceholderText("手动补充一条经验，例如「标题带具体数字的笔记收藏率更高」")
+        self.memory_input.setPlaceholderText("手动补一条经验，例如「标题带具体数字的笔记收藏率更高」")
         self.memory_input.returnPressed.connect(self.add_memory)
-        memory_input_row.addWidget(self.memory_input, 1)
-        add_button = make_button("添加", icon="check", theme=self.ctx.theme)
+        row.addWidget(self.memory_input, 1)
+        add_button = make_button("添加", icon="plus", theme=self.ctx.theme, primary=True)
         add_button.clicked.connect(self.add_memory)
-        memory_input_row.addWidget(add_button)
-        clear_button = make_button("清空记忆", icon="trash", theme=self.ctx.theme, danger=True)
-        clear_button.clicked.connect(self.clear_memory)
-        memory_input_row.addWidget(clear_button)
-        memory_card.add_layout(memory_input_row)
+        row.addWidget(add_button)
+        card.add_layout(row)
 
         self.memory_list = QListWidget()
         self.memory_list.setMinimumHeight(120)
-        memory_card.add(self.memory_list, 1)
-        self.memory_empty = EmptyState("暂无归因经验", hint="去「数据分析」页点击「归因回流」，让表现数据沉淀为创作经验", theme=self.ctx.theme)
-        memory_card.add(self.memory_empty)
+        card.add(self.memory_list, 1)
+        self.memory_empty = EmptyState(
+            "还没有积累经验",
+            hint="发布并同步数据后，点一次「归因回流」，表现好的内容会自动总结成经验",
+            icon="sparkles",
+            theme=self.ctx.theme,
+        )
+        card.add(self.memory_empty)
         self.memory_empty.setVisible(False)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        goto = make_button("去数据分析页做归因", icon="chart", theme=self.ctx.theme, ghost=True)
+        goto.clicked.connect(lambda: self._goto("analytics"))
+        bottom.addWidget(goto)
+        bottom.addStretch(1)
+        # 破坏性操作：靠右、红色文字、点了还要二次确认
+        self.clear_memory_button = make_button("清空全部记忆", icon="trash", theme=self.ctx.theme, danger=True)
+        self.clear_memory_button.clicked.connect(self.clear_memory)
+        bottom.addWidget(self.clear_memory_button)
+        card.add_layout(bottom)
+        self._memory_card = card
+        return card
+
+    def _goto(self, key: str) -> None:
+        window = self.window()
+        if hasattr(window, "navigate"):
+            window.navigate(key)  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     def on_first_show(self) -> None:
         self.reload()
+
+    def apply_theme(self, theme: str) -> None:
+        for card in self._dim_cards.values():
+            card.apply_theme(theme)
+        card = getattr(self, "_memory_card", None)
+        if card is not None:
+            card.apply_theme(theme)
+        self.memory_empty.apply_theme(theme)
 
     def reload(self) -> None:
         profile = profile_service.get()
@@ -170,8 +237,6 @@ class ProfilePage(BasePage):
             if isinstance(value, (list, tuple)):
                 value = "、".join(str(v) for v in value)
             editor.setPlainText(str(value or ""))
-        platforms = profile.get("platforms") or []
-        self.platforms_edit.setText("、".join(str(p) for p in platforms))
         self._refresh_completeness()
         self._refresh_memory()
 
@@ -181,7 +246,20 @@ class ProfilePage(BasePage):
         self.completeness_label.setText(f"画像完整度 {percent}%")
         missing = profile_service.missing_dimensions()
         self.missing_label.setText("待补充：" + "、".join(missing) if missing else "六维信息已完整")
+        self._refresh_dim_status(missing)
         self.ctx.notify_data_changed("profile")
+
+    def _refresh_dim_status(self, missing: list[str]) -> None:
+        """折叠状态下也要能看出哪一维是空的：把状态写进卡片标题。"""
+        missing_set = set(missing)
+        for key, card in self._dim_cards.items():
+            label = next((d.label for d in DIMENSIONS if d.key == key), key)
+            is_missing = label in missing_set
+            card.set_title(f"{label}　·　{'待补充' if is_missing else '已填写'}")
+            # 只把「第一个还没填的」自动展开，避免一屏全展开又变拥挤
+            if is_missing and not getattr(self, "_auto_expanded", False):
+                card.set_expanded(True)
+                self._auto_expanded = True
 
     def _refresh_memory(self) -> None:
         entries = profile_service.recent_memory(limit=50)
@@ -195,13 +273,23 @@ class ProfilePage(BasePage):
         has = bool(entries)
         self.memory_list.setVisible(has)
         self.memory_empty.setVisible(not has)
+        self.clear_memory_button.setEnabled(has)
+        if hasattr(self, "_memory_card"):
+            self._memory_card.set_title(f"记忆 · 创作经验（{len(entries)} 条）")
 
     # ------------------------------------------------------------------
     def collect(self) -> dict[str, object]:
-        data: dict[str, object] = {key: editor.toPlainText().strip() for key, editor in self._editors.items()}
-        raw = self.platforms_edit.text().strip()
-        if raw:
-            data["platforms"] = [p.strip() for p in raw.replace(",", "、").replace("，", "、").split("、") if p.strip()]
+        data: dict[str, object] = {
+            key: editor.toPlainText().strip() for key, editor in self._editors.items()
+        }
+        # 「平台」维度在库里是列表：这里统一拆成列表再存，
+        # 否则存进去的是裸文本，读回来会因为解析失败而整段丢失。
+        raw = str(data.get("platforms") or "")
+        data["platforms"] = [
+            part.strip()
+            for part in raw.replace(",", "、").replace("，", "、").split("、")
+            if part.strip()
+        ]
         return data
 
     def save(self) -> None:
@@ -210,6 +298,7 @@ class ProfilePage(BasePage):
         except Exception as exc:  # noqa: BLE001
             self.banner.show_message(f"保存失败：{exc}", "error")
             return
+        self._auto_expanded = True  # 保存后不要再自动展开
         self._refresh_completeness()
         self.banner.show_message("画像已保存，后续创作会自动带上这些设定", "success")
         self.toast("画像已保存", "success")
@@ -225,6 +314,17 @@ class ProfilePage(BasePage):
         self.toast("已加入记忆", "success")
 
     def clear_memory(self) -> None:
+        """破坏性操作：先问一次，避免和「添加」挨着被误点。"""
+        answer = QMessageBox.question(
+            self,
+            "清空全部记忆",
+            "将删除所有已积累的创作经验，且无法恢复。\n\n"
+            "这些经验来自数据归因回流，清空后 AI 生成内容时不再参考它们。\n\n确定清空吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         profile_service.clear_memory()
         self._refresh_memory()
         self.toast("记忆已清空", "warn")
@@ -233,7 +333,7 @@ class ProfilePage(BasePage):
     def generate_draft(self) -> None:
         text = self.assist_input.toPlainText().strip()
         if not text:
-            self.toast("请先粘贴一段自我介绍", "warn")
+            self.toast("请先粘贴一段自我介绍，或点「填入示例」", "warn")
             return
         llm = self.ctx.require_llm()
         if llm is None:
@@ -258,6 +358,9 @@ class ProfilePage(BasePage):
             editor = self._editors.get(key)
             if editor is not None and value:
                 editor.setPlainText(value)
+                card = self._dim_cards.get(key)
+                if card is not None:
+                    card.set_expanded(True)
         self.banner.show_message("画像草稿已生成，请确认后点击「保存画像」", "success")
         self.toast("草稿已生成，请检查后保存", "success")
 
