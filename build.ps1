@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Stent 打包脚本：构建可独立运行的 Windows 目录包（onedir）。
 
@@ -49,7 +49,9 @@ function Invoke-Checked([string]$Exe, [string[]]$ArgList) {
 Write-Step '1/6 检查 Python 环境'
 $python = (Get-Command python -ErrorAction SilentlyContinue)
 if (-not $python) { throw '未找到 python，请先安装 Python 3.10+ 并加入 PATH' }
-Invoke-Checked $python.Source @('-c', 'import sys; print("Python", sys.version.split()[0]); assert sys.version_info >= (3,10), "需要 Python 3.10+"')
+# Python 代码里一律用单引号：Windows PowerShell 5.1 传给原生程序时会吞掉参数内的
+# 双引号（PowerShell 7 不会），写成 "Python" 在 5.1 下会变成未定义的变量 Python。
+Invoke-Checked $python.Source @('-c', 'import sys; print(''Python'', sys.version.split()[0]); assert sys.version_info >= (3,10), ''需要 Python 3.10+''')
 
 Write-Step '2/6 安装依赖'
 if ($SkipDeps) {
@@ -101,6 +103,9 @@ Write-Host "产物体积：$sizeMb MB（企划书目标：< 200MB，不含浏览
 Write-Host ''
 Write-Host '分发提示：'
 Write-Host '  · 直接压缩 dist\Stent 目录发给用户，双击 Stent.exe 运行'
-Write-Host '  · 目标机器首次使用「发布中心」需要 Playwright Chromium：'
-Write-Host '    可在打包机上把 %USERPROFILE%\AppData\Local\ms-playwright 一并分发，'
-Write-Host '    或让用户执行：python -m playwright install chromium'
+Write-Host '  · 目标机器首次使用「发布中心」需要 Playwright Chromium 内核：'
+Write-Host '    应用会在「发布中心」顶部给出一键安装，点一下即可（约 150 MB）'
+Write-Host '    也可以在打包机上把 %LOCALAPPDATA%\ms-playwright 一并分发，省掉这次下载'
+Write-Host '  · 产物刻意不含内核，运行时复用系统目录，因此不要删掉'
+Write-Host '    stent/paths.py 里的 ensure_playwright_browsers_path()：'
+Write-Host '    冻结态下 Playwright 默认去包内 .local-browsers 找内核，不纠正就必然报「浏览器不可用」。'

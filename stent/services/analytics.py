@@ -157,6 +157,82 @@ DEFAULT_BENCHMARK: dict[str, Any] = {
     "note": "平台未收录，使用通用区间；建立自有历史后以自身上月为准",
 }
 
+# --------------------------------------------------------------------------- #
+# 常量：中英术语对照（喂给 LLM 的统计一律用中文标签，避免模型照抄英文键名）
+# --------------------------------------------------------------------------- #
+
+#: 平台 key → 中文名（registry 不可用时的兜底）
+PLATFORM_LABELS: dict[str, str] = {
+    "bilibili": "B 站",
+    "douyin": "抖音",
+    "xiaohongshu": "小红书",
+    "zhihu": "知乎",
+    "weibo": "微博",
+    "weixin_mp": "公众号",
+    "kuaishou": "快手",
+    "toutiao": "今日头条",
+    "unknown": "未知平台",
+}
+
+#: 指标键 → 中文名
+METRIC_LABELS: dict[str, str] = {
+    "views": "播放量",
+    "likes": "点赞",
+    "comments": "评论",
+    "collects": "收藏",
+    "shares": "转发",
+    "engagement_rate": "互动率",
+    "engagement_score": "综合分",
+    "collect_rate": "收藏率",
+}
+
+#: 归因统计字段 → 中文名
+STATS_LABELS: dict[str, str] = {
+    "post_count": "内容条数",
+    "avg_engagement_rate": "平均互动率",
+    "median_engagement_rate": "互动率中位数",
+    "aggregate_engagement_rate": "总体互动率(总互动÷总播放)",
+    "totals": "各项合计",
+    "avg_views": "平均播放量",
+    "avg_collects": "平均收藏",
+    "top_avg_rate": "头部平均互动率",
+    "bottom_avg_rate": "尾部平均互动率",
+    "top_lift": "头部相对平均的倍数",
+    "by_platform": "分平台表现",
+    "by_topic": "分主题表现",
+    "internal_score": "内部评分",
+    "warnings": "数据提醒",
+    "platform": "平台",
+    "topic": "主题",
+    "score_1to10": "评分(1-10)",
+    "components": "评分维度",
+    "dimensions_used": "实际参与维度",
+    "note": "说明",
+}
+
+#: 内部评分维度键 → 中文名
+COMPONENT_LABELS: dict[str, str] = {
+    "engagement_vs_benchmark": "互动率对平台基准",
+    "relative_views": "播放量相对水平",
+    "top_post": "头部内容相对均值",
+    "consistency": "发布一致性",
+    "momentum": "近期势头",
+}
+
+#: 兜底替换表：LLM 回复里若仍残留英文标识，展示/入库前统一换成中文
+_TERM_ZH: dict[str, str] = {
+    **STATS_LABELS,
+    **COMPONENT_LABELS,
+    **METRIC_LABELS,
+    **PLATFORM_LABELS,
+}
+_TERM_ZH.pop("note", None)  # 太短，容易误伤正常英文单词
+
+_TERM_RE = re.compile(
+    "|".join(re.escape(key) for key in sorted(_TERM_ZH, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+
 
 # --------------------------------------------------------------------------- #
 # 纯函数：确定性计算（移植自 social_stats.py，只依赖标准库）
@@ -420,6 +496,76 @@ def _platform_label(platform: str) -> str:
     return platform
 
 
+def _platform_zh(platform: Any) -> str:
+    """平台 key → 中文名（用于 prompt 与展示，保证不出现 bilibili/douyin 这类英文）。"""
+    key = str(platform or "").strip()
+    if not key:
+        return "未知平台"
+    lowered = key.lower()
+    if lowered in PLATFORM_LABELS:
+        return PLATFORM_LABELS[lowered]
+    bench = BENCHMARKS.get(lowered) or {}
+    if bench.get("label"):
+        return str(bench["label"])
+    label = _platform_label(lowered)
+    return label if label and label != lowered else key
+
+
+def _key_zh(key: Any) -> str:
+    """统计字段键 → 中文名（未收录的键原样保留）。"""
+    raw = str(key)
+    return (
+        STATS_LABELS.get(raw)
+        or COMPONENT_LABELS.get(raw)
+        or METRIC_LABELS.get(raw)
+        or PLATFORM_LABELS.get(raw.lower())
+        or raw
+    )
+
+
+def _zh_stats(value: Any, key: Any = None) -> Any:
+    """把确定性统计递归翻译成中文标签结构（只改键名与平台名，不动数值）。"""
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            label = _key_zh(raw_key)
+            lowered = str(raw_key).lower()
+            if lowered == "platform" and isinstance(raw_value, str):
+                out[label] = _platform_zh(raw_value)
+            elif lowered == "dimensions_used" and isinstance(raw_value, (list, tuple)):
+                # 值是维度键名（如 consistency / relative_views），同样要翻成中文
+                out[label] = [_key_zh(item) for item in raw_value]
+            else:
+                out[label] = _zh_stats(raw_value, raw_key)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_zh_stats(item, key) for item in value]
+    return value
+
+
+def _localize_terms(text: Any) -> str:
+    """兜底中文化：把文本里残留的英文指标名/平台标识换成中文。"""
+    if not text:
+        return ""
+    return _TERM_RE.sub(lambda m: _TERM_ZH[m.group(0).lower()], str(text))
+
+
+def _zh_list(raw: Any) -> list[str]:
+    """把 LLM 返回的条目列表统一成中文化后的纯文本列表。"""
+    if isinstance(raw, (str, bytes)):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            item = "；".join(f"{_key_zh(k)}：{v}" for k, v in item.items())
+        text = _localize_terms(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def _canonical_url(platform: str, url: str) -> str:
     """把作品链接归一化（去参数、短链还原），用于去重。"""
     module = _import_platforms()
@@ -452,6 +598,39 @@ def _looks_like_url(text: str) -> bool:
         return True
     lowered = value.lower()
     return lowered.startswith(("http://", "https://", "www.")) or "://" in lowered
+
+
+#: 这些「标题」其实是抓错的占位值（浏览器打开抖音作品页时经常拿到的就是它），
+#: 需要在下一次同步时用真实标题覆盖掉。
+_INVALID_TITLES: frozenset[str] = frozenset(
+    {
+        "抖音创作者中心",
+        "创作者中心",
+        "创作者服务平台",
+        "抖音",
+        "douyin",
+        "抖音短视频",
+        "记录美好生活",
+        "抖音-记录美好生活",
+    }
+)
+
+
+def _title_needs_refill(title: Any) -> bool:
+    """判断一条记录的标题是否需要用平台标题回填。
+
+    三种情况要回填：标题为空、标题其实是链接（早期被 URL 顶替过）、
+    标题是「抖音创作者中心」这类抓错的占位值——否则内容排行里会出现
+    一整页一模一样的「抖音创作者中心」。
+    """
+    value = str(title or "").strip()
+    if not value:
+        return True
+    if _looks_like_url(value):
+        return True
+    if value.lower() in _INVALID_TITLES:
+        return True
+    return any(bad in value for bad in ("抖音创作者中心", "创作者服务平台"))
 
 
 def _platform_from_url(url: str) -> str:
@@ -770,9 +949,10 @@ class AnalyticsService:
                 self.db.add_metric(post_id, payload)
                 fields: dict[str, Any] = {"last_synced": _now()}
                 # 顺带用平台标题回填：粘贴链接登记的作品一开始没有标题，
-                # 不补的话内容排行里显示的会是一串 URL
+                # 不补的话内容排行里显示的会是一串 URL；标题若是「抖音创作者中心」
+                # 这类抓错的值，也一并覆盖掉。
                 snapshot_title = str(getattr(snapshot, "title", "") or "").strip()
-                if snapshot_title and _looks_like_url(post.get("title")):
+                if snapshot_title and _title_needs_refill(post.get("title")):
                     fields["title"] = snapshot_title
                 self.db.update_post(post_id, **fields)
                 result["synced"] += 1
@@ -1431,6 +1611,12 @@ class AnalyticsService:
                 "top": [],
                 "bottom": [],
                 "insight": "",
+                "summary": "",
+                "structure_experience": [],
+                "top_reasons": [],
+                "bottom_reasons": [],
+                "avoid": [],
+                "next_actions": [],
                 "memory_saved": False,
             }
 
@@ -1448,7 +1634,12 @@ class AnalyticsService:
             "top": [self._brief(r) for r in top],
             "bottom": [self._brief(r) for r in bottom],
             "insight": "",
+            "summary": "",
             "structure_experience": [],
+            "top_reasons": [],
+            "bottom_reasons": [],
+            "avoid": [],
+            "next_actions": [],
             "memory_saved": False,
             "warnings": [w for w in (sample_warning(len(rows), 5, "窗口内内容"),) if w],
         }
@@ -1480,6 +1671,9 @@ class AnalyticsService:
                             "你是社媒内容数据分析师。只基于给定数据归因，不编造指标；"
                             "区分「内容因素」与「运气因素」（平台推荐、热点窗口）；"
                             "结论要能指导下一次创作，禁止空话。"
+                            "所有输出一律使用简体中文：平台写「B 站/抖音/小红书/知乎/微博」，"
+                            "指标写「播放量/点赞/评论/收藏/转发/互动率」，"
+                            "不要写平台的英文 key 或英文指标字段名。"
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -1493,14 +1687,25 @@ class AnalyticsService:
         _emit(on_progress, "归因完成，正在沉淀到账号画像…", 80)
         insight = (reply or "").strip()
         parsed = _extract_json(insight) or {}
+        if insight and not parsed:
+            # 模型没按 JSON 输出（或输出被尾部截断）时不当作失败：原文仍会写入
+            # 画像记忆，只是结构化经验为空。记一条日志方便定位。
+            log.warning("归因回复无法解析为 JSON，已按原文保留：%s", insight[:200])
         experience = self._normalize_experience(parsed.get("structure_experience"))
+        summary = _localize_terms(parsed.get("summary"))
+        if not summary and not experience:
+            # 模型没按 JSON 输出时，退回中文化后的原文，至少让用户看到结论
+            summary = _localize_terms(insight)
         result["insight"] = insight
         result["structure_experience"] = experience
-        result["summary"] = str(parsed.get("summary") or "").strip()
-        result["avoid"] = [str(x).strip() for x in (parsed.get("avoid") or []) if str(x).strip()]
+        result["summary"] = summary
+        result["top_reasons"] = _zh_list(parsed.get("top_reasons"))
+        result["bottom_reasons"] = _zh_list(parsed.get("bottom_reasons"))
+        result["avoid"] = _zh_list(parsed.get("avoid"))
+        result["next_actions"] = _zh_list(parsed.get("next_actions"))
 
         if persist and insight:
-            saved = self._persist_memory(insight, experience, days, stats)
+            saved = self._persist_memory(summary, experience, days, stats)
             result["memory_saved"] = saved
         result["ok"] = True
         result["message"] = "归因完成" + ("，已写入账号画像记忆。" if result["memory_saved"] else "。")
@@ -1785,7 +1990,7 @@ class AnalyticsService:
                     "- [{platform}] {title}｜主题：{topic}｜{published_at}｜"
                     "播放 {views} / 赞 {likes} / 评 {comments} / 藏 {collects} / 转 {shares}｜"
                     "互动率 {rate}%｜综合分 {score}\n  开头：{body}".format(
-                        platform=item.get("platform") or "未知",
+                        platform=_platform_zh(item.get("platform")),
                         title=item.get("title") or "(无标题)",
                         topic=item.get("topic") or "未分类",
                         published_at=item.get("published_at") or "时间未知",
@@ -1815,7 +2020,7 @@ class AnalyticsService:
 受众：{profile.get("audience") or "未填写"}
 
 ## 确定性统计（已由代码算好，不要重算，可直接引用）
-{json.dumps(stats, ensure_ascii=False, indent=2)}
+{json.dumps(_zh_stats(stats), ensure_ascii=False, indent=2)}
 
 ## 表现最好
 {render(top)}
@@ -1828,6 +2033,10 @@ class AnalyticsService:
 5. 选题与主题 6. 平台适配 7. 发布时间与节奏
 注意：短视频触达天然膨胀，不要直接与图文比绝对值；区分内容因素与运气因素（平台推荐/热点窗口）。
 
+## 输出语言（硬性要求）
+所有字段值一律使用简体中文：平台写「B 站 / 抖音 / 小红书 / 知乎 / 微博」，指标写「播放量 / 点赞 / 评论 / 收藏 / 转发 / 互动率」。
+上面统计里的中文标签可以直接引用；不要使用平台的英文 key 或英文指标字段名。
+
 ## 输出（严格 JSON，不要输出任何其他文字或 Markdown 围栏）
 {{
   "summary": "一句话结论",
@@ -1835,7 +2044,7 @@ class AnalyticsService:
     {{
       "name": "公式名（≤8字）",
       "structure": "结构，用 → 连接各环节",
-      "evidence": "支撑数据（引用上面的指标）",
+      "evidence": "支撑数据（引用上面的中文指标名）",
       "transferable_when": "什么类型的内容可以套用",
       "example": "用本账号领域举一个可执行示例"
     }}
@@ -1852,32 +2061,31 @@ class AnalyticsService:
         out: list[dict[str, str]] = []
         for item in items:
             if isinstance(item, str):
-                out.append({"name": item.strip()[:40], "structure": "", "evidence": "",
+                out.append({"name": _localize_terms(item)[:40], "structure": "", "evidence": "",
                             "transferable_when": "", "example": ""})
                 continue
             if not isinstance(item, dict):
                 continue
             out.append(
                 {
-                    "name": str(item.get("name") or "").strip()[:40],
-                    "structure": str(item.get("structure") or "").strip(),
-                    "evidence": str(item.get("evidence") or "").strip(),
-                    "transferable_when": str(item.get("transferable_when") or "").strip(),
-                    "example": str(item.get("example") or "").strip(),
+                    "name": _localize_terms(item.get("name"))[:40],
+                    "structure": _localize_terms(item.get("structure")),
+                    "evidence": _localize_terms(item.get("evidence")),
+                    "transferable_when": _localize_terms(item.get("transferable_when")),
+                    "example": _localize_terms(item.get("example")),
                 }
             )
         return [item for item in out if item["name"] or item["structure"]]
 
     def _persist_memory(
         self,
-        insight: str,
+        summary: str,
         experience: list[dict[str, str]],
         days: int,
         stats: dict[str, Any],
     ) -> bool:
         """把归因结论写入画像记忆（供下一次创作参考）。失败返回 False，不抛异常。"""
         lines = [f"【数据分析归因 · {date.today().isoformat()} · 近 {days} 天】"]
-        summary = ""
         if experience:
             lines.append("可复用的内容结构经验：")
             for index, item in enumerate(experience, start=1):
@@ -1885,15 +2093,13 @@ class AnalyticsService:
                     f"{index}. {item['name']}｜结构：{item['structure']}｜"
                     f"依据：{item['evidence']}｜适用：{item['transferable_when']}"
                 )
-        else:
-            summary = insight
         lines.append(
             f"数据：内容 {stats.get('post_count')} 条，平均互动率 "
             f"{stats.get('avg_engagement_rate')}%，最高/最低对照 "
             f"{stats.get('top_avg_rate')}% vs {stats.get('bottom_avg_rate')}%"
         )
         if summary:
-            lines.append("分析结论：" + summary)
+            lines.append("分析结论：" + _localize_terms(summary))
         text = "\n".join(lines).strip()[:MEMORY_TEXT_LIMIT]
         try:
             self.db.append_memory(text)

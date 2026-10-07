@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -47,6 +48,7 @@ from ...services.publisher import (
     POST_STATUS_OPEN,
     PublishService,
     environment_status,
+    install_command_hint,
     post_status_label,
     post_status_tone,
     publish_service,
@@ -169,7 +171,8 @@ class PublishPage(BasePage):
         return card
 
     def _copy_install_command(self) -> None:
-        command = getattr(self._env, "command", "") or "python -m playwright install chromium"
+        # 打包态没有 Python 解释器，命令得走随包的 Node 驱动，否则粘到终端也装不上
+        command = getattr(self._env, "command", "") or install_command_hint()
         from PySide6.QtWidgets import QApplication
 
         QApplication.clipboard().setText(command)
@@ -359,35 +362,19 @@ class PublishPage(BasePage):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        check_card = Card(padding=14, spacing=8)
-        check_title = CardTitle(
-            "3 · 发布前检查", icon="check", hint="敏感词、字数、格式、媒体附件", theme=self.ctx.theme
-        )
-        self.check_score = QLabel("—")
-        self.check_score.setObjectName("ScoreBadge")
-        check_title.add_action(self.check_score)
-        self.recheck_button = make_button("重新检查", icon="refresh", theme=self.ctx.theme, ghost=True)
-        self.recheck_button.clicked.connect(lambda: self.prepare(force=True))
-        check_title.add_action(self.recheck_button)
-        check_card.add(check_title)
-        self.check_view = CheckReportView(theme=self.ctx.theme)
-        self.check_view.fix_requested.connect(lambda _item: self._goto_create())
-        check_card.add(self.check_view, 1)
-        layout.addWidget(check_card, 3)
-
-        preview_card = Card(padding=14, spacing=8)
-        preview_title = CardTitle("4 · 预览", icon="eye", theme=self.ctx.theme)
-        self.copy_preview_button = make_button("复制可粘贴文案", icon="copy", theme=self.ctx.theme, ghost=True)
-        self.copy_preview_button.clicked.connect(self.copy_text)
-        preview_title.add_action(self.copy_preview_button)
-        preview_card.add(preview_title)
-        self.preview_edit = QTextEdit()
-        self.preview_edit.setReadOnly(True)
-        self.preview_edit.setPlaceholderText("选择内容与平台后，这里会显示发布后的样子")
-        preview_card.add(self.preview_edit, 1)
-        layout.addWidget(preview_card, 4)
+        # 检查与预览改成可拖动的上下分栏：默认把高度更多给预览（它才是「发出去长什么样」
+        # 的主场），检查项多的时候自己往下拉一格即可，不必让预览一直挤在角落里。
+        vertical = QSplitter(Qt.Orientation.Vertical)
+        vertical.setChildrenCollapsible(False)
+        vertical.setHandleWidth(6)
+        vertical.addWidget(self._build_check_card())
+        vertical.addWidget(self._build_preview_card())
+        vertical.setStretchFactor(0, 2)
+        vertical.setStretchFactor(1, 3)
+        vertical.setSizes([240, 380])
+        layout.addWidget(vertical, 1)
 
         self.confirm_bar = ConfirmBar(
             "我已确认预览与检查结果，并自行承担发布风险",
@@ -408,6 +395,38 @@ class PublishPage(BasePage):
         advanced.addStretch(1)
         layout.addLayout(advanced)
         return panel
+
+    def _build_check_card(self) -> QWidget:
+        check_card = Card(padding=14, spacing=8)
+        check_title = CardTitle(
+            "3 · 发布前检查", icon="check", hint="敏感词、字数、格式、媒体附件", theme=self.ctx.theme
+        )
+        self.check_score = QLabel("—")
+        self.check_score.setObjectName("ScoreBadge")
+        check_title.add_action(self.check_score)
+        self.recheck_button = make_button("重新检查", icon="refresh", theme=self.ctx.theme, ghost=True)
+        self.recheck_button.clicked.connect(lambda: self.prepare(force=True))
+        check_title.add_action(self.recheck_button)
+        check_card.add(check_title)
+        self.check_view = CheckReportView(theme=self.ctx.theme)
+        self.check_view.fix_requested.connect(self._on_fix_requested)
+        check_card.add(self.check_view, 1)
+        return check_card
+
+    def _build_preview_card(self) -> QWidget:
+        preview_card = Card(padding=14, spacing=8)
+        preview_title = CardTitle("4 · 预览", icon="eye", hint="发布到平台后的样子", theme=self.ctx.theme)
+        self.copy_preview_button = make_button("复制可粘贴文案", icon="copy", theme=self.ctx.theme, ghost=True)
+        self.copy_preview_button.clicked.connect(self.copy_text)
+        preview_title.add_action(self.copy_preview_button)
+        preview_card.add(preview_title)
+        self.preview_edit = QTextEdit()
+        self.preview_edit.setObjectName("PreviewPane")
+        self.preview_edit.setReadOnly(True)
+        self.preview_edit.setMinimumHeight(200)
+        self.preview_edit.setPlaceholderText("选择内容与平台后，这里会显示发布后的样子")
+        preview_card.add(self.preview_edit, 1)
+        return preview_card
 
     # ------------------------------------------------------------------
     # 数据加载
@@ -537,16 +556,50 @@ class PublishPage(BasePage):
             return None
         return self._contents[row]
 
-    def _goto_create(self) -> None:
-        """跳到创作页修改：带上内容 id，创作页会直接载入这条草稿。"""
+    def _current_advice(self, *, focus: Any = None) -> list[dict]:
+        """把当前检查结果整理成「编辑时要看的建议」。
+
+        用户点的是某一条，但改稿往往要同时对照几条——所以整份报告一起带过去，
+        被点中的那条排在最前面。
+        """
+        prep = self._preparation
+        report = getattr(prep, "report", None) if prep is not None else None
+        entries: list[dict] = []
+        for item in list(getattr(report, "items", []) or []):
+            level = str(getattr(item, "level", "") or "")
+            detail = str(getattr(item, "detail", "") or "")
+            suggestion = str(getattr(item, "suggestion", "") or "")
+            if level == "info" and not suggestion:
+                continue  # 纯提示不算「要去改的东西」
+            entries.append(
+                {
+                    "level": level,
+                    "title": str(getattr(item, "title", "") or "修改建议"),
+                    "detail": detail,
+                    "suggestion": suggestion,
+                }
+            )
+        if focus is not None:
+            title = str(getattr(focus, "title", "") or "")
+            entries.sort(key=lambda e: 0 if title and e["title"] == title else 1)
+        return entries[:12]
+
+    def _on_fix_requested(self, item: Any) -> None:
+        """带着建议跳到创作页：编辑的同时，提示要一直看得见。"""
+        self._goto_create(advice=self._current_advice(focus=item))
+
+    def _goto_create(self, advice: list[dict] | None = None) -> None:
+        """跳到创作页修改：带上内容 id（直接载入这条草稿）与建议列表。"""
         content = self._current_content()
         window = self.window()
         if not hasattr(window, "open_page_with"):
             return
+        entries = list(advice if advice is not None else self._current_advice())
+        extra = {"advice": entries} if entries else {}
         if content is not None:
-            window.open_page_with("create", content_id=int(content["id"]))  # type: ignore[attr-defined]
+            window.open_page_with("create", content_id=int(content["id"]), **extra)  # type: ignore[attr-defined]
         else:
-            window.open_page_with("create")  # type: ignore[attr-defined]
+            window.open_page_with("create", **extra)  # type: ignore[attr-defined]
 
     def _on_content_changed(self) -> None:
         content = self._current_content()

@@ -16,9 +16,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
@@ -26,10 +27,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTextEdit,
@@ -37,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core.db import db
+from ...core.db import db, now as db_now
 from ...services.creator import (
     CreationRequest,
     creator_service,
@@ -47,6 +48,8 @@ from ...services.creator import (
 )
 from ...services.profile import profile_service
 from ..components import (
+    AdviceBar,
+    AutoGrowTextEdit,
     Card,
     CardTitle,
     CopyMenuButton,
@@ -62,6 +65,7 @@ from ..components import (
     field_label,
     make_button,
 )
+from .. import icons
 from ..theme import palette
 from .base import BasePage
 
@@ -70,6 +74,9 @@ log = logging.getLogger(__name__)
 #: 快捷参数的默认值（也是「是否已自定义」的判断基准）
 DEFAULT_GOAL = "互动涨粉"
 
+#: 自检结果缓存的存储键：跨会话复用，避免同一版内容反复自检白烧 token
+QUALITY_CACHE_KEY = "create_quality_report"
+
 #: 快捷参数胶囊：(key, 显示名, 预设选项)
 QUICK_PARAMS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("content_type", "内容类型", ("图文笔记", "口播稿", "长文", "视频简介", "短博")),
@@ -77,6 +84,22 @@ QUICK_PARAMS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("audience", "目标受众", ("学生党", "职场新人", "宝妈", "一二线白领", "中年男性")),
     ("tone", "语气风格", ("轻松口语", "犀利点评", "专业理性", "温暖治愈")),
 )
+
+
+class BodyTextEdit(QTextEdit):
+    """正文编辑框。
+
+    ``QTextEdit`` 的默认 ``sizeHint`` 是按「14 行」给的（约 192px），而放进滚动容器后
+    ``QScrollArea`` 判断「内容装不装得下」用的正是 ``sizeHint``——默认值偏大，会把标题、
+    简介、标签一起顶到视口之外（表现为标签只剩半截、还像被底部操作栏盖住）。
+
+    这里把 ``sizeHint`` 的高度对齐到最小高度：窗口宽裕时仍由 ``Expanding`` 吸收剩余空间，
+    窗口局促时它是第一个让位的控件，辅助信息优先保持完整。
+    """
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        hint = super().sizeHint()
+        return QSize(hint.width(), max(1, self.minimumHeight()))
 
 
 class CreatePage(BasePage):
@@ -92,6 +115,11 @@ class CreatePage(BasePage):
         "标签": "正在生成标签…",
     }
 
+    #: 标题候选列表：每条 32px，最多铺 3 条；空列表时也占一点高度，避免布局跳动
+    TITLE_ROW_HEIGHT = 32
+    TITLE_LIST_EMPTY_HEIGHT = 42
+    TITLE_LIST_MAX_ROWS = 3
+
     def build(self) -> None:
         self._worker = None
         self._last_result = None
@@ -104,6 +132,10 @@ class CreatePage(BasePage):
         #: 正在编辑的草稿 id（从草稿箱或发布中心载入时设置；再次保存走更新）
         self._editing_id: int | None = None
         self._quality: dict | None = None
+        #: 上面这份自检结果对应的内容指纹；内容一改就对不上，即「自检已过期」
+        self._quality_fingerprint = ""
+        self._cached_quality: dict | None = None
+        self._load_quality_cache()
 
         header = PageHeader(
             "内容创作",
@@ -122,6 +154,10 @@ class CreatePage(BasePage):
         self.drafts_button.clicked.connect(self.open_drafts)
         header.add_action(self.drafts_button)
         self.add(header)
+
+        # 发布中心的修改建议：跳过来改稿时钉在页面顶部，改完一条还能看下一条
+        self.advice_bar = AdviceBar(theme=self.ctx.theme)
+        self.add(self.advice_bar)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -228,6 +264,8 @@ class CreatePage(BasePage):
         report_inner = QWidget()
         report_layout = QVBoxLayout(report_inner)
         report_layout.setContentsMargins(16, 12, 16, 12)
+        report_layout.setSpacing(10)
+        report_layout.addWidget(self._build_stale_bar())
         report_layout.addWidget(self.report_view)
         report_layout.addStretch(1)
         report_holder.setWidget(report_inner)
@@ -236,6 +274,29 @@ class CreatePage(BasePage):
 
         root.addWidget(self._build_action_bar())
         return card
+
+    def _build_stale_bar(self) -> QWidget:
+        """自检过期提示：内容改过之后，旧分数就不能再当作结论。"""
+        bar = QFrame()
+        bar.setObjectName("StaleBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(10)
+        icon = QLabel()
+        icon.setFixedSize(18, 18)
+        icon.setPixmap(icons.pixmap("alert", palette(self.ctx.theme).warning, 18))
+        layout.addWidget(icon)
+        self.stale_label = QLabel()
+        self.stale_label.setObjectName("StaleText")
+        self.stale_label.setWordWrap(True)
+        layout.addWidget(self.stale_label, 1)
+        self.stale_button = make_button("重新自检", icon="sparkles", theme=self.ctx.theme, ghost=True)
+        self.stale_button.setToolTip("内容已改动，重新自检才会消耗一次模型调用")
+        self.stale_button.clicked.connect(lambda: self.quality_check(True))
+        layout.addWidget(self.stale_button)
+        self.stale_bar = bar
+        bar.setVisible(False)
+        return bar
 
     def _build_output_header(self) -> QWidget:
         """顶部固定栏：视图切换常驻，切到哪儿都不用滚动。"""
@@ -265,45 +326,61 @@ class CreatePage(BasePage):
         return holder
 
     def _build_editor_view(self) -> QWidget:
+        """正文 / 标题 / 简介 / 标签：各块完整显示，装不下才整体滚动。
+
+        这里**必须**保留滚动容器。旧版的问题是标签云报出虚高的最小高度
+        （8 个标签算成 264px），把下面的内容顶出可视区，看着像「被一大块空白遮住」；
+        那个根因已在 ``FlowLayout`` 里修掉。但反过来把滚动去掉同样不行：
+        内容一多（正文长、标题三条、简介三行），总高必然超过可视区，
+        ``QVBoxLayout`` 会开始挤压各块——标签云被压到最小高度以下、胶囊只剩半截，
+        底部操作栏还会盖在内容上。滚动交给外层统一负责，每块才能保持完整。
+        """
         scroll = ScrollArea()
         inner = QWidget()
         layout = QVBoxLayout(inner)
-        layout.setContentsMargins(16, 6, 16, 12)
-        layout.setSpacing(14)
+        layout.setContentsMargins(16, 6, 16, 10)
+        layout.setSpacing(6)
 
-        # ---- 正文（最亮的一层）----
+        # ---- 正文（最亮的一层，也是唯一吸收剩余高度的控件）----
         layout.addWidget(field_label("正文", "可直接编辑"))
-        self.body_edit = QTextEdit()
+        self.body_edit = BodyTextEdit()
         self.body_edit.setPlaceholderText("生成结果会在这里实时出现，你可以直接在此编辑")
-        self.body_edit.setMinimumHeight(240)
+        # 下限只给 5~6 行：窗口够大时正文会吸收全部剩余高度；窗口小到极限时，
+        # 也要先保证下面的标题/简介/标签完整可见，而不是把正文留着、把标签挤成半截
+        self.body_edit.setMinimumHeight(110)
+        self.body_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.body_edit.textChanged.connect(self._update_counts)
+        self.body_edit.textChanged.connect(self._on_content_edited)
         layout.addWidget(self.body_edit, 1)
 
         # ---- 标题候选（单击选用 / 双击改字）----
         layout.addWidget(field_label("标题候选", "单击选用 · 双击改字"))
         self.titles_list = QListWidget()
         self.titles_list.setObjectName("TitleList")
-        self.titles_list.setMaximumHeight(96)
+        self.titles_list.setFixedHeight(self.TITLE_LIST_EMPTY_HEIGHT)
         self.titles_list.setItemDelegate(TitleCandidateDelegate(self.titles_list))
         self.titles_list.itemClicked.connect(self._on_title_clicked)
         self.titles_list.itemChanged.connect(self._on_title_edited)
         layout.addWidget(self.titles_list)
 
-        # ---- 简介 ----
+        # ---- 简介（按内容长高，不再固定 62px 截断）----
         layout.addWidget(field_label("简介", "发布时的摘要字段"))
-        self.summary_edit = QTextEdit()
+        self.summary_edit = AutoGrowTextEdit(min_height=58, max_height=112)
         self.summary_edit.setObjectName("SurfaceInput")
-        self.summary_edit.setPlaceholderText("用于发布时的摘要/简介字段")
-        self.summary_edit.setFixedHeight(62)
+        self.summary_edit.setPlaceholderText("用于发布时的摘要/简介字段（内容多时会自动长高）")
+        self.summary_edit.textChanged.connect(self._on_content_edited)
         layout.addWidget(self.summary_edit)
 
-        # ---- 标签云 ----
+        # ---- 标签云（最小高度按「一行标签 + 内边距」给足，别让它被压成半截）----
         layout.addWidget(field_label("标签", "点击复制 · × 删除"))
         self.tag_cloud = TagCloud(theme=self.ctx.theme, placeholder="输入标签后回车")
+        # 实测一行标签连内边距需要 48px；给足这个下限，空间紧张时也不会把胶囊切成半截
+        # （标签变多、换到第二行时，sizeHint 会自己把这块撑高）
+        self.tag_cloud.setMinimumHeight(48)
         self.tag_cloud.changed.connect(lambda _tags: self._update_counts())
+        self.tag_cloud.changed.connect(lambda _tags: self._on_content_edited())
         layout.addWidget(self.tag_cloud)
 
-        layout.addStretch(1)
         scroll.setWidget(inner)
         return scroll
 
@@ -350,12 +427,13 @@ class CreatePage(BasePage):
     # ------------------------------------------------------------------
     def _on_view_changed(self, key: str) -> None:
         self.view_stack.setCurrentIndex(0 if key == "editor" else 1)
-        if key == "report" and self._quality is None:
+        if key == "report":
             self._refresh_report()
 
     def _show_report_tab(self) -> None:
         self.view_tabs.set_current("report")
         self.view_stack.setCurrentIndex(1)
+        self._refresh_report()
 
     def _on_quality_clicked(self) -> None:
         """有分数就跳到报告页看；没跑过就先跑一次自检。"""
@@ -367,6 +445,83 @@ class CreatePage(BasePage):
     def _refresh_report(self) -> None:
         self.report_view.apply_theme(self.ctx.theme)
         self.report_view.set_report(self._quality or {})
+        self._refresh_stale_bar()
+
+    # ------------------------------------------------------------------
+    # 自检结果缓存：同一版内容不重复烧 token
+    # ------------------------------------------------------------------
+    def _content_fingerprint(self) -> str:
+        """当前内容的指纹。任一字段变了指纹就变，用来判断自检是否过期。"""
+        payload = "\x1f".join(
+            (
+                self._platform_key(),
+                self._current_title(),
+                self.body_edit.toPlainText().strip(),
+                self.summary_edit.toPlainText().strip(),
+                ",".join(self._current_tags()),
+            )
+        )
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _load_quality_cache(self) -> None:
+        """读回上一次的自检结果（跨会话保留，重启后仍可复用）。"""
+        try:
+            cached = db.get_kv(QUALITY_CACHE_KEY)
+        except Exception:  # noqa: BLE001 - 缓存读不到就当没有
+            cached = None
+        if isinstance(cached, dict) and isinstance(cached.get("report"), dict):
+            self._cached_quality = cached
+
+    def _quality_is_stale(self) -> bool:
+        return bool(self._quality) and self._quality_fingerprint != self._content_fingerprint()
+
+    def _on_content_edited(self) -> None:
+        """内容改动后：能对上缓存就复用，对不上就把旧结论标成过期。"""
+        if not hasattr(self, "advice_bar"):
+            return
+        if self._quality is None and self._cached_quality is not None:
+            if self._cached_quality.get("fingerprint") == self._content_fingerprint():
+                self._adopt_cached_quality(self._cached_quality)
+                return
+        self._refresh_quality_button()
+        self._refresh_stale_bar()
+
+    def _adopt_cached_quality(self, cached: dict) -> None:
+        report = cached.get("report")
+        if not isinstance(report, dict) or not report:
+            return
+        self._quality = report
+        self._quality_fingerprint = str(cached.get("fingerprint") or "")
+        self._refresh_report()
+        self._refresh_quality_button()
+
+    def _save_quality_cache(self, report: dict) -> None:
+        payload = {
+            "fingerprint": self._quality_fingerprint,
+            "at": db_now(),
+            "platform": self._platform_key(),
+            "report": report,
+        }
+        self._cached_quality = payload
+        try:
+            db.set_kv(QUALITY_CACHE_KEY, payload)
+        except Exception:  # noqa: BLE001 - 存不下不影响本次结果
+            log.debug("保存自检缓存失败", exc_info=True)
+
+    def _refresh_stale_bar(self) -> None:
+        bar = getattr(self, "stale_bar", None)
+        if bar is None:
+            return
+        if not self._quality_is_stale():
+            bar.setVisible(False)
+            return
+        at = str((self._cached_quality or {}).get("at") or "")
+        self.stale_label.setText(
+            "自检已过期：内容在这份报告之后改过了，分数不再代表当前版本"
+            + (f"（上次自检 {at}）" if at else "")
+            + "。不想再花一次模型调用，也可以直接发布。"
+        )
+        bar.setVisible(True)
 
     # ------------------------------------------------------------------
     # 平台联动
@@ -403,6 +558,7 @@ class CreatePage(BasePage):
         self.platform_field.apply_theme(theme)
         self.report_view.apply_theme(theme)
         self.tag_cloud.apply_theme(theme)
+        self.advice_bar.apply_theme(theme)
         self._update_counts()
 
     def on_first_show(self) -> None:
@@ -416,6 +572,11 @@ class CreatePage(BasePage):
             self.profile_hint.setText("尚未填写账号画像，将使用通用风格；建议到「账号画像」补充")
 
     def receive(self, **kwargs) -> None:
+        # 发布中心「去修改」会同时带来建议列表：钉在页面顶部，边改边看
+        advice = kwargs.get("advice")
+        if advice:
+            self.advice_bar.set_items(list(advice))
+
         seed = kwargs.get("seed")
         if isinstance(seed, dict):
             self._seed = seed
@@ -521,9 +682,11 @@ class CreatePage(BasePage):
         self._body_buffer = ""
         self._last_result = None
         self._quality = None
+        self._quality_fingerprint = ""
         self.body_edit.clear()
         self.summary_edit.clear()
         self.titles_list.clear()
+        self._sync_title_list_height()
         self.tag_cloud.set_tags([])
         self._refresh_report()
         self._refresh_quality_button()
@@ -577,8 +740,18 @@ class CreatePage(BasePage):
                 self.titles_list.setCurrentRow(0)
         finally:
             self._syncing_title = False
+        self._sync_title_list_height()
         if titles and select_first:
             self._use_title(self.titles_list.item(0))
+
+    def _sync_title_list_height(self) -> None:
+        """列表高度跟着条数走：只有一条时不空占三行，也不把下面的简介挤出去。"""
+        if not hasattr(self, "titles_list"):
+            return
+        rows = min(max(self.titles_list.count(), 0), self.TITLE_LIST_MAX_ROWS)
+        height = self.TITLE_LIST_EMPTY_HEIGHT if rows == 0 else rows * self.TITLE_ROW_HEIGHT + 6
+        if self.titles_list.height() != height:
+            self.titles_list.setFixedHeight(height)
 
     def _render_tags_live(self) -> None:
         tags = parse_tags(self._tags_buffer)
@@ -649,6 +822,7 @@ class CreatePage(BasePage):
         item.setToolTip(f"{text}\n（单击选用，双击可直接改字）")
         self.titles_list.viewport().update()
         self._update_counts()
+        self._on_content_edited()
 
     def _use_title(self, item: QListWidgetItem | None) -> None:
         if self._syncing_title or item is None:
@@ -753,31 +927,57 @@ class CreatePage(BasePage):
         self._worker = None
 
     def _refresh_quality_button(self) -> None:
-        """自检完成后收成状态徽章：不再是一个抢眼的大按钮。"""
+        """自检完成后收成状态徽章；内容改过就明确标成「已过期」。"""
         if self._quality:
             total = self._quality.get("total")
-            self.quality_button.setText(f"✨ 自检 {total}/40" if total is not None else "✨ 自检已完成")
-            self.quality_button.setToolTip("点击查看完整自检报告")
+            score = f" {total}/40" if total is not None else ""
+            if self._quality_is_stale():
+                self.quality_button.setText(f"✨ 自检{score} · 已过期")
+                self.quality_button.setToolTip(
+                    "内容在自检之后改过了，这份报告只对上一版有效；点这里查看，或重新自检"
+                )
+            else:
+                self.quality_button.setText(f"✨ 自检{score}")
+                self.quality_button.setToolTip("点击查看完整自检报告（内容未变，无需重复自检）")
         else:
             self.quality_button.setText("质量自检")
             self.quality_button.setToolTip("让 AI 按钩子/平台匹配/信息价值/真人感四项打分")
 
-    def quality_check(self) -> None:
-        if self._last_result is None:
+    def quality_check(self, force: bool = False) -> None:
+        """跑一次 AI 质量自检。
+
+        内容没变就直接复用上次结果：自检要花一次模型调用，同一版内容重复跑纯属浪费。
+        只有内容真的改了（``force=True`` 或指纹对不上）才会重新调用模型。
+        """
+        if self._last_result is None and not self.body_edit.toPlainText().strip():
             self.toast("请先生成内容", "warn")
             return
+
+        fingerprint = self._content_fingerprint()
+        if not force and self._quality and self._quality_fingerprint == fingerprint:
+            self.toast("内容未改动，直接使用上次自检结果", "info")
+            self._show_report_tab()
+            return
+        if not force and self._quality is None and self._cached_quality is not None:
+            if self._cached_quality.get("fingerprint") == fingerprint:
+                self._adopt_cached_quality(self._cached_quality)
+                self.toast("已复用上次的自检结果（内容未改动）", "info")
+                self._show_report_tab()
+                return
+
         llm = self.ctx.require_llm()
         if llm is None:
             return
         from ...services.creator import CreationResult
 
         result = CreationResult(
-            platform=self._last_result.platform,
+            platform=self._platform_key(),
             body=self.body_edit.toPlainText().strip(),
             titles=[self._current_title()] if self._current_title() else [],
             summary=self.summary_edit.toPlainText().strip(),
             tags=self._current_tags(),
         )
+        self._pending_quality_fingerprint = fingerprint
         self.quality_button.setEnabled(False)
         self.quality_button.setText("自检中…")
         self.step_bar.set_step("正在做质量自检…")
@@ -792,10 +992,13 @@ class CreatePage(BasePage):
 
     def _on_quality(self, data: dict) -> None:
         self._quality = data or {}
+        # 用发起时的指纹落库：自检期间用户可能又改了字，那份结果只对当时的内容有效
+        self._quality_fingerprint = getattr(self, "_pending_quality_fingerprint", "") or ""
+        self._save_quality_cache(self._quality)
         self._refresh_report()
         self._refresh_quality_button()
         self._show_report_tab()
-        self.banner.show_message("质量自检完成", "success")
+        self.banner.show_message("质量自检完成（已缓存，内容不变时不会重复消耗）", "success")
 
     def _on_quality_done(self) -> None:
         self.step_bar.stop()
@@ -887,6 +1090,8 @@ class CreatePage(BasePage):
                     break
         self.banner.show_message(f"已载入草稿 #{content.get('id')}", "info")
         self._update_counts()
+        # 载入的如果是「刚自检过的那一版」，直接把上次报告恢复出来
+        self._on_content_edited()
 
 
 class DraftDialog(QDialog):

@@ -98,6 +98,55 @@ def browser_dir() -> Path:
     return _sub("browser")
 
 
+def playwright_browsers_dir() -> Path:
+    """Playwright 浏览器内核的**系统级**安装目录。
+
+    沿用 Playwright 自己的规则：``PLAYWRIGHT_BROWSERS_PATH`` 优先；否则
+    Windows 取 ``%LOCALAPPDATA%\\ms-playwright``，其他平台取
+    ``~/.cache/ms-playwright``。
+
+    特例是 ``0``——它表示「内核随应用一起分发」，是 Playwright 为整体打包
+    准备的模式。Stent 不内置内核（企划书 4.3 控制安装体积），因此把它当作
+    「没配置」处理，回落到系统目录。
+    """
+    override = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if override and override != "0":
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+        return Path(base) / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def ensure_playwright_browsers_path() -> str:
+    """把 Playwright 的浏览器目录钉到系统级位置，返回最终生效的路径。
+
+    **这是「明明装过内核，打包后却提示浏览器不可用」的根因修复。**
+
+    Playwright 启动驱动进程前有这么一段（``playwright/_impl/_transport.py``）::
+
+        if getattr(sys, "frozen", False) or globals().get("__compiled__"):
+            env.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
+
+    只要它发现自己跑在 PyInstaller / Nuitka 冻结环境里，就会把内核目录默认
+    指向**包内**的 ``playwright/driver/package/.local-browsers``。而 Stent 刻意
+    不内置 Chromium，于是打包后必定找不到浏览器，用户看到的却是「请先安装
+    playwright 与 chromium」——与真实原因南辕北辙。
+
+    ``setdefault`` 只在变量不存在时写入，所以提前显式设置即可让 Playwright
+    回到系统目录。用户自行配置过（且不是 ``0``）时完全尊重用户。
+    """
+    current = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if current and current != "0":
+        return current
+    target = playwright_browsers_dir()
+    # 源码运行时 Playwright 本来就用系统目录，不必改动环境变量；
+    # 只有冻结态（或被人显式设成 "0"）才需要纠正它的包内默认值。
+    if is_frozen() or current == "0":
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(target)
+    return str(target)
+
+
 def exports_dir() -> Path:
     return _sub("exports")
 

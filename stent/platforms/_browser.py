@@ -10,11 +10,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+log = logging.getLogger(__name__)
 
 #: 通用 Chromium 启动参数（不含 --disable-dev-shm-usage：Windows 下重页面易崩）
 COMMON_LAUNCH_ARGS: tuple[str, ...] = (
@@ -152,22 +155,54 @@ class BrowserSession:
             pass
 
 
+#: 最近一次启动浏览器失败的真实原因（空串表示没失败过）
+_last_error: str = ""
+
+
+def last_browser_error() -> str:
+    """返回最近一次启动浏览器失败的原因。
+
+    以前这里把异常整个吞掉，只让调用方回一句「请先安装 playwright 与 chromium」。
+    打包后真实原因是「内核目录指向了包内 .local-browsers」，提示却指向安装问题，
+    排查时完全没有线索。保留原文供日志与界面使用。
+    """
+    return _last_error
+
+
+def record_browser_error(exc: BaseException) -> None:
+    """记录一次浏览器启动失败：落日志 + 留存原因（各平台适配器共用）。"""
+    global _last_error
+    import os
+
+    _last_error = f"{type(exc).__name__}: {exc}"
+    log.warning(
+        "浏览器不可用：%s（内核目录 PLAYWRIGHT_BROWSERS_PATH=%s）",
+        _last_error,
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "<未设置>",
+        exc_info=True,
+    )
+
+
 @contextmanager
 def open_browser(adapter: Any, *, headless: bool,
                  args: tuple[str, ...] = COMMON_LAUNCH_ARGS) -> Iterator[BrowserSession | None]:
     """打开浏览器会话；playwright 缺失 / 内核缺失时产出 ``None``（调用方给中文提示）。"""
+    global _last_error
     try:
         from playwright.sync_api import sync_playwright
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        record_browser_error(exc)
         yield None
         return
     with sync_playwright() as pw:
         session: BrowserSession | None = None
         try:
             session = BrowserSession(pw, adapter.profile_dir(), headless=headless, args=args)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            record_browser_error(exc)
             yield None
             return
+        _last_error = ""
         try:
             yield session
         finally:

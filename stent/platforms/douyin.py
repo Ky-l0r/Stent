@@ -225,6 +225,26 @@ def looks_like_douyin_share_url(url: str) -> bool:
     return any(k in low for k in ("douyin.com/video", "douyin.com/note", "v.douyin.com", "iesdouyin.com/share"))
 
 
+def clean_title(text: Any) -> str:
+    """过滤「抖音创作者中心」这类无效标题。
+
+    未登录或页面被重定向时，浏览器里 ``<title>`` 拿到的就是「抖音创作者中心」，
+    写进库里会让内容排行整页都是同一个标题——宁可留空，也不要污染数据。
+    """
+    value = " ".join(str(text or "").split())
+    if not value:
+        return ""
+    try:
+        from ..services.douyin_title import is_valid_title
+
+        return value if is_valid_title(value) else ""
+    except Exception:  # noqa: BLE001 - 服务层缺失时退化为内置黑名单
+        lowered = value.lower()
+        if lowered in ("抖音创作者中心", "创作者中心", "抖音", "douyin", "记录美好生活"):
+            return ""
+        return "" if "抖音创作者中心" in value else value
+
+
 # --------------------------------------------------------------------------- #
 # 适配器
 # --------------------------------------------------------------------------- #
@@ -240,7 +260,10 @@ class DouYinAdapter(PlatformAdapter):
     supports_auto_publish = True
     #: 支持从创作中心「内容管理」导入（只含自己的作品，不含推荐流）
     supports_account_import = True
-    metrics_hint = "抖音单篇数据需打开作品分享页；部分账号需登录态才能看到完整数据"
+    metrics_hint = (
+        "抖音不对外公开播放量，同步得到的是点赞 / 评论 / 收藏 / 分享；"
+        "标题与互动数据优先走轻量通道，抓不到时才打开作品页"
+    )
 
     @property
     def limits(self) -> PlatformLimits:
@@ -1018,6 +1041,14 @@ class DouYinAdapter(PlatformAdapter):
         url = (post_url or "").strip()
         if not url:
             return None
+
+        # 先走轻量通道（纯标准库，不启动浏览器）：
+        # 桌面端作品页经常把标题渲染成「抖音创作者中心」，靠浏览器抓标题基本拿不到东西，
+        # 而分享页/详情接口能稳定给出真正的 desc。命中就不必再花十几秒开浏览器。
+        light = self._fetch_light(url)
+        if light is not None:
+            return light
+
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
@@ -1034,6 +1065,37 @@ class DouYinAdapter(PlatformAdapter):
                 return snapshot
         except Exception:
             return None
+
+    @staticmethod
+    def _fetch_light(url: str) -> MetricSnapshot | None:
+        """轻量抓取：命中且拿到有效标题才认，否则交回浏览器通道。"""
+        try:
+            from ..services.douyin_title import fetch_share_info
+        except Exception:  # noqa: BLE001 - 服务层缺失时静默降级
+            return None
+        try:
+            info = fetch_share_info(url)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(info, dict):
+            return None
+        title = str(info.get("title") or "").strip()
+        # 标题是这次修复的核心目标；一条都没抓到就说明轻量通道没命中
+        if not title and not any(
+            info.get(key) for key in ("likes", "comments", "collects", "shares", "views")
+        ):
+            return None
+        return MetricSnapshot(
+            views=int(info.get("views") or 0),
+            likes=int(info.get("likes") or 0),
+            comments=int(info.get("comments") or 0),
+            collects=int(info.get("collects") or 0),
+            shares=int(info.get("shares") or 0),
+            title=title,
+            # 抖音不对外公开播放量，UI 据此显示「—」而不是误导性的 0
+            views_public=False,
+            raw={"url": url, "source": "douyin-lightweight", "title": title},
+        )
 
     def _scrape_metrics(self, page: Any, url: str) -> MetricSnapshot | None:
         """抓取作品分享页上的可见指标；一条都没抓到则返回 None。"""
@@ -1077,6 +1139,6 @@ class DouYinAdapter(PlatformAdapter):
             comments=data.get("comments", 0),
             collects=data.get("collects", 0),
             shares=data.get("shares", 0),
-            title=page_title(page, strip_suffixes=(" - 抖音", " | 抖音")),
+            title=clean_title(page_title(page, strip_suffixes=(" - 抖音", " | 抖音"))),
             raw=raw,
         )

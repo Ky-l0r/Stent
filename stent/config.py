@@ -13,6 +13,7 @@ import ctypes
 import json
 import logging
 import threading
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -94,9 +95,15 @@ def _dpapi(protect: bool, data: bytes) -> bytes:
 
 
 class SecretStore:
-    """API Key 安全存储：keyring 优先，DPAPI 文件降级。"""
+    """API Key 安全存储：keyring 优先，DPAPI 文件降级。
 
-    def __init__(self) -> None:
+    ``service`` / ``user`` 可覆盖，供自检等场景使用独立命名空间——
+    否则测试写入会直接覆盖用户真实凭据（keyring 是全局的，不随数据目录隔离）。
+    """
+
+    def __init__(self, service: str = KEYRING_SERVICE, user: str = KEYRING_USER) -> None:
+        self._service = service
+        self._user = user
         self._lock = threading.Lock()
         self._mode: str | None = None
 
@@ -134,13 +141,12 @@ class SecretStore:
     # -- 读写 ------------------------------------------------------------
     def get_api_key(self) -> str:
         with self._lock:
-            if self.mode == "keyring":
-                try:
-                    import keyring  # noqa: PLC0415
-
-                    return keyring.get_password(KEYRING_SERVICE, KEYRING_USER) or ""
-                except Exception:
-                    log.warning("keyring 读取失败，尝试降级存储", exc_info=True)
+            # 不拿 self.mode 决定「要不要读 keyring」：探测本身会偶发失败，
+            # 一旦被误判成 dpapi / none，密钥就永远读不出来，用户看到的是
+            # 「AI 突然不可用」。mode 只用于向用户描述存储方式。
+            value = self._read_keyring()
+            if value:
+                return value
             path = paths.data_dir() / FALLBACK_SECRET_FILE
             if not path.exists():
                 return ""
@@ -153,6 +159,31 @@ class SecretStore:
                 log.warning("密钥文件读取失败", exc_info=True)
                 return ""
 
+    def _read_keyring(self, attempts: int = 3) -> str | None:
+        """读 keyring；返回 ``None`` 表示「读取本身失败」，应回退到文件存储。
+
+        Windows 凭据管理器会偶发读不到（返回 None 或直接抛异常）。若把它当成
+        「没有密钥」，上层 ``ConfigManager.ready()`` 就会误判成「尚未配置 AI 模型」，
+        用户看到的是 AI 突然不可用。这里重试几次再下结论。
+        """
+        try:
+            import keyring  # noqa: PLC0415
+        except Exception:
+            return None
+        for attempt in range(attempts):
+            try:
+                value = keyring.get_password(self._service, self._user)
+            except Exception:
+                log.warning("keyring 读取失败（第 %s 次）", attempt + 1, exc_info=True)
+            else:
+                if value:
+                    return value
+                if attempt == attempts - 1:
+                    return ""  # 连续多次都为空，才认定确实没设置
+            if attempt < attempts - 1:
+                time.sleep(0.15)
+        return None
+
     def set_api_key(self, value: str) -> bool:
         """保存密钥。返回 True 表示已加密落盘，False 表示系统不支持加密。"""
         value = value or ""
@@ -160,29 +191,34 @@ class SecretStore:
             if not value:
                 self.clear_api_key()
                 return True
-            if self.mode == "keyring":
-                try:
-                    import keyring  # noqa: PLC0415
-
-                    keyring.set_password(KEYRING_SERVICE, KEYRING_USER, value)
-                    self._remove_fallback()
-                    return True
-                except Exception:
-                    log.warning("keyring 写入失败，降级到 DPAPI", exc_info=True)
+            # 同样不依赖 mode：先写 keyring，失败再降级到 DPAPI 文件
+            if self._write_keyring(value):
+                self._remove_fallback()
+                return True
             if self.mode == "dpapi":
                 (paths.data_dir() / FALLBACK_SECRET_FILE).write_bytes(_dpapi(True, value.encode("utf-8")))
                 return True
             return False
 
+    def _write_keyring(self, value: str) -> bool:
+        """写 keyring；成功返回 True（失败时由调用方降级到文件存储）。"""
+        try:
+            import keyring  # noqa: PLC0415
+
+            keyring.set_password(self._service, self._user, value)
+            return True
+        except Exception:
+            log.warning("keyring 写入失败，降级到 DPAPI", exc_info=True)
+            return False
+
     def clear_api_key(self) -> None:
         with self._lock:
-            if self.mode == "keyring":
-                try:
-                    import keyring  # noqa: PLC0415
+            try:
+                import keyring  # noqa: PLC0415
 
-                    keyring.delete_password(KEYRING_SERVICE, KEYRING_USER)
-                except Exception:
-                    pass
+                keyring.delete_password(self._service, self._user)
+            except Exception:
+                log.debug("keyring 删除失败（多半本来就没有这条凭据）", exc_info=True)
             self._remove_fallback()
 
     def _remove_fallback(self) -> None:

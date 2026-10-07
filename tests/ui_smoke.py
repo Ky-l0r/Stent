@@ -259,6 +259,41 @@ def main() -> int:
         else:
             checks.append(("表单标签背景不遮挡卡片", True, "跳过（未找到标签）"))
 
+        # 标签云里的控件必须都待在框内。
+        # 曾经的 bug：``TagCloud.editor`` 构造时没显式收起，而 ``qt_guard`` 会把无
+        # parent 的控件挂到构建宿主名下，于是这个还没轮到上场的输入框以默认几何
+        # (0,0,640,480) 可见地趴在标签栏上，露出第二层白底和一条对不齐的虚线边框。
+        window.ctx.set_theme("light")
+        window.navigate("create")
+        for _ in range(10):
+            app.processEvents()
+        create_page = window.stack.currentWidget()
+        cloud = getattr(create_page, "tag_cloud", None)
+        if cloud is not None:
+            cloud.set_tags(["缅北电诈", "反诈", "防骗指南", "跨境打击", "电诈覆灭"])
+            for _ in range(10):
+                app.processEvents()
+            stray = []
+            for child in cloud.children():
+                if not isinstance(child, QWidget) or not child.isVisible():
+                    continue
+                g = child.geometry()
+                if (
+                    g.x() < 0
+                    or g.y() < 0
+                    or g.right() > cloud.width()
+                    or g.bottom() > cloud.height()
+                ):
+                    stray.append(
+                        f"{type(child).__name__}#{child.objectName()} "
+                        f"geo={g.getRect()} 超出 {cloud.width()}x{cloud.height()}"
+                    )
+            checks.append(
+                ("标签云内控件不越界（无杂散底/边框）", not stray, "；".join(stray))
+            )
+        else:
+            checks.append(("标签云内控件不越界（无杂散底/边框）", True, "跳过（未找到标签云）"))
+
         for name, passed, note in checks:
             print(f"[{'PASS' if passed else 'FAIL'}] {name}" + (f"　{note}" if note else ""))
             ok += int(passed)

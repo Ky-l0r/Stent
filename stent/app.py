@@ -82,6 +82,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args, qt_args = parse_args(argv)
     setup_logging(logging.DEBUG if args.debug else logging.INFO)
 
+    # 必须早于任何 Playwright 调用：冻结态下 Playwright 会把内核目录默认指向
+    # 包内 .local-browsers，而 Stent 不内置 Chromium，不纠正就必然报「浏览器不可用」。
+    paths.ensure_playwright_browsers_path()
+    log.info(
+        "Playwright 浏览器目录：%s（frozen=%s，PLAYWRIGHT_BROWSERS_PATH=%s）",
+        paths.playwright_browsers_dir(),
+        paths.is_frozen(),
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "<未设置>",
+    )
+
     log.info("Stent %s 启动，数据目录：%s", __version__, paths.data_dir())
     db.init()
 

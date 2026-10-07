@@ -825,6 +825,48 @@ QPushButton#SuggestionToggle:hover {{
     border-radius: 3px;
 }}
 
+/* ---------- 创作页：发布中心建议 / 自检过期 ---------- */
+/* 建议横条常驻在创作页顶部：从发布中心跳过来改稿时，提示不能只闪一下就没了 */
+#AdviceBar {{
+    background: {p.tint_warn};
+    border: 1px solid {p.border};
+    border-left: 3px solid {p.warning};
+    border-radius: 9px;
+}}
+#AdviceTitle {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {p.text};
+    background: transparent;
+}}
+#AdviceItem {{
+    font-size: 12.5px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+QPushButton#AdviceToggle {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 3px 8px;
+    color: {p.text_sub};
+    font-size: 12.5px;
+}}
+QPushButton#AdviceToggle:hover {{
+    background: {p.bg_alt};
+    color: {p.text};
+}}
+#StaleBar {{
+    background: {p.tint_warn};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+}}
+#StaleText {{
+    font-size: 12.5px;
+    color: {p.text_sub};
+    background: transparent;
+}}
+
 /* ---------- 可折叠卡片 ---------- */
 QPushButton#CardFold {{
     background: transparent;

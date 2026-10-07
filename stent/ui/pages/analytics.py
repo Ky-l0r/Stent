@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -111,6 +112,7 @@ class AnalyticsPage(BasePage):
         self._has_data = False
         self._rank_items: list[dict] = []
         self._rank_expanded = False
+        self._syncing_rank = False
 
         inner = QWidget()
         layout = QVBoxLayout(inner)
@@ -212,7 +214,9 @@ class AnalyticsPage(BasePage):
 
         # ---- 排行 ----
         rank_card = Card(padding=14, spacing=8)
-        rank_title = CardTitle("内容排行", icon="trending-up", theme=self.ctx.theme)
+        rank_title = CardTitle(
+            "内容排行", icon="trending-up", hint="双击标题即可改名", theme=self.ctx.theme
+        )
         # 日期筛选：只看某个时间段的表现，避免半年前的老爆款一直霸榜
         self.rank_days_combo = QComboBox()
         for label, days in (("近 7 天", 7), ("近 30 天", 30), ("近 90 天", 90), ("近 180 天", 180), ("全部", 3650)):
@@ -247,7 +251,11 @@ class AnalyticsPage(BasePage):
         )
         self.rank_table.verticalHeader().setVisible(False)
         self.rank_table.verticalHeader().setDefaultSectionSize(40)
-        self.rank_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # 双击（或 F2）就地改标题：导入回来的标题抓错时，用户不必另找入口
+        self.rank_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.rank_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.rank_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.rank_table.setShowGrid(False)
@@ -263,6 +271,7 @@ class AnalyticsPage(BasePage):
         # 选中样式与热点发现保持一致（行底色加深 + 左侧强调条）
         self._rank_visuals = attach_row_visuals(self.rank_table)
         self.rank_table.itemSelectionChanged.connect(self._on_rank_selection)
+        self.rank_table.itemChanged.connect(self._on_rank_item_changed)
         rank_card.add(self.rank_table, 1)
 
         # 默认只展示前 5 条，其余折叠——列表再长也不挤压下面的区块
@@ -607,30 +616,41 @@ class AnalyticsPage(BasePage):
         visible = total if self._rank_expanded else min(total, self.RANK_PREVIEW)
         rows = ranked[:visible]
 
-        self.rank_table.setRowCount(len(rows))
-        for row, item in enumerate(rows):
-            platform = item.get("platform", "")
-            cells = [
-                str(item.get("rank", row + 1)),
-                platform_label(platform),
-                item.get("title") or item.get("topic") or "（无标题）",
-                _views_text(item.get("views"), platform),
-                _short(item.get("likes")),
-                _short(item.get("comments")),
-                _short(item.get("collects")),
-                _pct(item.get("engagement_rate")),
-            ]
-            for column, text in enumerate(cells):
-                if column == 1:
-                    cell = platform_item(text, platform)
-                else:
-                    cell = QTableWidgetItem(text)
-                if column != 2:
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                cell.setToolTip(
-                    "该平台不公开播放量" if column == 3 and text == "—" else text
-                )
-                self.rank_table.setItem(row, column, cell)
+        # 重建单元格会触发 itemChanged，先挂起编辑回写，避免把「渲染」当成「用户改字」
+        self._syncing_rank = True
+        try:
+            self.rank_table.setRowCount(len(rows))
+            for row, item in enumerate(rows):
+                platform = item.get("platform", "")
+                cells = [
+                    str(item.get("rank", row + 1)),
+                    platform_label(platform),
+                    item.get("title") or item.get("topic") or "（无标题）",
+                    _views_text(item.get("views"), platform),
+                    _short(item.get("likes")),
+                    _short(item.get("comments")),
+                    _short(item.get("collects")),
+                    _pct(item.get("engagement_rate")),
+                ]
+                for column, text in enumerate(cells):
+                    if column == 1:
+                        cell = platform_item(text, platform)
+                    else:
+                        cell = QTableWidgetItem(text)
+                    if column == 2:
+                        # 标题列可双击改字：导入回来的标题经常是「抖音创作者中心」这类
+                        # 无效值，得给用户一个就地改掉它的出口
+                        cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsEditable)
+                        cell.setToolTip(f"{text}\n（双击可直接改标题，回车保存）")
+                    else:
+                        cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        cell.setToolTip(
+                            "该平台不公开播放量" if column == 3 and text == "—" else text
+                        )
+                    self.rank_table.setItem(row, column, cell)
+        finally:
+            self._syncing_rank = False
         # 数值列居中，纵向比较时数字才对得齐
         center_columns(self.rank_table, (0, 3, 4, 5, 6, 7))
         # 表格高度贴合内容：展开后格子跟着变高，且不再有「表格内滚 + 页面滚」两层滚动
@@ -649,6 +669,47 @@ class AnalyticsPage(BasePage):
 
     def _on_rank_selection(self) -> None:
         self.delete_button.setEnabled(self._selected_rank_post() is not None)
+
+    def _on_rank_item_changed(self, item: Any) -> None:
+        """双击改完标题后写回数据库。
+
+        导入回来的标题经常是「抖音创作者中心」这类抓错了的值，
+        与其让用户去别处找入口，不如就在这一格里双击改掉。
+        """
+        if getattr(self, "_syncing_rank", False) or item is None or item.column() != 2:
+            return
+        row = item.row()
+        items = getattr(self, "_rank_items", [])
+        if row < 0 or row >= len(items):
+            return
+        post_id = items[row].get("post_id") or items[row].get("id")
+        if not post_id:
+            return
+        new_title = item.text().strip()
+        if not new_title:
+            return
+        try:
+            post = db.get_post(int(post_id)) or {}
+        except Exception:  # noqa: BLE001
+            post = {}
+        old_title = str(post.get("title") or "")
+        if new_title == old_title:
+            return
+        try:
+            db.update_post(int(post_id), title=new_title)
+        except Exception as exc:  # noqa: BLE001 - 写库失败就把界面回滚，避免显示与数据不一致
+            log.exception("保存标题失败 post_id=%s", post_id)
+            self.toast(f"标题保存失败：{exc}", "error")
+            self._syncing_rank = True
+            try:
+                item.setText(old_title)
+            finally:
+                self._syncing_rank = False
+            return
+        items[row]["title"] = new_title
+        item.setToolTip(f"{new_title}\n（双击可直接改标题，回车保存）")
+        self.toast("标题已更新", "success")
+        self.ctx.notify_data_changed("posts")
 
     def _selected_rank_post(self) -> dict | None:
         row = self.rank_table.currentRow()
@@ -790,15 +851,30 @@ class AnalyticsPage(BasePage):
                 f"样本 {stats.get('post_count', 0)} 篇　平均互动率 {_pct(stats.get('avg_engagement_rate'))}"
                 f"　头部/平均 提升 {stats.get('top_lift') or '—'}x"
             )
-        if result.get("insight"):
-            lines.append("\n【结论】" + str(result["insight"]))
-        for key, title in (("structure_experience", "【可复用结构】"), ("avoid", "【应避免】"), ("summary", "【总结】")):
-            value = result.get(key)
+        if result.get("summary"):
+            lines.append("\n【总结】" + str(result["summary"]))
+        for index, item in enumerate(result.get("structure_experience") or [], start=1):
+            if isinstance(item, dict):
+                lines.append(f"\n【可复用结构 {index}】{item.get('name') or '未命名'}")
+                for label, key in (
+                    ("结构", "structure"),
+                    ("依据", "evidence"),
+                    ("适用", "transferable_when"),
+                    ("示例", "example"),
+                ):
+                    if item.get(key):
+                        lines.append(f"　{label}：{item[key]}")
+            else:
+                lines.append(f"\n【可复用结构 {index}】{item}")
+        for key, title in (
+            ("top_reasons", "【表现好的原因】"),
+            ("bottom_reasons", "【表现差的原因】"),
+            ("avoid", "【应避免】"),
+            ("next_actions", "【下一步动作】"),
+        ):
+            value = result.get(key) or []
             if value:
-                if isinstance(value, (list, tuple)):
-                    lines.append("\n" + title + "\n" + "\n".join(f"· {v}" for v in value))
-                else:
-                    lines.append("\n" + title + "\n" + str(value))
+                lines.append("\n" + title + "\n" + "\n".join(f"· {v}" for v in value))
         warnings = result.get("warnings") or []
         for warning in warnings:
             lines.append(f"\n⚠ {warning}")

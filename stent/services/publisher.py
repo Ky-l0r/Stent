@@ -445,6 +445,12 @@ class PublishService:
         if status.ready:
             return True, "发布环境已就绪"
 
+        from ..paths import is_frozen
+
+        if status.code == "no_playwright" and is_frozen():
+            # 打包态的 Playwright 是随包分发的，pip 修不了；走到这里说明安装包损坏
+            return False, "程序内置的发布组件缺失或损坏，请重新下载安装包"
+
         steps: list[tuple[str, list[str], int]] = []
         if status.code == "no_playwright":
             steps.append(
@@ -457,7 +463,7 @@ class PublishService:
         steps.append(
             (
                 "正在下载浏览器内核（约 150 MB，请保持网络畅通）…",
-                [sys.executable, "-m", "playwright", "install", "chromium"],
+                chromium_install_command(),
                 100,
             )
         )
@@ -579,15 +585,106 @@ class EnvironmentStatus:
 
 
 def _chromium_root():
-    import os
+    """Playwright 内核根目录。
+
+    统一走 :func:`stent.paths.playwright_browsers_dir`，保证**检测的位置与
+    运行时真正使用的位置是同一个**——两者一旦不一致，就会出现「检测说已就绪、
+    一点登录却说没装」这种自相矛盾的状态。
+    """
+    from ..paths import playwright_browsers_dir
+
+    return playwright_browsers_dir()
+
+
+def _driver_package_dir():
+    """定位随包的 Playwright Node 驱动目录；失败返回 ``None``。
+
+    刻意复用 Playwright 自己的定位方式（``inspect.getfile(playwright)``），
+    这样源码运行与 PyInstaller 打包下都能找到同一份驱动。
+    """
+    try:
+        import inspect
+        from pathlib import Path
+
+        import playwright
+
+        return Path(inspect.getfile(playwright)).parent / "driver" / "package"
+    except Exception:  # noqa: BLE001 - 定位失败只是拿不到版本号，不该影响检测
+        return None
+
+
+def expected_chromium_revision() -> str:
+    """随包 Playwright 期望的 Chromium 版本号（如 ``1243``）；读不到返回空串。"""
+    package = _driver_package_dir()
+    if package is None:
+        return ""
+    try:
+        import json
+
+        data = json.loads((package / "browsers.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    for entry in data.get("browsers") or []:
+        if str(entry.get("name")) == "chromium":
+            return str(entry.get("revision") or "")
+    return ""
+
+
+def _has_chromium(root: Any, revision: str) -> bool:
+    """判断 ``root`` 下是否有可用的 Chromium **有头**内核。
+
+    有版本号时精确匹配 ``chromium-<revision>``：Playwright 只认这一个目录名，
+    而原来那种 ``chromium*`` 通配会连 ``chromium_headless_shell-*`` 和上一个
+    版本一起命中，把「其实用不了」误判成「已就绪」——打包后正是这么骗过检测，
+    把「一键安装」按钮藏起来的。
+    """
     from pathlib import Path
 
-    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if base:
-        return Path(base)
-    if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
-    return Path.home() / ".cache" / "ms-playwright"
+    base = Path(root)
+    pattern = f"chromium-{revision}/**/chrome.exe" if revision else "chromium-[0-9]*/**/chrome.exe"
+    if any(base.glob(pattern)):
+        return True
+    if revision:
+        return False
+    return any(base.glob("chromium-[0-9]*/**/chrome"))
+
+
+def _driver_executable() -> tuple[str, str]:
+    """Playwright 自带 Node 驱动的 ``(node, cli.js)`` 路径；取不到返回空串对。"""
+    try:
+        from playwright._impl._driver import compute_driver_executable
+
+        node, cli = compute_driver_executable()
+        return str(node), str(cli)
+    except Exception:  # noqa: BLE001
+        return "", ""
+
+
+def chromium_install_command() -> list[str]:
+    """构造「下载 Chromium 内核」的命令。
+
+    打包态**没有可用的 Python 解释器**：``sys.executable`` 指向 Stent.exe 自己，
+    ``Stent.exe -m playwright install chromium`` 只会再开一个 GUI 实例，一个字节
+    都下不来。所以优先直接调用随包的 Node 驱动——``python -m playwright install``
+    内部走的也是这条路径。
+    """
+    import sys
+
+    node, cli = _driver_executable()
+    if node and cli:
+        return [node, cli, "install", "chromium"]
+    return [sys.executable, "-m", "playwright", "install", "chromium"]
+
+
+def install_command_hint() -> str:
+    """「复制安装命令」按钮的内容：打包态给出可直接粘贴的驱动命令。"""
+    from ..paths import is_frozen
+
+    if is_frozen():
+        node, cli = _driver_executable()
+        if node and cli:
+            return f'"{node}" "{cli}" install chromium'
+    return "python -m playwright install chromium"
 
 
 def environment_status() -> EnvironmentStatus:
@@ -604,23 +701,36 @@ def environment_status() -> EnvironmentStatus:
         )
 
     root = _chromium_root()
-    if root.exists():
-        candidates = list(root.glob("chromium*/**/chrome.exe")) + list(
-            root.glob("chromium*/**/chrome")
+    revision = expected_chromium_revision()
+    if _has_chromium(root, revision):
+        return EnvironmentStatus(
+            ready=True,
+            code="ok",
+            title="发布环境已就绪",
+            detail="浏览器内核已安装，登录与发布都可以正常使用。",
         )
-        if candidates:
-            return EnvironmentStatus(
-                ready=True,
-                code="ok",
-                title="发布环境已就绪",
-                detail="浏览器内核已安装，登录与发布都可以正常使用。",
-            )
+
+    installed = sorted(p.name for p in root.glob("chromium-*") if p.is_dir()) if root.is_dir() else []
+    if revision and installed:
+        # 装了内核但版本对不上：Playwright 只认自己那一版，必须重新下载
+        existing = "、".join(installed[:3])
+        return EnvironmentStatus(
+            ready=False,
+            code="no_chromium",
+            title="浏览器内核版本不匹配",
+            detail=(
+                f"本机现有的内核（{existing}）与当前版本需要的 chromium-{revision} "
+                "不是同一个，需要重新下载一次。"
+            ),
+            command=install_command_hint(),
+            size_hint="约 150 MB",
+        )
     return EnvironmentStatus(
         ready=False,
         code="no_chromium",
         title="未检测到浏览器内核",
         detail="发布时需要浏览器内核来打开平台页面并填写表单，当前还没有下载。",
-        command="python -m playwright install chromium",
+        command=install_command_hint(),
         size_hint="约 150 MB",
     )
 

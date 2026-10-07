@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from ._browser import collect_content_links, page_title
+from ._browser import collect_content_links, page_title, record_browser_error
 from .base import (
     AccountPost,
     LoginState,
@@ -425,14 +425,16 @@ def open_browser(adapter: "XiaoHongShuAdapter", *, headless: bool,
     """打开浏览器会话；playwright 缺失/内核缺失时产出 ``None``（由调用方给中文提示）。"""
     try:
         from playwright.sync_api import sync_playwright
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        record_browser_error(exc)
         yield None
         return
     with sync_playwright() as pw:
         session: BrowserSession | None = None
         try:
             session = BrowserSession(pw, adapter.profile_dir(), headless=headless, timeout_ms=timeout_ms)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            record_browser_error(exc)
             yield None
             return
         try:

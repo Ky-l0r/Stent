@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTextEdit,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -600,6 +601,10 @@ class FlowLayout(QLayout):
         self._items: list[QLayoutItem] = []
         self._h_spacing = h_spacing
         self._v_spacing = v_spacing
+        #: 最近一次实际布局的宽度。没有它时 heightForWidth 只能按「每个元素独占
+        #: 一行」估算，标签云这类放在滚动容器里的控件会报出虚高的最小高度，
+        #: 把下方内容顶出视口（表现为「标签那一栏被一大块空白遮住」）。
+        self._hint_width = 0
         self.setContentsMargins(margin, margin, margin, margin)
 
     # -- QLayout 接口 ----------------------------------------------------
@@ -615,6 +620,38 @@ class FlowLayout(QLayout):
     def takeAt(self, index: int) -> QLayoutItem | None:  # noqa: N802
         return self._items.pop(index) if 0 <= index < len(self._items) else None
 
+    def has_widget(self, widget: QWidget) -> bool:
+        """该控件是否已经挂在布局里（避免重复 ``addWidget`` 造成重复项）。"""
+        for item in self._items:
+            try:
+                if item.widget() is widget:
+                    return True
+            except RuntimeError:  # pragma: no cover - 底层对象已销毁
+                continue
+        return False
+
+    def reorder(self, widgets: Sequence[QWidget]) -> None:
+        """按给定顺序重排布局项。
+
+        复用控件的槽位是「首次加入」的位置：常驻的「＋ 添加标签」会比后加入的
+        胶囊更靠前，看上去就像标签被挤到右边去了。这里显式重排一次。
+        """
+        ordered: list[QLayoutItem] = []
+        for widget in widgets:
+            for item in self._items:
+                if item in ordered:
+                    continue
+                try:
+                    if item.widget() is widget:
+                        ordered.append(item)
+                        break
+                except RuntimeError:  # pragma: no cover
+                    continue
+        for item in self._items:
+            if item not in ordered:
+                ordered.append(item)
+        self._items = ordered
+
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         return True
 
@@ -623,17 +660,51 @@ class FlowLayout(QLayout):
 
     def setGeometry(self, rect: QRect) -> None:  # noqa: N802
         super().setGeometry(rect)
+        if rect.width() > 0:
+            self._hint_width = rect.width()
         self._do_layout(rect, test_only=False)
 
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._do_layout(QRect(0, 0, self._effective_width(width), 0), test_only=True)
+
     def sizeHint(self) -> QSize:  # noqa: N802
-        return self.minimumSize()
+        width = self._effective_width(0)
+        return QSize(width, self.heightForWidth(width))
 
     def minimumSize(self) -> QSize:  # noqa: N802
-        size = QSize()
+        """最小尺寸按「一行」算：换行由宽度决定，不能把每项高度累加。
+
+        取所有可见项里最宽与最高的那一个，再加上一组边距与行距。
+        """
+        width = 0
+        height = 0
         for item in self._items:
-            size = size.expandedTo(item.minimumSize())
+            widget = item.widget()
+            if widget is not None and widget.isHidden():
+                continue
+            hint = item.sizeHint()
+            width = max(width, hint.width())
+            height = max(height, hint.height())
         margins = self.contentsMargins()
-        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return QSize(
+            width + margins.left() + margins.right(),
+            height + margins.top() + margins.bottom(),
+        )
+
+    def _effective_width(self, width: int) -> int:
+        """给 heightForWidth 一个可信的宽度。
+
+        宽度未知（0）时按「每个元素独占一行」计算，会把一行的高度放大成 N 行；
+        因此依次回退到「最近一次布局宽度 → 父控件宽度 → 兜底宽度」。
+        """
+        if width > 0:
+            return width
+        if self._hint_width > 0:
+            return self._hint_width
+        parent = self.parentWidget()
+        if parent is not None and parent.width() > 0:
+            return parent.width()
+        return 360
 
     # -- 折行计算 --------------------------------------------------------
     def _do_layout(self, rect: QRect, *, test_only: bool) -> int:
@@ -660,34 +731,87 @@ class FlowLayout(QLayout):
 
 
 class FlowRow(QWidget):
-    """自动换行的标签 / 按钮行。"""
+    """自动换行的标签 / 按钮行。
+
+    ``QWidget`` 子类默认不绘制样式表背景（Qt 要求子类自己实现 ``paintEvent`` 画
+    ``PE_Widget``，或打开 ``WA_StyledBackground``）；不打开的话，QSS 里给它的
+    背景/边框会被静默忽略。
+    """
 
     def __init__(self, parent: QWidget | None = None, *, spacing: int = 6) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._flow = FlowLayout(self, h_spacing=spacing, v_spacing=spacing)
         policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         policy.setHeightForWidth(True)
         self.setSizePolicy(policy)
         self._items: list[QWidget] = []
 
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt 命名
+        return self._flow.heightForWidth(width)
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        # 宽度变了行数就变了，父布局必须重新问一次高度
+        self.updateGeometry()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        """最小高度只保证一行：否则标签云会被撑成 N 行高，挤出可视区。"""
+        hint = self._flow.minimumSize()
+        return QSize(hint.width(), max(hint.height(), 1))
+
     def set_items(self, widgets: Iterable[QWidget], per_row: int | None = None) -> None:
         """替换全部子项。``per_row`` 仅作兼容保留：换行由布局按宽度自动决定。
 
-        只销毁「本次不再使用」的控件：调用方可能持有常驻控件（如标签云的输入框），
-        无差别 deleteLater 会把它们一起干掉。
+        实现上刻意走「清空布局 → 重新 addWidget」这条最朴素的路径：
+        复用旧槽位（只对新项 addWidget）在实测中会让子控件丢失绘制
+        （几何、visibleRegion、isVisible 全部正常，屏幕上却是空白），
+        而「重新 addWidget」与手工搭建容器的行为完全一致，稳定可靠。
+
+        **不要对仍要复用的控件调用 ``setParent(None)``**：那会让它在 Windows 上
+        真的退化成一个顶层原生窗口，再塞回来时渲染状态可能跟不上。
         """
         new_items = list(widgets)
-        for widget in self._items:
-            self._flow.removeWidget(widget)
-            widget.setParent(None)
-            if widget not in new_items:
+        stale = [w for w in self._items if w not in new_items]
+
+        # 1) 清空布局项（只摘布局，不动控件的父级，避免变成顶层窗口）
+        while self._flow.count():
+            self._flow.takeAt(0)
+
+        # 2) 按新顺序重新挂载
+        self._items = []
+        for widget in new_items:
+            try:
+                if widget.parent() is not self:
+                    widget.setParent(self)
+                self._flow.addWidget(widget)
+                widget.show()
+                self._items.append(widget)
+            except RuntimeError:
+                continue  # 对象已销毁，跳过即可
+
+        # 3) 本次不再需要的才销毁
+        for widget in stale:
+            try:
+                widget.setParent(None)
                 widget.deleteLater()
-        self._items = new_items
-        for widget in self._items:
-            widget.setParent(self)
-            self._flow.addWidget(widget)
-            widget.show()
+            except RuntimeError:
+                continue
+
+        # 自定义布局必须显式失效后才会重排：否则重建出来的胶囊会停留在旧位置
+        # （父级尺寸没变时尤其明显——看起来就像「标签跑到别处去了」）
+        self._flow.invalidate()
         self.updateGeometry()
+        self.update()
+        # 关键一步：自定义布局只是直接 setGeometry，Qt 不会因此为子控件安排首次绘制。
+        # 实测刚挂上去的胶囊会一直保持「未绘制」状态（几何/可见性全部正常，屏幕上却是空白），
+        # 必须显式 raise_() 让它进入绘制流程。raise_() 对已经是顶层的控件无副作用。
+        for widget in self._items:
+            try:
+                widget.raise_()
+                widget.update()
+            except RuntimeError:
+                continue
 
     def items(self) -> list[QWidget]:
         return list(self._items)
@@ -2013,42 +2137,54 @@ class TagCloud(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("TagCloud")
+        # 裸 QWidget 子类必须显式打开样式表背景，否则 #TagCloud 的底色与圆角
+        # 边框会被静默忽略（整块看起来就是「空的」）
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._theme = theme
         self._tags: list[str] = []
         self._expanded = False
         self._editing = False
+        self._items: list[QWidget] = []
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
-        outer.setSpacing(6)
+        # 流式布局直接挂在这个控件上。
+        # 刻意**不再套一层 FlowRow**：实测「QVBoxLayout 里嵌一个同样声明了
+        # heightForWidth 的中间容器」时，运行时新建的子控件永远拿不到首次绘制——
+        # 几何、visibleRegion、isVisible() 全都正常，屏幕上却是一片空白。
+        self._flow = FlowLayout(self, margin=10, h_spacing=6, v_spacing=6)
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
 
-        self.flow = FlowRow(spacing=6)
-        outer.addWidget(self.flow)
-
-        bottom = QHBoxLayout()
-        bottom.setContentsMargins(0, 0, 0, 0)
-        bottom.setSpacing(6)
+        # 常驻控件：不参与重建，只被流式布局反复挂载
         self.toggle_button = QPushButton("展开")
         self.toggle_button.setObjectName("Ghost")
         self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_button.clicked.connect(self._toggle_expand)
         self.toggle_button.setVisible(False)
-        bottom.addWidget(self.toggle_button)
-        bottom.addStretch(1)
-        outer.addLayout(bottom)
 
-        # 常驻控件：不参与重建，只被 FlowRow 反复挂载
         self.editor = QLineEdit()
         self.editor.setObjectName("TagAddEdit")
         self.editor.setPlaceholderText(placeholder)
         self.editor.returnPressed.connect(self._commit_editor)
         self.editor.editingFinished.connect(self._commit_editor)
+        # 必须和 toggle_button 一样显式收起：``qt_guard`` 会把无 parent 的控件挂到
+        # 构建宿主（这里就是 TagCloud 自己）名下，于是这个「还没轮到上场」的输入框
+        # 会以默认几何 (0,0,640,480) 变成一个**可见**子控件，且从不参与布局。
+        # 它自带的白色底 + 虚线边框会横穿标签栏，在标签云右侧露出第二层底和一条
+        # 对不齐的竖线——正是「标签栏有两层底、边框没对齐」的成因。
+        self.editor.setVisible(False)
+
         self.add_pill = QPushButton("＋ 添加标签")
         self.add_pill.setObjectName("TagAddPill")
         self.add_pill.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_pill.clicked.connect(self._begin_edit)
 
         self._rebuild()
+
+    @property
+    def flow(self) -> "TagCloud":
+        """兼容旧引用：流式布局现在直接挂在本控件上，容器就是自己。"""
+        return self
 
     # -- 数据 ------------------------------------------------------------
     def tags(self) -> list[str]:
@@ -2059,12 +2195,25 @@ class TagCloud(QWidget):
         self._editing = False
         self._rebuild()
 
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        """高度绝不低于 minimumHeight。
+
+        这一点必须显式保证：``QScrollArea`` 判断「内容装不装得下」用的是各控件的
+        ``sizeHint`` 之和。若 ``sizeHint`` 比实际占用小（这里内容只需 40px，
+        而上面给的最小高度是 48px），滚动区就会误判「装得下」而不给滚动条，
+        布局却仍按 48px 排布——多出来的部分直接把最后一个控件顶到容器之外裁掉，
+        表现为「标签只剩半截，还像被下面的操作栏盖住」。字体越大、控件越高，失真越多。
+        """
+        hint = super().sizeHint()
+        return QSize(hint.width(), max(hint.height(), self.minimumHeight()))
+
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
 
     # -- 交互 ------------------------------------------------------------
     def _make_chip(self, tag: str) -> EditableTagChip:
-        chip = EditableTagChip(tag, theme=self._theme)
+        # 直接挂在标签云下：胶囊从诞生起就有父级，不会先当一瞬顶层窗口
+        chip = EditableTagChip(tag, theme=self._theme, parent=self)
         chip.clicked.connect(lambda name: self._copy(name))
         chip.removed.connect(self._remove)
         return chip
@@ -2116,18 +2265,81 @@ class TagCloud(QWidget):
             self.toggle_button.setText(f"展开其余 {len(chips) - self.COLLAPSE_AT} 个")
         elif overflow:
             self.toggle_button.setText("收起")
-        self.toggle_button.setVisible(overflow)
 
         items: list[QWidget] = list(visible)
         if self._editing:
-            self.editor.setVisible(True)
             items.append(self.editor)
         else:
-            self.add_pill.setVisible(True)
             items.append(self.add_pill)
-        self.flow.set_items(items)
+        if overflow:
+            items.append(self.toggle_button)
+        self.toggle_button.setVisible(overflow)
+
+        self._set_items(items)
         if self._editing:
             self.editor.setFocus()
+
+    def _set_items(self, widgets: Sequence[QWidget]) -> None:
+        """按给定顺序重建流式布局里的控件。
+
+        走「清空布局 → 重新 addWidget」这条最朴素的路径：复用旧槽位在实测中会让
+        子控件丢失首次绘制（几何/可见性全对，屏幕上一片空白），而重新 addWidget
+        与手工搭出来的容器行为一致。常驻控件（编辑器 / + 按钮 / 展开）只隐藏不销毁。
+        """
+        persistent = (self.toggle_button, self.editor, self.add_pill)
+        new_items = list(widgets)
+        stale: list[QWidget] = []
+        for widget in self._items:
+            if widget in new_items:
+                continue
+            if widget in persistent:
+                continue  # 常驻控件统一在下面收起，不销毁
+            stale.append(widget)
+
+        # 0) 本轮没上场的常驻控件一律收起。
+        # 不能只依赖「上一轮在 _items 里」来判断：首次构建时 _items 还是空的，
+        # 而 ``qt_guard`` 已经把无 parent 的控件挂成了本控件的子级（可见！），
+        # 漏收就会留下一层底 + 一条对不齐的边框（标签栏那个 bug 就是这么来的）。
+        for widget in persistent:
+            if widget not in new_items:
+                widget.setVisible(False)
+
+        # 1) 清空布局项（只摘布局，不动控件父级，避免它们变成顶层窗口）
+        while self._flow.count():
+            self._flow.takeAt(0)
+
+        # 2) 按新顺序重新挂载
+        self._items = []
+        for widget in new_items:
+            try:
+                if widget.parent() is not self:
+                    widget.setParent(self)
+                self._flow.addWidget(widget)
+                widget.show()
+                self._items.append(widget)
+            except RuntimeError:
+                continue  # 对象已销毁，跳过即可
+
+        # 3) 本次不再需要的才销毁
+        for widget in stale:
+            try:
+                widget.setParent(None)
+                widget.deleteLater()
+            except RuntimeError:
+                continue
+
+        self._flow.invalidate()
+        self.updateGeometry()
+        self.update()
+        # 自定义布局只是直接 setGeometry，Qt 不会因此为子控件安排首次绘制：
+        # 刚挂上去的胶囊会一直停留在「未绘制」状态（几何/可见性全部正常，屏幕上是空白）。
+        # 显式 raise_() 把它们推进绘制流程，这一步是必需的。
+        for widget in self._items:
+            try:
+                widget.raise_()
+                widget.update()
+            except RuntimeError:
+                continue
 
 
 class CheckReportView(QWidget):
@@ -2249,9 +2461,11 @@ class CheckReportView(QWidget):
         name.setObjectName("CheckTitle")
         name.setWordWrap(True)
         head.addWidget(name, 1)
-        if level == "error" and item is not None:
+        # 每条结果（含「建议修改」）右侧都挂一个跳转按钮：
+        # 用户看到建议的第一反应就是「去改」，不该逼他自己找创作页入口。
+        if item is not None:
             fix = make_button("去修改", icon="pen-line", theme=self._theme, ghost=True)
-            fix.setToolTip("回到创作页修改这条内容")
+            fix.setToolTip("回到创作页修改，这条建议会一起带过去显示")
             fix.clicked.connect(lambda _=False, it=item: self.fix_requested.emit(it))
             head.addWidget(fix, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(head)
@@ -2853,6 +3067,212 @@ class CategoryPicker(QPushButton):
         self._popup.raise_()
 
 
+class AdviceBar(QFrame):
+    """发布中心的修改建议：整宽横条，编辑正文时一直可见。
+
+    从发布中心点「去修改」跳到创作页时，如果页面上只留下一个光标，
+    用户还得回去记那条提示——这里把建议直接钉在创作页顶部，
+    改完一条还能对着看下一条，不用来回切页面。
+    """
+
+    closed = Signal()
+
+    #: 折叠前最多展示几条
+    MAX_VISIBLE = 4
+
+    def __init__(self, *, theme: str = "light", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("AdviceBar")
+        self._theme = theme
+        self._items: list[dict[str, Any]] = []
+        self._expanded = True
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 10, 12, 10)
+        outer.setSpacing(6)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.icon_label = QLabel()
+        self.icon_label.setFixedSize(18, 18)
+        head.addWidget(self.icon_label)
+        self.title_label = QLabel("发布中心的修改建议")
+        self.title_label.setObjectName("AdviceTitle")
+        head.addWidget(self.title_label)
+        head.addStretch(1)
+        self.toggle_button = QPushButton("收起")
+        self.toggle_button.setObjectName("AdviceToggle")
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.clicked.connect(self._toggle)
+        head.addWidget(self.toggle_button)
+        self.goto_button = make_button("打开发布中心", icon="send", theme=theme, ghost=True)
+        self.goto_button.clicked.connect(self._goto_publish)
+        head.addWidget(self.goto_button)
+        self.close_button = QPushButton("✕")
+        self.close_button.setObjectName("AdviceToggle")
+        self.close_button.setFixedWidth(28)
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button.setToolTip("关掉这条提示（内容不会被改动）")
+        self.close_button.clicked.connect(self._dismiss)
+        head.addWidget(self.close_button)
+        outer.addLayout(head)
+
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(26, 0, 0, 0)
+        self.body_layout.setSpacing(3)
+        outer.addWidget(self.body)
+
+        self.apply_theme(theme)
+        self.setVisible(False)
+
+    # -- 数据 ------------------------------------------------------------
+    def set_items(self, items: Sequence[Any]) -> None:
+        """写入建议列表；空列表自动隐藏整条横条。"""
+        self._items = [self._normalize(it) for it in items if it is not None]
+        self._expanded = True
+        self._rebuild()
+        self.setVisible(bool(self._items))
+
+    def items(self) -> list[dict[str, Any]]:
+        return list(self._items)
+
+    @staticmethod
+    def _normalize(item: Any) -> dict[str, Any]:
+        if isinstance(item, dict):
+            return {
+                "level": str(item.get("level") or "warn"),
+                "title": str(item.get("title") or "修改建议"),
+                "detail": str(item.get("detail") or ""),
+                "suggestion": str(item.get("suggestion") or ""),
+            }
+        return {
+            "level": str(getattr(item, "level", "warn") or "warn"),
+            "title": str(getattr(item, "title", "") or "修改建议"),
+            "detail": str(getattr(item, "detail", "") or ""),
+            "suggestion": str(getattr(item, "suggestion", "") or ""),
+        }
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        p = palette(theme)
+        self.icon_label.setPixmap(icons.pixmap("alert", p.warning, 18))
+        self.goto_button.setIcon(icons.icon("send", p.text_sub, 15))
+        self._rebuild()
+
+    # -- 渲染 ------------------------------------------------------------
+    def _rebuild(self) -> None:
+        while self.body_layout.count():
+            item = self.body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        total = len(self._items)
+        self.title_label.setText(
+            f"来自发布中心的修改建议 · {total} 条" if total else "发布中心的修改建议"
+        )
+        visible = self._items if self._expanded else self._items[: self.MAX_VISIBLE]
+        for entry in visible:
+            label = QLabel(self._format(entry))
+            label.setObjectName("AdviceItem")
+            label.setWordWrap(True)
+            label.setToolTip(self._format(entry, full=True))
+            self.body_layout.addWidget(label)
+        if total > self.MAX_VISIBLE:
+            more = QLabel(
+                f"还有 {total - self.MAX_VISIBLE} 条，点右上角展开查看"
+                if not self._expanded
+                else ""
+            )
+            more.setObjectName("AdviceItem")
+            more.setVisible(bool(more.text()))
+            self.body_layout.addWidget(more)
+            self.toggle_button.setVisible(True)
+            self.toggle_button.setText("收起" if self._expanded else f"展开全部 {total} 条")
+        else:
+            self.toggle_button.setVisible(False)
+        self.body.setVisible(self._expanded)
+        self.updateGeometry()
+
+    @staticmethod
+    def _format(entry: dict[str, Any], *, full: bool = False) -> str:
+        prefix = "必须修改" if entry["level"] == "error" else "建议"
+        parts = [f"· [{prefix}] {entry['title']}"]
+        if entry["detail"]:
+            parts.append(entry["detail"] if full else entry["detail"][:160])
+        if entry["suggestion"]:
+            parts.append(f"建议：{entry['suggestion'] if full else entry['suggestion'][:120]}")
+        return "　".join(parts)
+
+    # -- 交互 ------------------------------------------------------------
+    def _toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._rebuild()
+
+    def _dismiss(self) -> None:
+        self.setVisible(False)
+        self.closed.emit()
+
+    def _goto_publish(self) -> None:
+        window = self.window()
+        navigate = getattr(window, "navigate", None)
+        if callable(navigate):
+            try:
+                navigate("publish")
+            except Exception:  # noqa: BLE001 - 跳转失败不影响当前编辑
+                pass
+
+
+class AutoGrowTextEdit(QTextEdit):
+    """按内容自动长高的多行输入（简介这类附属字段用）。
+
+    固定高度会把长简介截掉一半（用户得自己拖滚动条才知道下面还有字），
+    而放任它抢空间又会让标签、按钮被挤出视口；这里在两者之间取一个区间：
+    内容少时保持紧凑，内容多时长到上限为止（超过才出现内部滚动条）。
+    """
+
+    def __init__(
+        self,
+        *,
+        min_height: int = 56,
+        max_height: int = 116,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._min_height = min_height
+        self._max_height = max_height
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.document().contentsChanged.connect(self._sync_height)
+        self._sync_height()
+
+    def set_height_bounds(self, *, min_height: int, max_height: int) -> None:
+        self._min_height = min_height
+        self._max_height = max_height
+        self._sync_height()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        hint = super().sizeHint()
+        return QSize(hint.width(), self.height())
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        # 宽度变了换行数就变了，高度得跟着重算
+        self._sync_height()
+
+    def _sync_height(self) -> None:
+        width = self.viewport().width()
+        if width > 0:
+            self.document().setTextWidth(width)
+        doc_height = math.ceil(self.document().size().height())
+        target = doc_height + 2 * int(self.frameWidth()) + 10
+        target = max(self._min_height, min(self._max_height, target))
+        if target != self.height():
+            self.setFixedHeight(target)
+
+
 # --------------------------------------------------------------------------
 # 让每个组件成为「构建宿主」
 # --------------------------------------------------------------------------
@@ -2888,6 +3308,7 @@ for _component_cls in (
     CheckReportView,
     ScoreReport,
     CollapsibleCard,
+    AdviceBar,
 ):
     _qt_guard.guarded_init(_component_cls)
 del _component_cls

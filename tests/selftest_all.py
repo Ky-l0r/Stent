@@ -42,7 +42,7 @@ def section(title: str) -> None:
 
 def main() -> int:
     from stent import paths
-    from stent.config import AppConfig, LLMConfig, PROVIDER_PRESETS, preset_for, secrets
+    from stent.config import AppConfig, LLMConfig, PROVIDER_PRESETS, SecretStore, preset_for, secrets
     from stent.core.db import Database, now as db_now
     from stent.core.llm import LLMClient
 
@@ -61,17 +61,68 @@ def main() -> int:
     check("预设数量 >= 8", len(PROVIDER_PRESETS) >= 8)
     check("按 URL 反查预设", (preset_for("https://api.deepseek.com/v1/") or None) is not None)
 
+    section("Playwright 内核目录（打包态回归）")
+    # 冻结态下 Playwright 会把内核目录默认指向包内的 .local-browsers
+    # （见 playwright/_impl/_transport.py 的 env.setdefault）。Stent 刻意不内置
+    # Chromium，若不纠正就必然报「浏览器不可用」——而检测却认为环境就绪，
+    # 连一键安装按钮都不给，用户彻底卡死。下面几条锁住这个坑。
+    browsers_dir = paths.playwright_browsers_dir()
+    check("内核目录落在系统位置", ".local-browsers" not in str(browsers_dir), str(browsers_dir))
+
+    _saved_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    _saved_frozen = getattr(sys, "frozen", None)
+    try:
+        sys.frozen = True
+        os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+        resolved = paths.ensure_playwright_browsers_path()
+        check("冻结态自动钉住系统内核目录",
+              os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == resolved, resolved)
+        check("冻结态不指向包内 .local-browsers", ".local-browsers" not in resolved, resolved)
+
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = r"D:\custom-browsers"
+        check("尊重用户显式配置的内核目录",
+              paths.ensure_playwright_browsers_path() == r"D:\custom-browsers")
+    finally:
+        if _saved_path is None:
+            os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+        else:
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _saved_path
+        if _saved_frozen is None:
+            del sys.frozen
+        else:
+            sys.frozen = _saved_frozen
+
+    from stent.services import publisher as _publisher
+
+    try:
+        import playwright  # noqa: F401
+
+        _has_playwright = True
+    except ImportError:
+        _has_playwright = False
+    _revision = _publisher.expected_chromium_revision()
+    check("随包驱动声明了 Chromium 版本号", (not _has_playwright) or bool(_revision), _revision)
+    check("版本号对不上时判定为未就绪",
+          not _publisher._has_chromium(_publisher._chromium_root(), "0000"))
+    _install_cmd = _publisher.chromium_install_command()
+    check("安装命令形如 … install chromium",
+          len(_install_cmd) >= 3 and _install_cmd[-2:] == ["install", "chromium"], str(_install_cmd))
+
     section("密钥存储")
-    mode = secrets.mode
+    # 必须用独立命名空间：keyring 是全局的，不随 STENT_DATA_DIR 隔离，
+    # 直接操作全局 secrets 会把用户真实的 API Key 覆盖成测试值再删掉。
+    probe = SecretStore(service="Stent-selftest", user="llm_api_key")
+    mode = probe.mode
     check("密钥后端可判定", mode in {"keyring", "dpapi", "none"}, mode)
-    secrets.set_api_key("sk-selftest-123456")
-    got = secrets.get_api_key()
+    probe.set_api_key("sk-selftest-123456")
+    got = probe.get_api_key()
     if mode == "none":
         check("无加密后端时不明文落盘", got == "", f"got={got!r}")
     else:
         check("密钥可回读", got == "sk-selftest-123456", f"mode={mode}")
-    secrets.clear_api_key()
-    check("密钥可清除", secrets.get_api_key() == "")
+    probe.clear_api_key()
+    check("密钥可清除", probe.get_api_key() == "")
+    check("自检未触碰真实密钥", secrets.get_api_key() != "sk-selftest-123456")
 
     section("SQLite 存储")
     db = Database(str(Path(_TMP) / "test.db"))
@@ -323,6 +374,26 @@ def main() -> int:
     attr = analytics.attribute(days=30, use_llm=False, persist=False)
     check("归因未配置 LLM 时友好返回", isinstance(attr, dict) and "ok" in attr, str(attr.get("message", ""))[:60])
     check("归因不抛异常", True)
+    check("归因结果含中文结论字段", "summary" in attr and "next_actions" in attr)
+    from stent.services.analytics import _localize_terms, _platform_zh
+    check("平台 key 映射为中文", _platform_zh("douyin") == "抖音" and _platform_zh("bilibili") == "B 站")
+    localized = _localize_terms("douyin 高播放，aggregate_engagement_rate 33.85%，consistency 10.0")
+    check(
+        "归因术语兜底中文化",
+        "抖音" in localized and "总体互动率" in localized and "douyin" not in localized,
+        localized,
+    )
+    zh_prompt = analytics._build_attribution_prompt(
+        attr.get("top") or [], attr.get("bottom") or [], attr.get("stats") or {}, 30
+    )
+    check(
+        "归因 prompt 无英文指标键",
+        not any(
+            word in zh_prompt
+            for word in ("bilibili", "douyin", "engagement_rate", "aggregate_engagement_rate", "consistency")
+        ),
+    )
+    check("归因 prompt 有中文硬性约束", "硬性要求" in zh_prompt)
     empty_svc = AnalyticsService(db=Database(str(Path(_TMP) / "empty.db")))
     empty_svc.db.init()
     check("空库 overview 不崩", empty_svc.overview(days=7)["post_count"] == 0)
