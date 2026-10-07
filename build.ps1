@@ -39,10 +39,10 @@ function Write-Step($text) {
     Write-Host "==== $text ====" -ForegroundColor Cyan
 }
 
-function Invoke-Checked([string]$Exe, [string[]]$Args) {
-    & $Exe @Args
+function Invoke-Checked([string]$Exe, [string[]]$ArgList) {
+    & $Exe @ArgList
     if ($LASTEXITCODE -ne 0) {
-        throw "$Exe $($Args -join ' ') 执行失败（exit=$LASTEXITCODE）"
+        throw "$Exe $($ArgList -join ' ') 执行失败（exit=$LASTEXITCODE）"
     }
 }
 
