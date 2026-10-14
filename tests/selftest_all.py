@@ -142,6 +142,49 @@ def main() -> int:
     check("内容可列表", len(db.list_contents()) == 1)
     check("按状态过滤", len(db.list_contents(status="published")) == 1)
 
+    # 草稿要连「创作输入」一起存：补充要求与快捷参数是从草稿箱载回来后
+    # 继续用同一组设定重新生成的上下文，丢了就等于让用户从零重来。
+    draft_id = db.create_content(
+        topic="副业避坑", platform="bilibili", title="t", body="b",
+        extra="必须提到三个具体品牌；不要出现价格",
+        params={"goal": "直接带货", "tone": "犀利点评", "audience": ""},
+    )
+    draft = db.get_content(draft_id)
+    check("草稿保存补充要求", draft["extra"].startswith("必须提到三个具体品牌"), repr(draft["extra"]))
+    check("草稿保存快捷参数", draft["params"]["goal"] == "直接带货", str(draft["params"]))
+    check("快捷参数保留空值项", "audience" in draft["params"], str(draft["params"]))
+    db.update_content(draft_id, extra="改过了", params={"goal": "建立专业形象"})
+    updated = db.get_content(draft_id)
+    check("补充要求可更新", updated["extra"] == "改过了")
+    check("快捷参数可更新", updated["params"] == {"goal": "建立专业形象"}, str(updated["params"]))
+    # 老库没有这两列：init() 必须能补上，否则升级上来的用户一保存就报错
+    legacy = Path(_TMP) / "legacy.db"
+    import sqlite3 as _sqlite3
+
+    _conn = _sqlite3.connect(legacy)
+    _conn.executescript(
+        "CREATE TABLE contents (id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT NOT NULL DEFAULT '',"
+        " platform TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',"
+        " titles_json TEXT NOT NULL DEFAULT '[]', body TEXT NOT NULL DEFAULT '',"
+        " summary TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',"
+        " status TEXT NOT NULL DEFAULT 'draft', source TEXT NOT NULL DEFAULT 'manual',"
+        " source_ref TEXT NOT NULL DEFAULT '', media_json TEXT NOT NULL DEFAULT '[]',"
+        " created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+        "INSERT INTO contents (topic, created_at, updated_at) VALUES ('老草稿', '2026-01-01', '2026-01-01');"
+    )
+    _conn.commit()
+    _conn.close()
+    legacy_db = Database(str(legacy))
+    legacy_db.init()
+    legacy_columns = {r["name"] for r in legacy_db.query("PRAGMA table_info(contents)")}
+    check("老库自动补 extra 列", "extra" in legacy_columns, str(sorted(legacy_columns)))
+    check("老库自动补 params_json 列", "params_json" in legacy_columns)
+    check("老数据读得出来", legacy_db.list_contents()[0]["topic"] == "老草稿")
+    check("老数据字段有默认值",
+          legacy_db.list_contents()[0]["params"] == {} and legacy_db.list_contents()[0]["extra"] == "")
+    legacy_db.close()
+
+
     pid = db.create_post(content_id=cid, platform="xiaohongshu", title="t", body="b", status="published", published_at=db_now())
     check("发布记录可创建", pid > 0)
     db.add_metric(pid, {"views": 1200, "likes": 88, "comments": 6, "collects": 30, "shares": 2}, captured_at="2026-10-01 09:00:00")
@@ -310,6 +353,178 @@ def main() -> int:
     else:
         print("  [SKIP] 平台适配器未加载（playwright 未安装或模块缺失）")
     check("available_platforms 是列表", isinstance(available_platforms(), list))
+
+    section("B 站改版适配（简介 / 分区 / dry-run 收尾）")
+    from stent.platforms import bilibili as bili
+
+    # 简介字段：B 站只有这一个长文本字段，创作页的「简介」+「正文」都要带上，
+    # 否则用户在创作页单独改过的简介会被静默丢掉。
+    check("简介=简介+正文", bili.compose_description("我的简介", "我的正文") == "我的简介\n\n我的正文")
+    check("简介为空时只用正文", bili.compose_description("", "正文") == "正文")
+    check("正文为空时只用简介", bili.compose_description("简介", "") == "简介")
+    check("正文已包含简介时不重复", bili.compose_description("正文", "正文") == "正文")
+    check("简介已包含正文时不重复", bili.compose_description("简介里带了正文", "正文") == "简介里带了正文")
+
+    # 简介编辑器：新版是 Quill 富文本（.ql-editor），老版的 textarea 选择器一个都命中不了
+    check("简介选择器覆盖 Quill 编辑器",
+          any("ql-editor" in sel for sel in bili.DESC_EDITOR_SELECTORS),
+          str(bili.DESC_EDITOR_SELECTORS[:2]))
+    check("简介选择器不再只依赖 textarea",
+          bili.DESC_EDITOR_SELECTORS[0] != bili.DESC_SELECTORS[0])
+    check("写入富文本时声明 user 源（否则 Vue 模型收不到）",
+          "'user'" in bili.QUILL_SET_TEXT_JS, bili.QUILL_SET_TEXT_JS[:60])
+    check("支持读回校验", "getText" in bili.QUILL_READ_JS)
+
+    # 分区：老表混了父分区 id，而投稿页只收叶子分区
+    check("默认分区解析到叶子分区",
+          bili.resolve_tid("知识") == 201, str(bili.resolve_tid("知识")))
+    check("数字 tid 原样返回", bili.resolve_tid("201") == 201)
+    check("未知分区名退回默认", bili.resolve_tid("不存在的分区") == bili.resolve_tid(bili.DEFAULT_PARTITION))
+
+    _typelist = [
+        {"name": "生活", "id": 160, "children": [
+            {"name": "日常", "id": 21}, {"name": "搞笑", "id": 138}]},
+        {"name": "知识", "id": 36, "children": [
+            {"name": "科学科普", "id": 201}, {"name": "财经商业", "id": 207}]},
+    ]
+    _flat = bili.flatten_typelist(_typelist)
+    check("分区树可摊平", len(_flat) == 4, str([c.label() for c in _flat]))
+    _choice = bili.resolve_partition("知识", typelist=_typelist)
+    check("实时分区树优先：二级名命中",
+          _choice is not None and (_choice.parent, _choice.child, _choice.tid) == ("知识", "科学科普", 201),
+          str(_choice))
+    _by_child = bili.resolve_partition("财经商业", typelist=_typelist)
+    check("按二级分区名命中",
+          _by_child is not None and _by_child.tid == 207, str(_by_child))
+    _by_parent = bili.resolve_partition("生活", typelist=_typelist)
+    check("按一级分区名命中该级首个二级",
+          _by_parent is not None and _by_parent.parent == "生活", str(_by_parent))
+    _by_tid = bili.resolve_partition("", tid=138, typelist=_typelist)
+    check("按 tid 命中并带回父分区",
+          _by_tid is not None and (_by_tid.parent, _by_tid.child) == ("生活", "搞笑"), str(_by_tid))
+    check("分区下拉是两级结构",
+          any("drop-f-item" in sel for sel in bili.PARTITION_PARENT_SELECTORS)
+          and any("drop-t-item" in sel for sel in bili.PARTITION_CHILD_SELECTORS))
+    check("分区接口指向实时分区树", bili.PARTITION_API.endswith("/archive/pre"), bili.PARTITION_API)
+
+    # 「分区已选」必须由下拉文案读回确认，不能只看「点了没报错」：
+    # 下拉空着时文案是「请选择分区」，一级相同但二级点错时文案里两个名字都在，
+    # 但都不是目标分区。判错会让用户在浏览器里才发现分区是空的。
+    _lp = bili.BiliBiliAdapter._label_matches_partition
+    check("下拉空着不算选中", not _lp("请选择分区", bili.PartitionChoice("知识", "科学科普", 201)))
+    check("文案含两级名算选中", _lp("知识 → 科学科普", bili.PartitionChoice("知识", "科学科普", 201)))
+    check("文案只写二级也算选中", _lp("科学科普", bili.PartitionChoice("知识", "科学科普", 201)))
+    check("一级对、二级错不算选中", not _lp("知识 → 财经商业", bili.PartitionChoice("知识", "科学科普", 201)))
+    check("二级同名但一级不同不算选中",
+          not _lp("生活 → 日常", bili.PartitionChoice("知识", "日常", 21)))
+    check("二级同名且一级相同才算选中", _lp("知识 → 日常", bili.PartitionChoice("知识", "日常", 21)))
+    # 二级名里本身含别的一级名（「汽车生活」含「生活」），不能因此误判失败
+    check("二级名含其它一级名时不误判",
+          _lp("汽车 → 汽车生活", bili.PartitionChoice("汽车", "汽车生活", 176)))
+    check("一级名进了文案但二级不符，仍不算选中",
+          not _lp("生活 → 生活", bili.PartitionChoice("生活", "日常", 21)))
+
+    # 多行字段的粘贴路径只被富文本编辑器认账；原生 textarea 上
+    # ``dispatchEvent`` 一定「成功」但 value 没变，必须读回确认才能算填写成功。
+    class _StubInput:
+        def __init__(self, value):
+            self._value = value
+
+        def input_value(self):
+            return self._value
+
+    check("读回确认：写进去了算成功",
+          bili.BiliBiliAdapter._element_has_text(_StubInput("一段简介内容"), "一段简介内容") is True)
+    check("读回确认：没写进去必须报失败",
+          bili.BiliBiliAdapter._element_has_text(_StubInput(""), "一段简介内容") is False)
+    check("读回确认：内容不符也报失败",
+          bili.BiliBiliAdapter._element_has_text(_StubInput("完全不同的内容"), "一段简介内容") is False)
+    check("读回确认：读不出来时不妄下结论",
+          bili.BiliBiliAdapter._element_has_text(object(), "一段简介内容") is None)
+
+    # dry-run 收尾：以前 publish() 一返回就 close()，浏览器自己关掉，
+    # 用户既没时间核对也来不及点发布，填的东西自然「什么都不会保存」。
+    from stent.platforms._browser import DEFAULT_HOLD_SEC, hold_for_review, resolve_hold_sec
+
+    class _FakePage:
+        def __init__(self, closed_after: int = 0, signal_after: int = 0) -> None:
+            self.ticks = 0
+            self.closed_after = closed_after
+            self.signal_after = signal_after
+
+        def is_closed(self) -> bool:
+            return bool(self.closed_after) and self.ticks >= self.closed_after
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            self.ticks += 1
+
+    class _Cancel:
+        def __init__(self, after: int = 0) -> None:
+            self.after = after
+            self.calls = 0
+
+        def is_set(self) -> bool:
+            self.calls += 1
+            return bool(self.after) and self.calls >= self.after
+
+    check("默认保持时间足够人工确认", DEFAULT_HOLD_SEC >= 300, str(DEFAULT_HOLD_SEC))
+    check("hold_sec 有上下限", resolve_hold_sec({"hold_sec": 1}) >= 30 and resolve_hold_sec({"hold_sec": 999999}) <= 3600)
+
+    _page = _FakePage(closed_after=3)
+    _msg = hold_for_review(_page, extra={}, on_progress=None)
+    check("用户关掉浏览器即结束", "关闭" in _msg and _page.ticks >= 3, f"{_msg} ticks={_page.ticks}")
+
+    _page2 = _FakePage()
+    _msg2 = hold_for_review(_page2, extra={}, on_progress=None, probe=lambda: "已检测到你完成了投稿")
+    check("检测到用户已发布即结束", "已检测到" in _msg2, _msg2)
+
+    _page3 = _FakePage()
+    _msg3 = hold_for_review(_page3, extra={}, on_progress=None, cancel=_Cancel(after=2))
+    check("主程序关闭时可中断", "中断" in _msg3, _msg3)
+
+    _page4 = _FakePage()
+    _msg4 = hold_for_review(_page4, extra={"hold_sec": 1}, on_progress=None)
+    check("到上限才结束（并如实说明未提交）", "超时" in _msg4, _msg4)
+
+    _progress: list[str] = []
+    hold_for_review(_FakePage(closed_after=1), extra={}, on_progress=lambda m, p: _progress.append(m))
+    check("收尾时给用户一句可读的说明",
+          bool(_progress) and "浏览器" in _progress[0], str(_progress[:1]))
+
+    # 四个平台都要有这一步：以前只有小红书保持窗口，其余三个填完就关
+    from stent.services.publisher import PublishService as _PS
+
+    _holders = [k for k in registered_platforms() if hasattr(get_adapter(k), "_submission_signal")]
+    check("四个平台都实现了发布检测", len(_holders) == 4, str(_holders))
+
+    # 取消信号要能从发布编排一路传到适配器：签名对不上会直接 TypeError。
+    # 用空 payload 触发「入参校验失败」提前返回，不碰浏览器。
+    _signature_ok = True
+    _signature_note = ""
+    for _key in registered_platforms():
+        _adapter = get_adapter(_key)
+        if _adapter is None:
+            continue
+        try:
+            _res = _adapter.publish(PublishPayload(), dry_run=True, cancel=None, on_progress=None)
+            if not isinstance(_res, PublishResult):
+                _signature_ok = False
+                _signature_note = f"{_key} 返回了 {type(_res).__name__}"
+        except TypeError as exc:
+            _signature_ok = False
+            _signature_note = f"{_key}: {exc}"
+        except Exception as exc:  # noqa: BLE001 - 其它异常说明签名没问题，只是提前失败了
+            _signature_note = f"{_key} 正常提前返回（{type(exc).__name__}）"
+    check("取消信号可传入四个适配器（签名一致）", _signature_ok, _signature_note)
+
+    check("B 站适配器声明简介是独立字段",
+          getattr(get_adapter("bilibili"), "uses_summary", False) is True)
+    check("预览会单独列出 B 站简介",
+          "【简介】我的简介" in _PS.preview_text(
+              PublishPayload(title="t", body="b", summary="我的简介"), "bilibili"))
+    check("其它平台预览不额外加简介行",
+          "【简介】" not in _PS.preview_text(
+              PublishPayload(title="t", body="b", summary="我的简介"), "xiaohongshu"))
 
     section("发布编排（风控断言）")
     from stent.services.publisher import PublishDenied, PublishPreparation, PublishService

@@ -240,11 +240,21 @@ class PublishService:
 
     @staticmethod
     def preview_text(payload: PublishPayload, platform: str) -> str:
-        """生成「发布后长这样」的文本预览。"""
+        """生成「发布后长这样」的文本预览。
+
+        预览必须和适配器**真正会填进去的东西**一致：B 站的简介字段是
+        「简介 + 正文」两段拼起来的（见 ``bilibili.compose_description``），
+        所以这里也把简介单独列出来——否则用户改过的简介在预览里根本看不见，
+        发出去才发现不对。
+        """
         label = platform_label(platform)
+        adapter = get_adapter(platform)
         lines = [f"—— {label} 发布预览 ——", ""]
         if payload.title:
             lines.append(f"【标题】{payload.title}")
+            lines.append("")
+        if payload.summary and getattr(adapter, "uses_summary", False):
+            lines.append(f"【简介】{payload.summary}")
             lines.append("")
         lines.append(payload.body or "（正文为空）")
         if payload.tags:
@@ -299,11 +309,14 @@ class PublishService:
         dry_run: bool = True,
         on_progress: Callable | None = None,
         timeout_sec: int = 300,
+        cancel: Any = None,
     ) -> PublishOutcome:
         """执行发布。
 
         :param confirmed: 人工确认标记，必须为 True（企划书风险控制要求）
         :param dry_run: True = 只自动填写表单停在最后一步，不点击发布按钮
+        :param cancel: 可选的取消信号。dry-run 会保持浏览器打开等人工确认，
+            用户关掉主程序时要靠它立刻收尾（否则浏览器窗口会被留在桌面上）。
         """
         platform = preparation.platform
         label = preparation.label
@@ -352,6 +365,7 @@ class PublishService:
                 dry_run=dry_run,
                 timeout_sec=timeout_sec,
                 on_progress=on_progress,
+                cancel=cancel,
             )
         except Exception as exc:  # noqa: BLE001 - 保留异常信息到记录
             log.exception("发布异常：%s", platform)

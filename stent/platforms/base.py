@@ -137,6 +137,10 @@ class PlatformAdapter(ABC):
     #: 显式声明而不是靠「有没有重写方法」推断——不支持的平台也要能明确说「不支持」，
     #: 否则用户会看到一个点了没反应的按钮。
     supports_account_import: bool = False
+    #: 该平台是否把「简介」当作一个独立字段填写（B 站视频简介）。
+    #: 为 True 时，创作页里编辑过的简介会被一并填进去，发布中心的预览也会
+    #: 单独列出【简介】——否则用户在创作页精心改过的简介会被静默丢掉。
+    uses_summary: bool = False
 
     @property
     def limits(self) -> PlatformLimits:
@@ -165,8 +169,14 @@ class PlatformAdapter(ABC):
         dry_run: bool = False,
         timeout_sec: int = 300,
         on_progress: Any = None,
+        cancel: Any = None,
     ) -> PublishResult:
-        """执行发布。dry_run=True 时只填写表单不提交（人工确认前的预览）。"""
+        """执行发布。dry_run=True 时只填写表单不提交（人工确认前的预览）。
+
+        :param cancel: 可选的取消信号（``threading.Event``）。dry-run 会保持浏览器
+            打开等人工确认，用户关掉主程序时需要靠它立刻收尾，否则浏览器窗口会
+            被留在桌面上。
+        """
 
     # -- 数据 ------------------------------------------------------------
     @abstractmethod

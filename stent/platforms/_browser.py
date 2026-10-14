@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from .base import emit
+
 log = logging.getLogger(__name__)
 
 #: 通用 Chromium 启动参数（不含 --disable-dev-shm-usage：Windows 下重页面易崩）
@@ -506,3 +508,95 @@ def wait_until(predicate: Any, *, timeout_s: float, interval_s: float = 0.8) -> 
             pass
         time.sleep(interval_s)
     return False
+
+
+# --------------------------------------------------------------------------- #
+# dry-run 收尾：保住浏览器窗口，等人工确认
+# --------------------------------------------------------------------------- #
+
+#: 「只填写不提交」之后默认保持浏览器打开的秒数。
+#: 太短用户来不及核对并点发布，太长又会让后台线程一直挂着；用户随时可以
+#: 自己关掉浏览器窗口提前结束，所以这里给一个宽松的值。
+DEFAULT_HOLD_SEC = 600
+MIN_HOLD_SEC = 30
+MAX_HOLD_SEC = 3600
+
+
+def resolve_hold_sec(extra: Any) -> int:
+    """从 ``payload.extra`` 读「保持浏览器打开」的秒数（做上下限保护）。"""
+    raw = (extra or {}).get("hold_sec", DEFAULT_HOLD_SEC) if isinstance(extra, dict) else DEFAULT_HOLD_SEC
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_HOLD_SEC
+    return max(MIN_HOLD_SEC, min(MAX_HOLD_SEC, value))
+
+
+def page_closed(page: Any) -> bool:
+    """页面（或它所属的浏览器）是否已经被用户关掉。
+
+    Playwright 在浏览器关闭后调用任何 API 都会抛错，所以这里把异常也当作
+    「已关闭」——对收尾逻辑来说，两者的处理完全一样。
+    """
+    try:
+        return bool(page.is_closed())
+    except Exception:
+        return True
+
+
+def hold_for_review(
+    page: Any,
+    *,
+    extra: Any = None,
+    on_progress: Any = None,
+    cancel: Any = None,
+    timeout_sec: int | None = None,
+    probe: Any = None,
+    done_hint: str = "请核对后点击发布按钮",
+) -> str:
+    """dry-run 的收尾：**把浏览器留在原地**，等用户在页面里点发布或自己关掉窗口。
+
+    这是「自动填写表单、最终由人工确认」这条产品线的最后一环，缺了它前面全白做：
+    ``open_browser`` 是上下文管理器，``publish()`` 一返回就 ``close()``，
+    于是浏览器在表单刚填好时自己关掉，用户既没时间核对、也没机会点发布，
+    填进去的东西自然「什么都不会保存」。
+
+    三种结束方式，谁先到算谁：
+
+    1. ``probe`` 报告「用户已经点过发布/投稿」（最理想）；
+    2. 用户自己关掉浏览器窗口；
+    3. 到 ``hold_sec`` 上限（默认见 :data:`DEFAULT_HOLD_SEC`）。
+
+    返回一句可直接展示给用户的中文结论。
+    """
+    hold_sec = int(timeout_sec) if timeout_sec else resolve_hold_sec(extra)
+    hold_sec = max(MIN_HOLD_SEC, min(MAX_HOLD_SEC, hold_sec))
+    callback = (extra or {}).get("confirm_callback") if isinstance(extra, dict) else None
+
+    emit(on_progress, f"{done_hint}：浏览器会保持打开（最长 {hold_sec // 60} 分钟），"
+                      f"确认无误后直接点发布即可；关掉浏览器窗口也会结束本次操作", 95)
+
+    deadline = time.time() + hold_sec
+    while time.time() < deadline:
+        if page_closed(page):
+            return "浏览器窗口已关闭，本次填写未提交"
+        if cancel is not None and getattr(cancel, "is_set", lambda: False)():
+            return "已中断，本次填写未提交"
+        if callable(probe):
+            try:
+                detected = probe()
+            except Exception:
+                detected = ""
+            if detected:
+                return str(detected)
+        if callable(callback):
+            try:
+                if callback(page):
+                    return "人工已确认，本次填写结束"
+            except Exception:
+                pass
+        try:
+            page.wait_for_timeout(1000)
+        except Exception:
+            return "浏览器窗口已关闭，本次填写未提交"
+    return f"等待人工确认超时（{hold_sec // 60} 分钟），浏览器已关闭；本次填写未提交"

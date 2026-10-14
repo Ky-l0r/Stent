@@ -854,22 +854,39 @@ class LineChart(QWidget):
         vmax = max(values) or 1.0
         vmin = min(min(values), 0.0)
         span = (vmax - vmin) or 1.0
+        # 全零/全同值：曲线贴底会让整块图看起来像坏了，抬到 30% 高度并明确标注
+        flat = max(values) == min(values)
+        flat_ratio = 0.30 if flat else None
 
-        # 网格线
+        # 网格线 + Y 轴刻度（旧版只有虚线没有数值，读不出量级）
         painter.setPen(QPen(QColor(p.border), 1, Qt.PenStyle.DashLine))
         grid_top = rect.top() + 14
         grid_bottom = rect.bottom() - 20
+        axis_font = QFont()
+        axis_font.setPointSize(8)
         for i in range(4):
             y = grid_top + (grid_bottom - grid_top) * i / 3
-            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+            painter.drawLine(rect.left() + 40, int(y), rect.right(), int(y))
+            if flat:
+                continue  # 全平数据没有有意义的量级，刻度留白，靠右上角提示说明
+            tick_value = max(0.0, vmax - span * i / 3)
+            painter.save()
+            painter.setPen(QColor(p.text_faint))
+            painter.setFont(axis_font)
+            painter.drawText(
+                QRectF(rect.left(), y - 8, 34, 16),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                _short(tick_value),
+            )
+            painter.restore()
 
         count = len(self._points)
-        left = rect.left() + 6
+        left = rect.left() + 46
         right = rect.right() - 6
         step = (right - left) / max(1, count - 1)
 
         def point_at(index: int, value: float) -> QPointF:
-            ratio = (value - vmin) / span
+            ratio = flat_ratio if flat_ratio is not None else (value - vmin) / span
             return QPointF(left + step * index, grid_bottom - ratio * (grid_bottom - grid_top))
 
         # 面积
@@ -914,12 +931,17 @@ class LineChart(QWidget):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
             self._points[-1][0],
         )
-        # 峰值
+        # 峰值 / 全平提示
         painter.setPen(QColor(p.text_sub))
+        peak_text = (
+            f"区间内{self._metric_label or '数值'}无变化"
+            if flat
+            else f"峰值 {_short(vmax)}" + (f" · {self._metric_label}" if self._metric_label else "")
+        )
         painter.drawText(
             QRectF(rect.left(), rect.top() - 4, rect.width(), 16),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            f"峰值 {_short(vmax)}" + (f" · {self._metric_label}" if self._metric_label else ""),
+            peak_text,
         )
         painter.end()
 
@@ -1128,9 +1150,12 @@ class ConfirmBar(QFrame):
         self.checkbox.setToolTip(text)
         self.checkbox.stateChanged.connect(self._on_checkbox)
         layout.addWidget(self.checkbox, 1)
-        # 安全模式说明做成一行小徽章，贴着主按钮——静态提示不该占掉一整块版面
+        # 安全模式说明做成一行小徽章，贴着主按钮——静态提示不该占掉一整块版面。
+        # 但窗口窄的时候它是第一个该让位的：徽章挤掉的正是「我已确认…」这句
+        # 必须看清楚的话，宁可收起徽章也不能让确认文案被截断。
         self.badge_label = QLabel(badge)
         self.badge_label.setObjectName("SafeBadge")
+        self._badge_text = badge
         self.badge_label.setVisible(bool(badge))
         layout.addWidget(self.badge_label, 0)
         self.button = QPushButton(button_text)
@@ -1139,6 +1164,29 @@ class ConfirmBar(QFrame):
         self.button.setEnabled(False)
         self.button.clicked.connect(self.triggered.emit)
         layout.addWidget(self.button)
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self._sync_badge()
+
+    def _sync_badge(self) -> None:
+        """窗口够宽才显示安全模式徽章。
+
+        徽章是**静态说明**，而左边的确认文案是必须看清的操作前提；
+        两者抢宽度时让徽章先退场（悬停徽章位置看不到也不影响任何操作，
+        完整说明在「高级选项」里还有一份）。
+        """
+        if not self._badge_text:
+            return
+        margins = self.layout().contentsMargins()
+        chrome = margins.left() + margins.right() + 12 * 2  # 三段之间的间距
+        need = (
+            self.checkbox.sizeHint().width()
+            + self.badge_label.sizeHint().width()
+            + self.button.sizeHint().width()
+            + chrome
+        )
+        self.badge_label.setVisible(self.width() >= need)
 
     def _on_checkbox(self, _state: int) -> None:
         self._sync_button()
@@ -1163,6 +1211,7 @@ class ConfirmBar(QFrame):
         self._busy = bool(busy)
         self.button.setText(text if busy else self._button_text)
         self._sync_button()
+        self._sync_badge()  # 按钮文字变了，徽章放不放得下要重新算
 
 
 def make_button(
@@ -2348,6 +2397,11 @@ class CheckReportView(QWidget):
     旧版把「必须修改 / 建议修改」写成红字黄字刷满列表，看起来像程序崩了；
     这里整条用极浅底色包住，文字回归常规深灰，只有左侧色条承担级别信号。
     阻断项常驻并带「去修改」按钮（哪个错就修哪个），建议项默认折叠成一行。
+
+    布局上有一条硬约束：**阻断项与展开后的建议项必须待在同一个滚动区里**。
+    旧版把建议区放在滚动区外面，展开 4 条建议就要 480px，而检查栏本身往往只有
+    一百多像素——卡片直接被裁掉，下面的预览区也被一起顶变形。用户看到的就是
+    「发布前检查那一栏显示不全」。
     """
 
     fix_requested = Signal(object)
@@ -2361,9 +2415,10 @@ class CheckReportView(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(8)
+        outer.setSpacing(6)
 
         self.scroll = QScrollArea()
+        self.scroll.setObjectName("CheckScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -2375,18 +2430,13 @@ class CheckReportView(QWidget):
         self.scroll.setWidget(holder)
         outer.addWidget(self.scroll, 1)
 
+        # 「有 N 条建议修改」常驻在滚动区外：不管滚到哪儿都点得到
         self.toggle = QPushButton("")
         self.toggle.setObjectName("SuggestionToggle")
         self.toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle.setVisible(False)
         self.toggle.clicked.connect(self._toggle_suggestions)
         outer.addWidget(self.toggle)
-        self.suggestion_box = QWidget()
-        self.suggestion_layout = QVBoxLayout(self.suggestion_box)
-        self.suggestion_layout.setContentsMargins(0, 0, 0, 0)
-        self.suggestion_layout.setSpacing(8)
-        self.suggestion_box.setVisible(False)
-        outer.addWidget(self.suggestion_box)
 
     # -- 数据 ------------------------------------------------------------
     def set_items(self, items: Sequence[Any]) -> None:
@@ -2400,10 +2450,9 @@ class CheckReportView(QWidget):
         self._errors = []
         self._advisories = []
         self._clear(self.column)
-        self._clear(self.suggestion_layout)
         self.toggle.setVisible(False)
-        self.suggestion_box.setVisible(False)
         self.column.insertWidget(0, self._card(None, text, level=level))
+        self._sync_holder_height()
 
     def _clear(self, layout: QVBoxLayout) -> None:
         while layout.count() > 1:  # 保留末尾的 stretch
@@ -2415,7 +2464,6 @@ class CheckReportView(QWidget):
 
     def _rebuild(self) -> None:
         self._clear(self.column)
-        self._clear(self.suggestion_layout)
         index = 0
         if not self._errors and not self._advisories:
             self.column.insertWidget(index, self._card(None, "未发现问题，可以发布", level="ok"))
@@ -2423,15 +2471,43 @@ class CheckReportView(QWidget):
         for item in self._errors:
             self.column.insertWidget(index, self._card(item, getattr(item, "title", ""), level="error"))
             index += 1
-        for item in self._advisories:
-            self.suggestion_layout.addWidget(self._card(item, getattr(item, "title", ""), level="warn"))
+        if self._suggest_open:
+            for item in self._advisories:
+                self.column.insertWidget(index, self._card(item, getattr(item, "title", ""), level="warn"))
+                index += 1
 
         count = len(self._advisories)
         self.toggle.setVisible(count > 0)
         if count:
             arrow = "▾" if self._suggest_open else "▸"
             self.toggle.setText(f"{arrow} 有 {count} 条建议修改（不阻断发布）")
-        self.suggestion_box.setVisible(count > 0 and self._suggest_open)
+        self._sync_holder_height()
+
+    def _sync_holder_height(self) -> None:
+        """让滚动内容保持「该多高就多高」，而不是被视口压扁。
+
+        带自动换行的 QLabel 会把 ``minimumSizeHint`` 报得很小（反正能折行），
+        于是 ``QScrollArea`` 在内容比视口高的时候选择**压缩控件**而不是出滚动条，
+        卡片被压成半截、建议文字只剩一行。把内容容器的最小高度钉到当前宽度下
+        真正需要的高度，滚动条才会正常出现。
+        """
+        holder = self.scroll.widget()
+        if holder is None:
+            return
+        width = self.scroll.viewport().width()
+        need = 0
+        try:
+            if width > 0:
+                need = int(self.column.heightForWidth(width))
+        except Exception:  # noqa: BLE001 - 拿不到就退回 sizeHint
+            need = 0
+        if need <= 0:
+            need = int(self.column.sizeHint().height())
+        holder.setMinimumHeight(max(0, need))
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self._sync_holder_height()
 
     def _toggle_suggestions(self) -> None:
         self._suggest_open = not self._suggest_open
@@ -3065,6 +3141,75 @@ class CategoryPicker(QPushButton):
         self._popup.move(origin)
         self._popup.show()
         self._popup.raise_()
+
+
+class FlowSteps(QWidget):
+    """横向流程步骤条：发布中心左右两列卡片各自滚动时，靠它随时看出整体进度。
+
+    步骤编号原本散在两列的卡片标题里（1、2 在左，3、4 在右），滚动之后
+    用户就不知道自己在第几步；这条常驻顶部的步骤条把 4 个阶段拉平展示。
+    """
+
+    def __init__(self, labels: Sequence[str], theme: str = "light", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("FlowSteps")
+        self._theme = theme
+        self._current = 0
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(0)
+        self._items: list[tuple[QLabel, QLabel, QLabel]] = []
+        for index, label in enumerate(labels):
+            dot = QLabel(str(index + 1))
+            dot.setObjectName("FlowStepDot")
+            dot.setFixedSize(18, 18)
+            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            text = QLabel(label)
+            text.setObjectName("FlowStepText")
+            layout.addWidget(dot)
+            layout.addSpacing(6)
+            layout.addWidget(text)
+            if index < len(labels) - 1:
+                line = QLabel()
+                line.setObjectName("FlowStepLine")
+                line.setFixedWidth(26)
+                line.setFixedHeight(2)
+                layout.addSpacing(6)
+                layout.addWidget(line, 0, Qt.AlignmentFlag.AlignVCenter)
+                layout.addSpacing(6)
+            else:
+                layout.addStretch(1)
+            self._items.append((dot, text, line if index < len(labels) - 1 else text))
+        self.set_current(0)
+
+    def set_current(self, index: int) -> None:
+        """index 从 0 开始；小于它的步骤标完成，等于它的标当前。"""
+        self._current = index
+        p = palette(self._theme)
+        for step, (dot, text, _line) in enumerate(self._items):
+            if step < index:
+                dot.setStyleSheet(
+                    f"background: {p.accent}; color: {p.on_accent}; border-radius: 9px;"
+                    " font-size: 11px; font-weight: 600;"
+                )
+                text.setStyleSheet(f"color: {p.text_sub}; font-size: 12px;")
+            elif step == index:
+                dot.setStyleSheet(
+                    f"background: transparent; color: {p.accent}; font-size: 11px;"
+                    f" font-weight: 700; border: 1.5px solid {p.accent}; border-radius: 9px;"
+                )
+                text.setStyleSheet(f"color: {p.accent}; font-size: 12px; font-weight: 600;")
+            else:
+                dot.setStyleSheet(
+                    f"background: {p.bg_alt}; color: {p.text_faint}; font-size: 11px;"
+                    " border-radius: 9px;"
+                )
+                text.setStyleSheet(f"color: {p.text_faint}; font-size: 12px;")
+            dot.setText("✓" if step < index else str(step + 1))
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.set_current(self._current)
 
 
 class AdviceBar(QFrame):

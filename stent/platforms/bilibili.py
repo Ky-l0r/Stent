@@ -7,10 +7,22 @@
   因此这里**不引入 biliup**，改为用 Playwright 走 ``member.bilibili.com/platform/upload/video/frame``
   Web 投稿页（同一套登录态 ``profile_dir()`` 持久化），并保留其参数语义：
   标题 ≤ 80 字、简介 ≤ 2000 字、标签 ≤ 10、分区名 → tid 映射、封面、转载来源。
-- 分区名 → tid 映射沿用 ``bili_upload.py`` 的 ``PARTITIONS`` 表（见下方 PARTITIONS）。
+- 分区名 → tid 映射沿用 ``bili_upload.py`` 的 ``PARTITIONS`` 表，但那份表已被 B 站
+  改版淘汰（既混了父分区 id 又混了子分区 id，而投稿页只收叶子分区）。现在优先用
+  **投稿页自己拉回来的实时分区树**（``archive/pre`` 接口，见 :func:`resolve_partition`），
+  静态表只作离线兜底。
 - 登录改用 Web 扫码（不再走 TV 端 QR API + segno），以便与其它平台统一为 Playwright 持久化登录态。
 
-风控约束同其它平台：单次人工触发发布，``dry_run=True`` 时只填表单、绝不点击「立即投稿」。
+改版适配（2025 版投稿页）：
+
+- 简介不再是 ``textarea``，而是 ``.desc-container`` 里的 **Quill 富文本**，
+  真实可编辑节点是 ``.ql-editor``；写入走 Quill 实例并读回校验（见 :meth:`BiliBiliAdapter._fill_description`）。
+- 分区下拉从「搜索框 + ``.bcc-option``」换成「一级 ``.drop-f-item`` → 二级 ``.drop-t-item``」两栏结构。
+- 简介字段 = 创作页的「简介」+「正文」：B 站没有别处能放正文，只填正文会把用户
+  单独改过的简介丢掉（见 :func:`compose_description`）。
+
+风控约束同其它平台：单次人工触发发布，``dry_run=True`` 时只填表单、绝不点击「立即投稿」；
+填完后**浏览器保持打开**等人工确认，而不是一返回就把窗口关掉。
 """
 
 from __future__ import annotations
@@ -19,6 +31,7 @@ import json
 import re
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +43,7 @@ from ._browser import (
     extract_metric_from_text,
     first_visible,
     first_visible_text,
+    hold_for_review,
     open_browser,
     parse_cn_number,
     paste_into_focused,
@@ -77,6 +91,81 @@ PARTITIONS: dict[str, int] = {
     "母婴": 216, "家居": 239, "旅游": 250, "三农": 251,
 }
 DEFAULT_PARTITION = "知识"
+
+#: 分区静态兜底表：``用户写的名字 → (父分区名, 子分区名, tid)``。
+#:
+#: 上面的 ``PARTITIONS`` 是从上游 biliup 抄来的老表，B 站改版后**半数已失效**：
+#: 既混了父分区 id（生活 160、知识 36）又混了子分区 id，而投稿页只接受**叶子**
+#: 分区——填父分区 id 会被拒。这里按投稿页的真实分区树重新整理一份，
+#: 并且带上「父分区名」，因为新版下拉是先选一级、再选二级。
+#:
+#: 这只是**离线兜底**：正常情况下会用已登录页面里的 ``archive/pre`` 接口
+#: 拉取实时分区树（见 :func:`resolve_partition`），平台改版也能自动跟上。
+PARTITION_FALLBACK: dict[str, tuple[str, str, int]] = {
+    # 生活
+    "生活": ("生活", "日常", 21), "日常": ("生活", "日常", 21),
+    "搞笑": ("生活", "搞笑", 138), "出行": ("生活", "出行", 250),
+    "旅游": ("生活", "出行", 250), "三农": ("生活", "三农", 251),
+    "家居房产": ("生活", "家居房产", 239), "家居": ("生活", "家居房产", 239),
+    "手工": ("生活", "手工", 161), "绘画": ("生活", "绘画", 162),
+    "亲子": ("生活", "亲子", 254),
+    # 知识
+    "知识": ("知识", "科学科普", 201), "科普": ("知识", "科学科普", 201),
+    "科学科普": ("知识", "科学科普", 201),
+    "社科·法律·心理": ("知识", "社科·法律·心理", 124),
+    "人文历史": ("知识", "人文历史", 228), "财经商业": ("知识", "财经商业", 207),
+    "校园学习": ("知识", "校园学习", 208), "校园": ("知识", "校园学习", 208),
+    "职业职场": ("知识", "职业职场", 209), "职场": ("知识", "职业职场", 209),
+    "设计·创意": ("知识", "设计·创意", 229), "野生技能协会": ("知识", "野生技能协会", 122),
+    # 科技
+    "科技": ("科技", "软件应用", 230), "软件应用": ("科技", "软件应用", 230),
+    "数码": ("科技", "数码", 95), "计算机技术": ("科技", "计算机技术", 231),
+    "科工机械": ("科技", "科工机械", 232), "极客DIY": ("科技", "极客DIY", 233),
+    # 游戏
+    "游戏": ("游戏", "单机游戏", 17), "单机游戏": ("游戏", "单机游戏", 17),
+    "网络游戏": ("游戏", "网络游戏", 65), "手机游戏": ("游戏", "手机游戏", 172),
+    "电子竞技": ("游戏", "电子竞技", 171), "桌游棋牌": ("游戏", "桌游棋牌", 173),
+    # 音乐
+    "音乐": ("音乐", "原创音乐", 28), "原创音乐": ("音乐", "原创音乐", 28),
+    "翻唱": ("音乐", "翻唱", 31), "演奏": ("音乐", "演奏", 59),
+    # 娱乐
+    "娱乐": ("娱乐", "娱乐杂谈", 241), "娱乐杂谈": ("娱乐", "娱乐杂谈", 241),
+    "综艺": ("娱乐", "综艺", 71), "明星综合": ("娱乐", "明星综合", 137),
+    # 影视
+    "影视": ("影视", "影视杂谈", 182), "影视杂谈": ("影视", "影视杂谈", 182),
+    "影视剪辑": ("影视", "影视剪辑", 183), "短片": ("影视", "短片", 256),
+    # 动画
+    "动画": ("动画", "综合", 27), "综合": ("动画", "综合", 27),
+    "MAD·AMV": ("动画", "MAD·AMV", 24), "MMD·3D": ("动画", "MMD·3D", 25),
+    # 时尚
+    "时尚": ("时尚", "穿搭", 158), "穿搭": ("时尚", "穿搭", 158),
+    "美妆护肤": ("时尚", "美妆护肤", 157), "美妆": ("时尚", "美妆护肤", 157),
+    # 美食
+    "美食": ("美食", "美食制作", 76), "美食制作": ("美食", "美食制作", 76),
+    "美食测评": ("美食", "美食测评", 213),
+    # 运动
+    "运动": ("运动", "运动综合", 238), "运动综合": ("运动", "运动综合", 238),
+    "健身": ("运动", "健身", 164), "篮球": ("运动", "篮球", 235), "足球": ("运动", "足球", 249),
+    # 汽车
+    "汽车": ("汽车", "汽车生活", 176), "汽车生活": ("汽车", "汽车生活", 176),
+    "新能源车": ("汽车", "新能源车", 247),
+    # 动物圈
+    "动物圈": ("动物圈", "动物综合", 75), "动物": ("动物圈", "动物综合", 75),
+    "喵星人": ("动物圈", "喵星人", 218), "汪星人": ("动物圈", "汪星人", 219),
+    # 舞蹈
+    "舞蹈": ("舞蹈", "舞蹈综合", 154), "舞蹈综合": ("舞蹈", "舞蹈综合", 154),
+    "宅舞": ("舞蹈", "宅舞", 20), "街舞": ("舞蹈", "街舞", 198),
+    # 鬼畜
+    "鬼畜": ("鬼畜", "鬼畜调教", 22), "鬼畜调教": ("鬼畜", "鬼畜调教", 22),
+    # 纪录片
+    "纪录片": ("纪录片", "人文·历史", 37), "人文·历史": ("纪录片", "人文·历史", 37),
+}
+
+#: 静态表里出现过的一级分区名，用来判断下拉文案里是否写着**别的**一级分区。
+#: 「生活/日常」与「知识/日常」这类重名二级只靠名字分不开，得看一级。
+KNOWN_PARENT_NAMES: tuple[str, ...] = tuple(
+    dict.fromkeys(parent for parent, _child, _tid in PARTITION_FALLBACK.values())
+)
 
 #: 视频扩展名（发布前粗校验；不做转码）
 VIDEO_SUFFIXES: tuple[str, ...] = (
@@ -134,9 +223,23 @@ UPLOAD_AREA_SELECTORS: tuple[str, ...] = (
 #: 表单字段
 TITLE_SELECTORS: tuple[str, ...] = (
     'input[placeholder*="标题"]',
+    ".video-title .input-val",
     ".video-title-container input",
     'input[maxlength="80"]',
     '[class*="title"] input[type="text"]',
+)
+
+#: 简介字段：B 站改版后**不再是 textarea**，而是 ``.desc-container`` 里的 Quill
+#: 富文本编辑器。真实可编辑节点是 ``.ql-editor``（contenteditable），
+#: Quill 实例挂在它外层的 ``.ql-container.__quill`` 上。
+#: 旧选择器（``[class*="desc"] textarea`` 等）在新版页面上一个都命中不了，
+#: 于是简介永远填不进去——用户看到的正是「卡在内容备注那里」。
+DESC_EDITOR_SELECTORS: tuple[str, ...] = (
+    ".desc-container .ql-editor",
+    ".desc-container [contenteditable='true']",
+    ".desc-container .editor",
+    ".archive-info-editor .ql-editor",
+    "[class*='desc'] [contenteditable='true']",
 )
 DESC_SELECTORS: tuple[str, ...] = (
     '[class*="desc"] textarea',
@@ -147,30 +250,75 @@ DESC_SELECTORS: tuple[str, ...] = (
 )
 TAG_SELECTORS: tuple[str, ...] = (
     '[class*="tag"] input',
-    'input[placeholder*="标签"]',
     'input[placeholder*="按回车键Enter创建标签"]',
+    'input[placeholder*="标签"]',
     '[class*="tag-container"] input',
 )
 TAG_DELETE_SELECTORS: tuple[str, ...] = (
     '[class*="tag"] [class*="close"]',
+    ".label-item-v2-container .close",
     '[class*="tag-item"] svg',
     '[class*="tag"] .bcc-icon-close',
 )
+
+#: 分区下拉：新版是「先选一级分区、再选二级分区」的两栏结构
+#: （``.drop-f-item`` = 一级，``.drop-t-item`` = 二级）。
 PARTITION_TRIGGER_SELECTORS: tuple[str, ...] = (
+    ".video-type .select-container .select-controller",
+    ".video-type .select-controller",
     '[class*="select-container"]',
     ".bcc-select .bcc-select-view",
     '[class*="partition"] [class*="select"]',
     'div:has-text("请选择分区")',
 )
-PARTITION_OPTION_SELECTORS: tuple[str, ...] = (
-    ".bcc-select-dropdown .bcc-option",
-    ".bcc-option",
-    "[class*='option']",
+PARTITION_PARENT_SELECTORS: tuple[str, ...] = (
+    ".drop-container .drop-f-item",
+    ".drop-f-item",
+)
+PARTITION_CHILD_SELECTORS: tuple[str, ...] = (
+    ".drop-container .drop-t-item",
+    ".drop-t-item",
 )
 PARTITION_SEARCH_SELECTORS: tuple[str, ...] = (
     '[class*="select"] input',
     ".bcc-select-dropdown input",
 )
+#: 实时分区树接口：在已登录的投稿页里 fetch 即可，登录态由浏览器自动带上。
+#: 用它而不是写死分区表，平台调整分区时不用改代码。
+PARTITION_API = "https://member.bilibili.com/x/vupre/web/archive/pre"
+
+#: 把文本写进 Quill 编辑器：直接调组件自己的实例，改完让 Vue 模型同步。
+#: ``source='user'`` 是关键——组件的 text-change 回调只在 source 为 user 时才
+#: 向上 emit，用默认的 api 源写进去的话界面看着有字、提交时却是空的。
+QUILL_SET_TEXT_JS = """
+(args) => {
+  const [selector, text] = args;
+  const root = document.querySelector(selector);
+  if (!root) return false;
+  const holder = root.closest('.ql-container') || root;
+  const quill = holder.__quill || root.__quill;
+  if (!quill) return false;
+  try {
+    quill.setText(text, 'user');
+    quill.setSelection(quill.getLength(), 0, 'user');
+    return quill.getText().trim().length > 0;
+  } catch (err) {
+    return false;
+  }
+}
+"""
+
+#: 读回编辑器内容（用来确认「真的写进去了」，而不是只看 DOM 上有没有字）
+QUILL_READ_JS = """
+(selector) => {
+  const root = document.querySelector(selector);
+  if (!root) return null;
+  const holder = root.closest('.ql-container') || root;
+  const quill = holder.__quill || root.__quill;
+  if (quill) return quill.getText();
+  return root.innerText;
+}
+"""
 COVER_INPUT_SELECTORS: tuple[str, ...] = (
     'input[type="file"][accept*="image"]',
     '[class*="cover"] input[type="file"]',
@@ -197,6 +345,10 @@ TOAST_SELECTORS: tuple[str, ...] = (
     ".bcc-message",
     "[class*='message'] [class*='content']",
     "[class*='toast']",
+)
+#: 投稿成功后页面会跳到这些地址（人工确认阶段也用它判断「已经发出去了」）
+SUBMIT_SUCCESS_URL_KEYWORDS: tuple[str, ...] = (
+    "upload-manager", "archive-list", "upload/text", "success",
 )
 FAIL_TEXTS: tuple[str, ...] = (
     "投稿失败", "提交失败", "上传失败", "失败", "错误", "请先", "请选择", "请上传", "不能为空", "不符合",
@@ -237,15 +389,118 @@ DEBUG_DIR_NAME = "debug"
 # --------------------------------------------------------------------------- #
 
 def resolve_tid(partition: str | None) -> int | None:
-    """分区名/数字 → tid；无法识别返回 None（调用方退化为人工选择）。"""
-    if not partition:
-        return PARTITIONS.get(DEFAULT_PARTITION)
-    text = str(partition).strip()
-    if not text:
-        return PARTITIONS.get(DEFAULT_PARTITION)
+    """分区名/数字 → tid。
+
+    优先查整理过的**叶子分区**表（投稿页只接受叶子分区，填一级分区 id 会被拒），
+    认不出来时退回默认分区，最后才去翻老表。
+    """
+    text = str(partition or "").strip()
     if text.isdigit():
         return int(text)
-    return PARTITIONS.get(text)
+    entry = PARTITION_FALLBACK.get(text) or PARTITION_FALLBACK.get(DEFAULT_PARTITION)
+    if entry:
+        return entry[2]
+    return PARTITIONS.get(text) or PARTITIONS.get(DEFAULT_PARTITION)
+
+
+@dataclass(frozen=True)
+class PartitionChoice:
+    """投稿分区的最终落点：一级分区名 + 二级分区名 + 二级 tid。
+
+    新版投稿页的下拉是两栏（先一级、再二级），所以「填哪个 tid」不够，
+    还得知道它挂在哪一级下面，否则点不到。
+    """
+
+    parent: str
+    child: str
+    tid: int
+
+    def label(self) -> str:
+        return f"{self.parent} · {self.child}"
+
+
+def flatten_typelist(typelist: Any) -> list[PartitionChoice]:
+    """把 ``archive/pre`` 返回的分区树摊平成「父名 / 子名 / 子 tid」列表。"""
+    out: list[PartitionChoice] = []
+    for parent in typelist or []:
+        if not isinstance(parent, dict):
+            continue
+        parent_name = str(parent.get("name") or "").strip()
+        children = parent.get("children") or []
+        if not isinstance(children, (list, tuple)):
+            continue
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            child_name = str(child.get("name") or "").strip()
+            tid = _safe_int(child.get("id"))
+            if child_name and tid:
+                out.append(PartitionChoice(parent_name, child_name, tid))
+    return out
+
+
+def resolve_partition(
+    partition: str | None = None,
+    *,
+    tid: Any = None,
+    typelist: Any = None,
+) -> PartitionChoice | None:
+    """把「用户写的分区名 / tid」解析成可在下拉里点选的一对分区。
+
+    优先用 ``typelist``（投稿页实时拉回来的分区树），拿不到时退回静态表。
+    匹配顺序：精确 tid → 精确二级名 → 精确一级名（取该级第一个二级）→
+    包含关系 → 静态兜底 → 默认分区。
+    """
+    choices = flatten_typelist(typelist)
+    want_tid = _safe_int(tid)
+    if want_tid:
+        for choice in choices:
+            if choice.tid == want_tid:
+                return choice
+    name = str(partition or "").strip()
+    if name and choices:
+        for choice in choices:
+            if choice.child == name:
+                return choice
+        for choice in choices:
+            if choice.parent == name:
+                return choice
+        for choice in choices:
+            if name in choice.child or choice.child in name:
+                return choice
+        for choice in choices:
+            if name in choice.parent:
+                return choice
+
+    # 静态兜底：实时分区树拿不到（接口挂了 / 未登录）时至少别把分区留空
+    for key in (name, DEFAULT_PARTITION):
+        entry = PARTITION_FALLBACK.get(key)
+        if entry:
+            parent, child, child_tid = entry
+            return PartitionChoice(parent, child, want_tid or child_tid)
+    if want_tid:
+        return PartitionChoice("", "", want_tid)
+    return None
+
+
+def compose_description(summary: str, body: str) -> str:
+    """B 站简介字段的最终内容：简介在前、正文在后，重复的部分不重复贴。
+
+    B 站的视频简介是**唯一**的长文本字段（没有别处能放正文），而创作页里
+    「简介」与「正文」是两个独立输入框。以前只把正文填进去，用户在创作页
+    精心改过的简介就被静默丢掉了；两段都带上才算「所见即所得」。
+    """
+    text_summary = (summary or "").strip()
+    text_body = (body or "").strip()
+    if not text_summary:
+        return text_body
+    if not text_body:
+        return text_summary
+    if text_summary in text_body:
+        return text_body
+    if text_body in text_summary:
+        return text_summary
+    return f"{text_summary}\n\n{text_body}"
 
 
 def is_video_file(path: str) -> bool:
@@ -319,6 +574,8 @@ class BiliBiliAdapter(PlatformAdapter):
     supports_auto_publish = True
     #: 走创作中心接口，列表自带全部指标，是最可靠的一条导入路径
     supports_account_import = True
+    #: 视频简介是独立字段：创作页里编辑过的「简介」要一并填进去
+    uses_summary = True
     metrics_hint = "B 站单篇数据取自公开接口（播放/点赞/评论/收藏/分享）"
 
     @property
@@ -474,11 +731,14 @@ class BiliBiliAdapter(PlatformAdapter):
         dry_run: bool = False,
         timeout_sec: int = 300,
         on_progress: Any = None,
+        cancel: Any = None,
     ) -> PublishResult:
         extra = payload.extra or {}
         title = (payload.title or "").strip()
-        body = (payload.body or "").strip()
         tags = [str(t).strip().lstrip("#") for t in (payload.tags or []) if str(t).strip()]
+        # 简介字段 = 创作页的「简介」+「正文」：B 站没有别的地方能放正文，
+        # 而用户在创作页单独改过的简介以前会被静默丢掉。
+        body = compose_description(payload.summary or "", payload.body or "")
         lim = self.limits
 
         if not title:
@@ -486,7 +746,13 @@ class BiliBiliAdapter(PlatformAdapter):
         if len(title) > lim.title_max:
             return PublishResult(ok=False, message=f"标题过长（{len(title)}/{lim.title_max} 字），请精简后再投稿")
         if len(body) > lim.body_max:
-            return PublishResult(ok=False, message=f"简介过长（{len(body)}/{lim.body_max} 字），请精简后再投稿")
+            return PublishResult(
+                ok=False,
+                message=(
+                    f"简介字段合计 {len(body)} 字，超过 B 站上限 {lim.body_max} 字"
+                    "（简介 = 创作页的「简介」+「正文」），请精简后再投稿"
+                ),
+            )
         if len(tags) > lim.tags_max:
             return PublishResult(ok=False, message=f"标签过多（{len(tags)}/{lim.tags_max}），请删减后再投稿")
         media = [p for p in (payload.media or []) if p]
@@ -514,6 +780,7 @@ class BiliBiliAdapter(PlatformAdapter):
                         sess.page, title=title, body=body, tags=tags, video=str(video),
                         partition=partition, tid=tid, cover=cover,
                         dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
+                        cancel=cancel, extra=extra,
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(sess.page, self._debug_dir(), "bilibili", "publish-error")
@@ -526,6 +793,7 @@ class BiliBiliAdapter(PlatformAdapter):
         self, page: Any, *, title: str, body: str, tags: list[str], video: str,
         partition: str, tid: int, cover: str,
         dry_run: bool, timeout_sec: int, on_progress: Any,
+        cancel: Any = None, extra: Any = None,
     ) -> PublishResult:
         budget = max(120, timeout_sec)
         deadline = time.time() + budget
@@ -566,29 +834,41 @@ class BiliBiliAdapter(PlatformAdapter):
             return PublishResult(ok=False, message="未找到稿件标题输入框（B 站可能改版）"
                                                 + (f"，现场：{where}" if where else ""))
 
+        # 没能自动填好的项目，收尾时一并告诉用户。
+        # 用局部变量而不是挂到 self 上：适配器是单例，实例属性会在并发调用间串味。
+        warnings: list[str] = []
+
         self._log(on_progress, "填写简介…", 58)
-        self._set_field(page, DESC_SELECTORS, body, multiline=True, required=False)
+        if not self._fill_description(page, body):
+            # 简介填不进去不该直接判失败（用户还能在浏览器里手打），
+            # 但必须说清楚，否则就是用户遇到的「卡在内容备注那里」还没人告诉他
+            where = dump_debug(page, self._debug_dir(), "bilibili", "no-desc-editor")
+            self._log(on_progress, "未能自动填写简介，请在浏览器里手动补上", 58)
+            warnings.append(
+                "简介未自动填写（未找到简介编辑器），请在浏览器里手动补上"
+                + (f"，现场：{where}" if where else "")
+            )
 
         self._log(on_progress, "填写标签…", 66)
         self._fill_tags(page, tags)
 
+        # 优先用页面实时拉回来的分区树，点「一级 → 二级」
         self._log(on_progress, f"选择分区（{partition}）…", 74)
-        if not self._select_partition(page, partition, tid):
+        choice = self._select_partition(page, partition, tid)
+        if choice is None:
             self._log(on_progress, "分区自动选择失败，请在提交前人工确认分区", 74)
+            warnings.append("分区未自动选择，请在浏览器里手动确认")
+        else:
+            self._log(on_progress, f"分区已选：{choice.label()}", 74)
 
         if cover:
             self._log(on_progress, "上传封面…", 80)
             self._upload_cover(page, cover)
 
         if dry_run:
-            self._log(on_progress, "已填写完成，等待人工确认（未点击投稿）", 90)
-            return PublishResult(
-                ok=True,
-                url=page.url or UPLOAD_URL,
-                message="已填写完成，等待人工确认",
-                detail={"dry_run": True, "video": video, "tags": tags,
-                        "partition": partition, "tid": tid,
-                        "hint": "确认标题/封面/分区无误后，在浏览器窗口内手动点击「立即投稿」"},
+            return self._hold_dry_run(
+                page, on_progress=on_progress, cancel=cancel, extra=extra,
+                video=video, tags=tags, partition=partition, tid=tid, warnings=warnings,
             )
 
         self._log(on_progress, "等待「立即投稿」按钮就绪…", 85)
@@ -611,6 +891,71 @@ class BiliBiliAdapter(PlatformAdapter):
         return PublishResult(ok=False, url=url,
                              message=message + (f"，现场已落盘：{where}" if where else ""),
                              detail={"unconfirmed": True})
+
+    def _hold_dry_run(
+        self, page: Any, *, on_progress: Any, cancel: Any, extra: Any,
+        video: str, tags: list[str], partition: str, tid: int, warnings: list[str],
+    ) -> PublishResult:
+        """dry-run 收尾：**不关浏览器**，等用户在页面里点「立即投稿」或自己关掉窗口。
+
+        以前这里直接 return，``open_browser`` 的 finally 立刻 ``close()``——
+        表单刚填好浏览器就自己关了，用户既没时间核对也来不及点投稿，
+        填进去的东西自然「什么都不会保存」。这是「自动填写 + 人工确认」
+        这条产品线的最后一环，缺了它前面全白做。
+        """
+        message = hold_for_review(
+            page,
+            extra=extra,
+            on_progress=on_progress,
+            cancel=cancel,
+            probe=lambda: self._submission_signal(page),
+            done_hint="表单已填写完成（未点击投稿）",
+        )
+        # 警告只放在 detail 里，由发布页统一拼成「注意：…」那一段。
+        # 以前这里把警告也拼进 message，而发布页拿到 detail 后又拼一遍，
+        # 同一条提醒在界面上出现两次（还带着一长串现场路径，看着像出错了两次）。
+        notes = [note for note in warnings if note]
+        return PublishResult(
+            ok=True,
+            url=page.url or UPLOAD_URL,
+            message=message,
+            detail={
+                "dry_run": True, "video": video, "tags": tags,
+                "partition": partition, "tid": tid, "warnings": notes,
+                "hint": "确认标题/封面/分区无误后，在浏览器窗口内手动点击「立即投稿」",
+            },
+        )
+
+    def _submission_signal(self, page: Any) -> str:
+        """非阻塞地判断用户是否已经在浏览器里完成投稿；没有则返回空串。
+
+        只有「页面跳走」或「出现投稿类成功提示」才算数——投稿页自己会弹
+        「上传成功」，那是上传完成而不是投稿完成，不能混为一谈。
+        """
+        try:
+            url = page.url or ""
+        except Exception:
+            return ""
+        if url != UPLOAD_URL and any(key in url for key in SUBMIT_SUCCESS_URL_KEYWORDS):
+            return f"已检测到你完成了投稿（页面已跳转），请回「发布记录」把它标记为已发布"
+        for selector in TOAST_SELECTORS:
+            try:
+                element = page.query_selector(selector)
+            except Exception:
+                continue
+            if element is None:
+                continue
+            try:
+                text = (element.inner_text() or "").strip()
+            except Exception:
+                continue
+            if not text:
+                continue
+            if any(key in text for key in ("投稿", "稿件", "提交")) and any(
+                key in text for key in ("成功", "已提交", "审核")
+            ):
+                return f"已检测到你完成了投稿（{text[:30]}），请回「发布记录」把它标记为已发布"
+        return ""
 
     def _upload_video(self, page: Any, video: str) -> bool:
         """通过 file input 塞视频；找不到 input 时退化为点击上传区触发 filechooser。"""
@@ -679,15 +1024,24 @@ class BiliBiliAdapter(PlatformAdapter):
                 page.keyboard.press("Delete")
                 if paste_into_focused(page, value):
                     page.wait_for_timeout(500)
-                    return True
+                    # 读回确认再收工：``paste_into_focused`` 派发的是合成 ClipboardEvent，
+                    # 只有富文本编辑器（Draft.js/slate/Quill 等）会认；原生 textarea 的
+                    # value 不会被它改动，而 ``el.dispatchEvent`` 本身一定会「成功」。
+                    # 以前这里直接 return True，于是普通 textarea 上简介一个字都没进去
+                    # 也报填写成功——用户看到的就是「简介填不进去」却没有任何提示。
+                    if self._element_has_text(el, value) is not False:
+                        return True
             except Exception:
                 pass
-            return clear_and_type(page, el, value, delay_ms=6)
+            if clear_and_type(page, el, value, delay_ms=6):
+                return self._element_has_text(el, value) is not False
+            return False
         if clear_and_type(page, el, value, delay_ms=10):
-            return True
+            # 同样读回确认：拿到确切证据说「没写进去」才算失败，读不出来则不妄下结论
+            return self._element_has_text(el, value) is not False
         try:
             el.fill(value)
-            return True
+            return self._element_has_text(el, value) is not False
         except Exception:
             return not required
 
@@ -723,42 +1077,224 @@ class BiliBiliAdapter(PlatformAdapter):
                 continue
         return filled
 
-    def _select_partition(self, page: Any, partition: str, tid: int) -> bool:
-        """选择投稿分区：搜索框输入分区名 → 点命中项；失败返回 False（交由人工确认）。"""
-        trigger = first_visible(page, PARTITION_TRIGGER_SELECTORS)
-        if trigger is None:
+    # -- 简介（Quill 富文本） -------------------------------------------
+    def _fill_description(self, page: Any, text: str) -> bool:
+        """填写简介字段。
+
+        新版投稿页的简介是 Quill 富文本（``.desc-container`` 里的 ``.ql-editor``），
+        老版是 ``textarea``。三条路依次尝试，能确认「真的写进去了」才算成功：
+
+        1. 直接调 Quill 实例（``.ql-container.__quill``）写入，并读回校验；
+        2. 拿不到实例时，按真人输入的方式聚焦 + 全选 + 逐字敲；
+        3. 最后才是老版的 textarea 路径（同样读回确认）。
+
+        三条路都走不通时返回 False——调用方据此把「简介未自动填写」列进收尾提醒。
+        第 3 条以前用的是「找不到元素也算过关」的语义，于是简介一个字都没填进去
+        也报成功，那句提醒永远不会出现，用户看到的还是「卡在内容备注那里」。
+        """
+        if not text:
+            return True
+        for selector in DESC_EDITOR_SELECTORS:
+            if self._fill_quill(page, selector, text):
+                return True
+        element = first_visible(page, DESC_EDITOR_SELECTORS)
+        if element is not None:
+            if clear_and_type(page, element, text, delay_ms=4) and self._editor_has_text(page, text):
+                return True
+        # 老版 textarea 兜底：填完同样要读回确认。
+        legacy = first_visible(page, DESC_SELECTORS)
+        if legacy is None:
             return False
-        click_soft(trigger)
-        page.wait_for_timeout(800)
-        search = first_visible(page, PARTITION_SEARCH_SELECTORS)
-        if search is not None:
+        if not self._set_field(page, DESC_SELECTORS, text, multiline=True, required=False):
+            return False
+        return self._element_has_text(legacy, text) is not False
+
+    @staticmethod
+    def _element_has_text(element: Any, text: str) -> bool | None:
+        """读回普通表单控件的内容做确认：True 已写入 / False 确实没写进去 / None 无法判定。
+
+        与 :meth:`_editor_has_text` 同一套判据：只比对开头一小段，避开换行与空白差异。
+        区分「读到了但不匹配」与「根本读不出来」很重要——后者不该被当成填写失败，
+        否则某些形态的输入框（例如没有 value 的富文本节点）会被误报成没填上。
+        """
+        head = "".join(str(text).split())[:10]
+        if not head:
+            return True
+        got: Any = None
+        for reader in ("input_value", "inner_text"):
             try:
-                search.click()
-                search.fill(partition)
-                page.wait_for_timeout(1_200)
-            except Exception:
-                pass
-        # 优先点文本完全匹配的选项
-        for sel in PARTITION_OPTION_SELECTORS:
-            try:
-                for el in page.query_selector_all(sel):
-                    try:
-                        text = (el.inner_text() or "").strip()
-                        if text == partition or (text and partition in text):
-                            if click_soft(el):
-                                page.wait_for_timeout(800)
-                                return True
-                    except Exception:
-                        continue
+                got = getattr(element, reader)()
             except Exception:
                 continue
+            if got is not None:
+                break
+        if got is None:
+            return None
+        return head in "".join(str(got).split())
+
+    def _fill_quill(self, page: Any, selector: str, text: str) -> bool:
+        """通过 Quill 实例写入并读回校验；不是富文本编辑器就返回 False。"""
         try:
-            if click_text_in(page, page, partition):
-                page.wait_for_timeout(800)
-                return True
+            written = page.evaluate(QUILL_SET_TEXT_JS, [selector, text])
         except Exception:
-            pass
+            return False
+        if not written:
+            return False
+        return self._editor_has_text(page, text, selector=selector)
+
+    @staticmethod
+    def _editor_has_text(page: Any, text: str, *, selector: str = "") -> bool:
+        """读回编辑器内容做一次确认（只比对开头一小段：Quill 会重排空白）。"""
+        head = "".join(str(text).split())[:10]
+        if not head:
+            return True
+        targets = (selector,) if selector else DESC_EDITOR_SELECTORS
+        for sel in targets:
+            try:
+                got = page.evaluate(QUILL_READ_JS, sel)
+            except Exception:
+                continue
+            if got and head in "".join(str(got).split()):
+                return True
         return False
+
+    # -- 分区 -----------------------------------------------------------
+    @staticmethod
+    def _fetch_typelist(page: Any) -> list[Any]:
+        """在已登录的投稿页里取**实时**分区树；失败返回空列表（退回静态表）。
+
+        写死分区表迟早会过期（上游那份老表已经半数失效），而这份接口就在同一个
+        页面、带着同一份登录态，一次 fetch 就能拿到当前真实的分区树。
+        """
+        try:
+            payload = page.evaluate(
+                """async (target) => {
+                    try {
+                        const resp = await fetch(target, {credentials: 'include'});
+                        const data = await resp.json();
+                        return (data && data.data && data.data.typelist) || [];
+                    } catch (err) {
+                        return [];
+                    }
+                }""",
+                PARTITION_API,
+            )
+        except Exception:
+            return []
+        return payload if isinstance(payload, list) else []
+
+    @staticmethod
+    def _click_dropdown_item(page: Any, selectors: tuple[str, ...], text: str) -> bool:
+        """在下拉里按文本点中一项：精确匹配优先，其次包含匹配。"""
+        if not text:
+            return False
+        for selector in selectors:
+            try:
+                items = page.query_selector_all(selector)
+            except Exception:
+                continue
+            fallback = None
+            for element in items:
+                try:
+                    if not element.is_visible():
+                        continue
+                    label = " ".join((element.inner_text() or "").split())
+                except Exception:
+                    continue
+                if label == text:
+                    fallback = element
+                    break
+                if fallback is None and label and (text in label or label in text):
+                    fallback = element
+            if fallback is not None and click_soft(fallback):
+                return True
+        return False
+
+    def _partition_label(self, page: Any) -> str:
+        """当前下拉里显示的分区文案（形如「知识 → 科学科普」）。"""
+        element = first_visible(page, PARTITION_TRIGGER_SELECTORS)
+        if element is None:
+            return ""
+        try:
+            return " ".join((element.inner_text() or "").split())
+        except Exception:
+            return ""
+
+    def _select_partition(self, page: Any, partition: str, tid: int) -> PartitionChoice | None:
+        """选择投稿分区：一级 → 二级，两级都要点。
+
+        老实现是「在下拉里找搜索框输入分区名再点选项」，但新版下拉里**根本没有
+        搜索框**，选项类名也从 ``.bcc-option`` 换成了 ``.drop-f-item / .drop-t-item``，
+        于是它从来没有成功过——用户每次都得自己在浏览器里手选分区。
+        """
+        choice = resolve_partition(partition, tid=tid, typelist=self._fetch_typelist(page))
+        if choice is None:
+            return None
+        if self._partition_selected(page, choice):
+            return choice  # 已经是目标分区，不必再点一次
+
+        trigger = first_visible(page, PARTITION_TRIGGER_SELECTORS)
+        if trigger is None:
+            return None
+        click_soft(trigger)
+        page.wait_for_timeout(900)
+        if choice.parent:
+            if not self._click_dropdown_item(page, PARTITION_PARENT_SELECTORS, choice.parent):
+                click_text_in(page, page, choice.parent)
+            page.wait_for_timeout(900)
+        if choice.child:
+            if not self._click_dropdown_item(page, PARTITION_CHILD_SELECTORS, choice.child):
+                click_text_in(page, page, choice.child)
+            page.wait_for_timeout(900)
+        # 点完必须读回下拉文案确认真的选上了。
+        # 以前这里无条件 ``return choice``，于是「下拉里一个选项都没有」「一级点得到
+        # 但二级始终为空」这两种失败也会回报成功——调用方那条「分区未自动选择，请手动
+        # 确认」的提醒永远不会出现，用户在浏览器里才发现分区是空的。
+        return choice if self._partition_selected(page, choice, timeout_s=3.0) else None
+
+    @staticmethod
+    def _label_matches_partition(label: str, choice: PartitionChoice) -> bool:
+        """下拉文案是否就是这个分区。
+
+        以**叶子分区名**（二级）为准：空着的下拉显示「请选择分区」这类占位文案，
+        不含任何分区名，自然不匹配。真实页面刷新后可能只写二级（「科学科普」），
+        也可能把一级带上（「知识 → 科学科普」），两种都要认。
+
+        但只认二级名还不够：不同一级下会重名（「生活/日常」与「知识/日常」）。
+        所以再看一眼一级——文案里写着**别的**一级名而目标一级不在，就说明选中的
+        不是目标分区（典型场景：之前选过「生活/日常」，这次点「知识」没点中）。
+        目标一级在文案里就直接放行：二级名本身可能包含别的分区名
+        （如「汽车生活」里就含「生活」），再抠下去只会误伤。
+        """
+        text = " ".join(str(label or "").split())
+        if not text:
+            return False
+        child = str(choice.child or "").strip()
+        parent = str(choice.parent or "").strip()
+        if not child:
+            # 拿不到实时分区树时只有一级信息，能确认一级即可
+            return bool(parent) and parent in text
+        if child not in text:
+            return False
+        if not parent or parent in text:
+            return True
+        return not any(name != parent and name in text for name in KNOWN_PARENT_NAMES)
+
+    def _partition_selected(self, page: Any, choice: PartitionChoice, *, timeout_s: float = 0.0) -> bool:
+        """读回下拉文案，确认这个分区真的选上了（点了没中就不能算成功）。
+
+        ``timeout_s=0``（默认）只看当前状态；点完之后给一点宽限，等下拉把文案刷新出来。
+        """
+        deadline = time.time() + max(0.0, timeout_s)
+        while True:
+            if self._label_matches_partition(self._partition_label(page), choice):
+                return True
+            if time.time() >= deadline:
+                return False
+            try:
+                page.wait_for_timeout(300)
+            except Exception:
+                return False
 
     def _upload_cover(self, page: Any, cover: str) -> bool:
         for sel in COVER_INPUT_SELECTORS:
@@ -811,8 +1347,7 @@ class BiliBiliAdapter(PlatformAdapter):
         while time.time() < deadline:
             try:
                 url = page.url or ""
-                if url != start_url and ("upload-manager" in url or "archive-list" in url
-                                         or "upload/text" in url or "success" in url):
+                if url != start_url and any(key in url for key in SUBMIT_SUCCESS_URL_KEYWORDS):
                     return True, f"B 站投稿已提交（已跳转：{url[:70]}）", url
                 for sel in TOAST_SELECTORS:
                     try:

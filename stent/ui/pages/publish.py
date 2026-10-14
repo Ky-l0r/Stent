@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -60,6 +60,7 @@ from ..components import (
     CheckReportView,
     ConfirmBar,
     EmptyState,
+    FlowSteps,
     PageHeader,
     StatusBadgeDelegate,
     TwoLineItemDelegate,
@@ -72,6 +73,22 @@ from ..theme import palette
 from .base import BasePage
 
 log = logging.getLogger(__name__)
+
+#: 发布页右侧「检查 / 预览」两块的最小高度是按分栏器**实际**可用高度算出来的
+#: （见 :meth:`PublishPage._sync_pane_limits`），不用写死的数值：
+#: 720p 窗口下分栏器只有约 375px，而两块卡片的最小高度之和一旦超过它，
+#: QSplitter 就会把先建的那块挤出槽位、直接盖到另一块上（实测检查卡压住预览卡 9px）。
+
+#: 检查栏**可视区**的下限：至少看得下一条结果卡，不被压成一条缝。
+CHECK_VIEWPORT_MIN_H = 90
+#: 预览框的下限：再矮就看不到内容了。
+PREVIEW_EDIT_MIN_H = 96
+#: 检查卡里滚动区之外的固定高度（标题行 + 建议开关 + 内边距），实测值。
+CHECK_CARD_CHROME_H = 104
+#: 预览卡里预览框之外的固定高度（标题行 + 内边距），实测值。
+PREVIEW_CARD_CHROME_H = 74
+#: 空间实在不够、两块一起等比压缩时各自仍要保留的最小高度。
+PANE_ABS_MIN_H = 44
 
 
 class PublishPage(BasePage):
@@ -103,6 +120,10 @@ class PublishPage(BasePage):
         self.refresh_button.clicked.connect(self.reload_contents)
         header.add_action(self.refresh_button)
         self.add(header)
+
+        # 步骤条常驻顶部：左右两列卡片各自滚动时也能看出整体进度
+        self.flow_steps = FlowSteps(["选择内容", "发布设置", "发布前检查", "预览确认"], theme=self.ctx.theme)
+        self.add(self.flow_steps)
 
         self.env_card = self._build_env_card()
         self.add(self.env_card)
@@ -245,6 +266,25 @@ class PublishPage(BasePage):
         self.updateGeometry()
         self.update()
 
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        # 兜底：分栏器尺寸若正好没变（例如窗口只改了宽度），
+        # eventFilter 不会触发，这里补一次。
+        self._sync_pane_limits()
+
+    def eventFilter(self, watched: Any, event: Any) -> bool:  # noqa: N802 - Qt 命名
+        """分栏器尺寸变化时重算两块卡片的最小高度。
+
+        用它而不是页面自己的 ``resizeEvent``：分栏器的最终高度由父布局在页面 resize
+        之后才定下来，那时页面已经收不到新事件了，读到的还是上一轮的旧高度。
+        直接盯着分栏器就没有这个时间差，窗口缩放、环境提示卡收起、首次布局落定
+        都能覆盖到。
+        """
+        if watched is getattr(self, "_right_splitter", None):
+            if event.type() == QEvent.Type.Resize:
+                self._sync_pane_limits()
+        return super().eventFilter(watched, event)
+
     def _show_env_status(self, message: str, level: str) -> None:
         from ..theme import level_color
 
@@ -283,6 +323,9 @@ class PublishPage(BasePage):
         )
         self.content_list = QListWidget()
         self.content_list.setMinimumHeight(150)
+        # 委托已按视口宽度 elide 标题；关掉横向滚动，避免底部出现一条截断滚动条
+        self.content_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.content_list.setItemDelegate(TwoLineItemDelegate(self.content_list))
         self.content_list.currentRowChanged.connect(self._on_content_changed)
         content_card.add(self.content_list, 1)
@@ -369,11 +412,17 @@ class PublishPage(BasePage):
         vertical = QSplitter(Qt.Orientation.Vertical)
         vertical.setChildrenCollapsible(False)
         vertical.setHandleWidth(6)
-        vertical.addWidget(self._build_check_card())
-        vertical.addWidget(self._build_preview_card())
+        self._check_card = self._build_check_card()
+        self._preview_card = self._build_preview_card()
+        vertical.addWidget(self._check_card)
+        vertical.addWidget(self._preview_card)
         vertical.setStretchFactor(0, 2)
         vertical.setStretchFactor(1, 3)
-        vertical.setSizes([240, 380])
+        vertical.setSizes([300, 340])
+        self._right_splitter = vertical
+        # 分栏器自身尺寸一变就重算两块的下限：窗口缩放、环境提示卡收起、
+        # 首次布局落定……都会走到这个事件，比在 resizeEvent 里猜时机可靠得多。
+        vertical.installEventFilter(self)
         layout.addWidget(vertical, 1)
 
         self.confirm_bar = ConfirmBar(
@@ -396,8 +445,92 @@ class PublishPage(BasePage):
         layout.addLayout(advanced)
         return panel
 
+    def _sync_pane_limits(self) -> None:
+        """按分栏器**实际**可用高度分配检查栏与预览的最小高度。
+
+        ``QSplitter`` 会尊重子控件的 ``minimumHeight``：两块的最小高度之和只要超过
+        分栏器自身高度，先建的那块就会被挤出槽位、直接盖到另一块上（实测检查卡压住
+        预览卡 9px）。而分栏器能拿到多少高度并不只取决于窗口大小——顶部的步骤条与
+        「发布环境未就绪」提示卡都会吃掉一截，720p 下实际只剩约 375px，
+        提示卡展开时更是只剩 220px。
+
+        所以这里不写死数值：装得下就用各自理想的下限；装不下就**等比压缩**，
+        两块一起让位，谁也不越过谁。压到极限由各自的滚动区兜住。
+        """
+        splitter = getattr(self, "_right_splitter", None)
+        card = getattr(self, "_check_card", None)
+        preview_edit = getattr(self, "preview_edit", None)
+        if splitter is None or card is None or preview_edit is None:
+            return
+        total = splitter.height() - splitter.handleWidth()
+        if total <= 0:
+            return
+        # 检查卡的下限 = 可视区下限 + 卡片自身的固定开销（标题行 / 建议开关 / 内边距）
+        want_check = CHECK_VIEWPORT_MIN_H + self._check_card_chrome()
+        want_preview = PREVIEW_EDIT_MIN_H
+        # 预览卡的固定开销不参与分配，直接从可用高度里扣掉
+        budget = max(0, total - self._preview_card_chrome())
+        if want_check + want_preview <= budget:
+            # 装得下：预览框保持下限，**富余全给检查栏**。
+            # 检查栏是列表，多一像素就多看得见一条结果；预览框只要不低于下限就够用
+            # （内容多了它自己也会滚动）。「预览拿大头」由 setSizes 的比例决定，
+            # 这里定的只是下限，两者互不冲突。
+            check_min = budget - want_preview
+            preview_min = want_preview
+        else:
+            # 装不下就按两块各自的下限**等比**压缩，谁也不越过谁。
+            # 只压其中一块（比如把检查栏一路压到 44px）会让它的可视区变成 0 像素，
+            # 滚动条都无从谈起——两块一起小幅让位，反而都还能用。
+            ratio = budget / float(want_check + want_preview)
+            check_min = max(PANE_ABS_MIN_H, int(want_check * ratio))
+            preview_min = max(PANE_ABS_MIN_H, int(want_preview * ratio))
+            # 取整可能多出几像素，余量给检查栏（它的可视区更吃紧）
+            spare = budget - check_min - preview_min
+            if spare > 0:
+                check_min += spare
+        # 值没变就别再 setMinimumHeight：本方法由分栏器的 Resize 事件驱动，
+        # 而改最小高度又可能引发新一轮布局，无谓地设置会白跑一轮（甚至来回震荡）。
+        if card.minimumHeight() != check_min:
+            card.setMinimumHeight(check_min)
+        if preview_edit.minimumHeight() != preview_min:
+            preview_edit.setMinimumHeight(preview_min)
+
+    def _check_card_chrome(self) -> int:
+        """检查卡里滚动区之外的固定高度（标题行 + 建议开关 + 内边距）。"""
+        card = getattr(self, "_check_card", None)
+        view = getattr(self, "check_view", None)
+        if card is None or view is None:
+            return CHECK_CARD_CHROME_H
+        try:
+            return max(0, card.minimumSizeHint().height() - view.scroll.minimumSizeHint().height())
+        except Exception:  # noqa: BLE001 - 拿不到就用实测常量
+            return CHECK_CARD_CHROME_H
+
+    def _preview_card_chrome(self) -> int:
+        """预览卡里预览框之外的固定高度（标题行 + 内边距）。"""
+        card = getattr(self, "_preview_card", None)
+        edit = getattr(self, "preview_edit", None)
+        if card is None or edit is None:
+            return PREVIEW_CARD_CHROME_H
+        try:
+            return max(0, card.minimumSizeHint().height() - edit.minimumHeight())
+        except Exception:  # noqa: BLE001 - 拿不到就用实测常量
+            return PREVIEW_CARD_CHROME_H
+
     def _build_check_card(self) -> QWidget:
         check_card = Card(padding=14, spacing=8)
+        # 给一个下限，保证窗口缩到最小时检查栏也看得清内容。
+        # 以前分栏按 240:380 等比缩放，720p 的窗口里检查栏只剩 167px、
+        # 可视区 63px——一条卡片都看不全，用户以为「UI 显示不全」。
+        # 再多的问题由检查栏自己的滚动条兜住（见 CheckReportView）。
+        #
+        # 这只是**初始**值，真正生效的高度由 :meth:`_sync_pane_limits` 按分栏器
+        # 实际可用高度动态给出：QSplitter 会尊重子控件的 minimumHeight，两块的最小
+        # 高度之和一旦超过分栏器自身高度，先建的这块就会被挤出槽位、直接盖在预览
+        # 卡上。720p 窗口下分栏器只有约 375px（发布环境提示卡展开时更少），
+        # 写死的 200 正好会踩到这个坑。初始值取「可视区下限 + 卡片固定开销」，
+        # 与 _check_card_chrome() 的常量口径一致。
+        check_card.setMinimumHeight(CHECK_VIEWPORT_MIN_H + CHECK_CARD_CHROME_H)
         check_title = CardTitle(
             "3 · 发布前检查", icon="check", hint="敏感词、字数、格式、媒体附件", theme=self.ctx.theme
         )
@@ -423,7 +556,9 @@ class PublishPage(BasePage):
         self.preview_edit = QTextEdit()
         self.preview_edit.setObjectName("PreviewPane")
         self.preview_edit.setReadOnly(True)
-        self.preview_edit.setMinimumHeight(200)
+        # 这里只是**初始**值：真正生效的高度由 :meth:`_sync_pane_limits` 按分栏器
+        # 实际可用高度分配（窗口越窄，检查栏与预览一起等比让位，两块始终不重叠）。
+        self.preview_edit.setMinimumHeight(PREVIEW_EDIT_MIN_H)
         self.preview_edit.setPlaceholderText("选择内容与平台后，这里会显示发布后的样子")
         preview_card.add(self.preview_edit, 1)
         return preview_card
@@ -437,6 +572,7 @@ class PublishPage(BasePage):
         self._refresh_env_row()
 
     def apply_theme(self, theme: str) -> None:
+        self.flow_steps.apply_theme(theme)
         self._refresh_env_card()
         self._refresh_env_row()
         self._render_preparation()
@@ -608,6 +744,7 @@ class PublishPage(BasePage):
         # 换草稿时撤销手动更换的平台，回到「跟随草稿」
         self._platform_override = ""
         self._refresh_platform_row()
+        self.flow_steps.set_current(1)  # 已进入「发布设置」
         self.prepare()
 
     def pick_media(self) -> None:
@@ -681,11 +818,13 @@ class PublishPage(BasePage):
         self.check_view.set_message("准备失败，请重新选择内容", "error")
         self.check_score.setText("—")
         self.banner.show_message(f"发布准备失败：{message}", "error")
+        self.flow_steps.set_current(1)
 
     def _show_checking(self) -> None:
         self.check_view.set_message("正在检查…", "info")
         self.check_score.setText("检查中…")
         self.check_score.setStyleSheet("")
+        self.flow_steps.set_current(2)  # 正在「发布前检查」
 
     def _clear_preparation(self) -> None:
         self._preparation = None
@@ -695,6 +834,7 @@ class PublishPage(BasePage):
         self.check_score.setStyleSheet("")
         self.confirm_bar.reset()
         self.confirm_bar.set_allowed(False)
+        self.flow_steps.set_current(0)  # 回到「选择内容」
 
     def _render_preparation(self) -> None:
         prep = self._preparation
@@ -734,6 +874,7 @@ class PublishPage(BasePage):
 
         supported = prep.supported and passed
         self.confirm_bar.set_allowed(supported)
+        self.flow_steps.set_current(3)  # 检查与预览都出来了，停在「预览确认」
         self._refresh_env_row()
 
     def _render_check_view(self, prep) -> None:
@@ -912,6 +1053,9 @@ class PublishPage(BasePage):
                 confirmed=True,
                 dry_run=dry_run,
                 on_progress=lambda message, percent=-1: worker.emit_progress(message, percent),
+                # 关掉主程序时要能立刻收尾：dry-run 会保持浏览器打开等人工确认，
+                # 没有这个信号的话线程会一直挂着，浏览器窗口也会被留在桌面上
+                cancel=worker.cancel_event,
             )
 
         self._worker = self.run_task(
@@ -930,11 +1074,13 @@ class PublishPage(BasePage):
     def _on_publish_result(self, outcome) -> None:
         if outcome.ok:
             if outcome.dry_run:
-                self.banner.show_message(
-                    f"{outcome.message}。请到浏览器窗口检查内容并点击发布；"
-                    "完成后回到这里，在「发布记录」里把它标记为已发布。",
-                    "success",
-                )
+                # 适配器的 message 已经说清了「浏览器保持打开 / 已检测到你发布了」，
+                # 这里只补一句回填记录的动作，不重复它的内容
+                warnings = list((outcome.detail or {}).get("warnings") or [])
+                text = f"{outcome.message}。发完之后回到这里，在「发布记录」里把它标记为已发布。"
+                if warnings:
+                    text = f"{text}\n注意：" + "；".join(warnings)
+                self.banner.show_message(text, "warn" if warnings else "success")
             else:
                 self.banner.show_message(f"发布成功：{outcome.url or '（未取到链接）'}", "success")
             self.toast("操作完成", "success")

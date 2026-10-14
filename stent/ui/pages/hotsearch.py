@@ -111,27 +111,32 @@ class HotSearchPage(BasePage):
         self.keyword_edit.setPlaceholderText("按关键词过滤标题（即时生效）")
         self.keyword_edit.setClearButtonEnabled(True)
         self.keyword_edit.setToolTip("关键词与垂类为「与」关系：先选垂类，再在结果里搜词")
+        self.keyword_edit.setFixedHeight(32)
         self.keyword_edit.textChanged.connect(self._apply_filters)
-        filter_layout.addWidget(self.keyword_edit, 1)
+        filter_layout.addWidget(self.keyword_edit, 1, Qt.AlignmentFlag.AlignVCenter)
 
         # 明确写出「AND」：搜索与垂类叠加生效，避免用户以为筛选失效
         and_label = QLabel("AND")
         and_label.setObjectName("Faint")
-        filter_layout.addWidget(and_label)
+        filter_layout.addWidget(and_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.category_picker = CategoryPicker(columns=2)
+        self.category_picker.setFixedHeight(32)
         self.category_picker.changed.connect(self._apply_filters)
-        filter_layout.addWidget(self.category_picker)
+        filter_layout.addWidget(self.category_picker, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.clear_button = make_button("清除筛选", icon="x", theme=self.ctx.theme, ghost=True)
+        self.clear_button.setFixedHeight(32)
         self.clear_button.setToolTip("清空关键词与垂类筛选")
         self.clear_button.clicked.connect(self._clear_filters)
-        filter_layout.addWidget(self.clear_button)
+        filter_layout.addWidget(self.clear_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         filter_layout.addStretch(1)
         self.count_label = QLabel("尚未加载")
         self.count_label.setObjectName("CardHint")
-        filter_layout.addWidget(self.count_label)
+        # 未加载时表格区已有「还没有热榜数据」空态，这里不再重复一条孤立文案
+        self.count_label.setVisible(False)
+        filter_layout.addWidget(self.count_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         toolbar.add(filters)
 
@@ -377,6 +382,7 @@ class HotSearchPage(BasePage):
             self.count_label.setText(f"筛选出 {len(items)} / {total} 条")
         else:
             self.count_label.setText(f"共 {total} 条热点")
+        self.count_label.setVisible(bool(self._results))
 
         has_any = bool(self._results)
         self.table.setVisible(bool(items))

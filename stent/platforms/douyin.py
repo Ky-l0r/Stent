@@ -193,6 +193,7 @@ from ._browser import (  # noqa: F401 — 平台共用工具
     extract_metric_from_text,
     first_visible,
     first_visible_text,
+    hold_for_review,
     open_browser,
     page_title,
     parse_cn_number,
@@ -611,6 +612,7 @@ class DouYinAdapter(PlatformAdapter):
         dry_run: bool = False,
         timeout_sec: int = 300,
         on_progress: Any = None,
+        cancel: Any = None,
     ) -> PublishResult:
         # 1) 入参校验（发布前检查，超限直接给中文提示）
         title = (payload.title or "").strip()
@@ -640,6 +642,7 @@ class DouYinAdapter(PlatformAdapter):
                     return self._publish_flow(
                         sess.page, title=title, body=body, tags=tags, video=str(video),
                         dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
+                        cancel=cancel, extra=payload.extra or {},
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(sess.page, self._debug_dir(), "douyin", "publish-error")
@@ -662,6 +665,8 @@ class DouYinAdapter(PlatformAdapter):
         dry_run: bool,
         timeout_sec: int,
         on_progress: Any,
+        cancel: Any = None,
+        extra: Any = None,
     ) -> PublishResult:
         budget = max(60, timeout_sec)
         deadline = time.time() + budget
@@ -726,11 +731,16 @@ class DouYinAdapter(PlatformAdapter):
         page.wait_for_timeout(400)
 
         if dry_run:
-            self._log(on_progress, "已填写完成，等待人工确认（未点击发布）", 90)
+            # 填完就把浏览器关掉 = 用户什么都来不及做：这里保持窗口打开等人工确认
+            message = hold_for_review(
+                page, extra=extra, on_progress=on_progress, cancel=cancel,
+                probe=lambda: self._submission_signal(page),
+                done_hint="表单已填写完成（未点击发布）",
+            )
             return PublishResult(
                 ok=True,
                 url=page.url or "",
-                message="已填写完成，等待人工确认",
+                message=message,
                 detail={"dry_run": True, "video": video, "tags": tags,
                         "hint": "确认标题/简介/封面无误后，在浏览器窗口内手动点击「发布」"},
             )
@@ -943,6 +953,33 @@ class DouYinAdapter(PlatformAdapter):
                 return btn
             page.wait_for_timeout(1_500)
         return None
+
+    def _submission_signal(self, page: Any) -> str:
+        """非阻塞地判断用户是否已在浏览器里完成发布；没有则返回空串。
+
+        只认「跳到内容管理页」和「含发布成功字样的提示」——上传过程中的
+        「上传成功」不算发布完成。
+        """
+        try:
+            url = page.url or ""
+        except Exception:
+            return ""
+        if "content/manage" in url:
+            return "已检测到你完成了发布（页面已跳转），请回「发布记录」把它标记为已发布"
+        for sel in TOAST_SELECTORS:
+            try:
+                el = page.query_selector(sel)
+            except Exception:
+                continue
+            if el is None:
+                continue
+            try:
+                text = (el.inner_text() or "").strip()
+            except Exception:
+                continue
+            if text and "发布成功" in text:
+                return f"已检测到你完成了发布（{text[:30]}），请回「发布记录」把它标记为已发布"
+        return ""
 
     def _wait_publish_result(self, page: Any, *, timeout_s: int = 60) -> tuple[bool, str, str]:
         """判发布结果：①跳内容管理页 ②toast 含「成功」= 成功；

@@ -140,7 +140,7 @@ DARK = Palette(
     tint_error="#3A2827",
     tint_success="#1F3A2D",
     sidebar="#1F1D24",
-    sidebar_active="#382F4E",
+    sidebar_active="#413761",
     topbar="#1F1D24",
     shadow="rgba(0, 0, 0, 0.30)",
 )
@@ -234,11 +234,56 @@ def check_icon_url(color: str) -> str:
     return url
 
 
+def chevron_icon_url(color: str, direction: str) -> str:
+    """生成上下 chevron 图标供 QSpinBox 箭头使用；失败返回空串（退回 Qt 默认箭头）。"""
+    key = f"{direction}-{color}"
+    if key in _CHECK_ICON_CACHE:
+        return _CHECK_ICON_CACHE[key]
+    url = ""
+    try:
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+
+        from .. import paths
+
+        target = paths.cache_dir() / f"chevron-{direction}-{color.lstrip('#').lower()}.png"
+        if not target.exists():
+            side = 32
+            pixmap = QPixmap(side, side)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(
+                QPen(
+                    QColor(color),
+                    side * 0.11,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
+            up = direction == "up"
+            y0, y1, y2 = (0.62, 0.38, 0.62) if up else (0.38, 0.62, 0.38)
+            painter.drawLine(QPointF(side * 0.30, side * y0), QPointF(side * 0.50, side * y1))
+            painter.drawLine(QPointF(side * 0.50, side * y1), QPointF(side * 0.70, side * y2))
+            painter.end()
+            pixmap.save(str(target), "PNG")
+        url = target.as_posix()
+    except Exception:  # noqa: BLE001 - 生成失败不影响主题加载
+        url = ""
+    _CHECK_ICON_CACHE[key] = url
+    return url
+
+
 def build_qss(theme: str) -> str:
     """生成全局样式表。"""
     p = palette(theme)
     check_url = check_icon_url(p.on_accent)
     check_image = f"image: url({check_url});" if check_url else ""
+    up_url = chevron_icon_url(p.text_sub, "up")
+    down_url = chevron_icon_url(p.text_sub, "down")
+    arrow_up_decl = f"image: url({up_url});" if up_url else ""
+    arrow_down_decl = f"image: url({down_url});" if down_url else ""
     return f"""
 * {{
     font-family: {FONT_FAMILY};
@@ -344,6 +389,8 @@ QLabel, QCheckBox, QRadioButton, QGroupBox {{
     background: {p.sidebar_active};
     color: {p.accent};
     font-weight: 600;
+    border-left: 3px solid {p.accent};
+    padding-left: 9px;
 }}
 #SidebarFooter {{
     background: transparent;
@@ -508,6 +555,18 @@ QPushButton#StopButton:disabled {{
     background: transparent;
     border-color: {p.border};
     color: {p.text_faint};
+}}
+
+/* ---------- 发布流程步骤条 ---------- */
+#FlowSteps {{
+    background: transparent;
+}}
+#FlowStepText {{
+    background: transparent;
+}}
+#FlowStepLine {{
+    background: {p.border_strong};
+    border-radius: 1px;
 }}
 
 /* ---------- 底部操作栏（吸底） ---------- */
@@ -774,6 +833,23 @@ QPushButton#SuggestionToggle {{
 QPushButton#SuggestionToggle:hover {{
     background: {p.bg_alt};
     color: {p.text};
+}}
+
+/* 检查栏是可滚动的（阻断项 + 展开的建议项都装在里面），滚动条必须**一直看得见**：
+   默认那条「悬停才显形」的滚动条放在这里等于没提示，用户会以为下面的内容丢了。 */
+QScrollArea#CheckScroll QScrollBar:vertical {{
+    background: {p.bg_alt};
+    width: 9px;
+    margin: 2px;
+    border-radius: 5px;
+}}
+QScrollArea#CheckScroll QScrollBar::handle:vertical {{
+    background: {p.border_strong};
+    border-radius: 4px;
+    min-height: 28px;
+}}
+QScrollArea#CheckScroll QScrollBar::handle:vertical:hover {{
+    background: {p.text_faint};
 }}
 
 /* ---------- AI 自检报告 ---------- */
@@ -1104,10 +1180,63 @@ QSpinBox:hover, QDoubleSpinBox:hover {{
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
     border-color: {p.accent};
 }}
+/* 数字输入框的上下按钮：默认原生样式是两个分离的方块箭头，和圆角扁平输入框
+   完全脱节。这里收成一体化右侧按钮列，用 chevron 线条箭头，hover 才给底色。 */
+QSpinBox, QDoubleSpinBox {{
+    padding-right: 26px;
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 22px;
+    border-left: 1px solid {p.border};
+    border-top-right-radius: 6px;
+    background: transparent;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 22px;
+    border-left: 1px solid {p.border};
+    border-bottom-right-radius: 6px;
+    background: transparent;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {p.accent_soft};
+}}
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed,
+QDoubleSpinBox::up-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background: {p.row_selected};
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    {arrow_up_decl}
+    width: 9px;
+    height: 9px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    {arrow_down_decl}
+    width: 9px;
+    height: 9px;
+}}
+/* 注意：不要给 QSpinBox 写 :disabled::up-button 之类的子控件规则——
+   Qt 样式引擎会把它泛化到整个控件，导致整数 QSpinBox 底色变灰（实测踩过）。
+   禁用态交给 Qt 默认处理即可。 */
+
+/* QSpinBox 内部的编辑器 objectName 固定为 qt_spinbox_lineedit，绘制时按 disabled
+   状态取色，会被下面的通用 :disabled 规则误染成灰底（整数框比浮点框更明显）。
+   把它排除掉，让数字框和文本框保持同样的输入底色。 */
 QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {{
     background: {p.bg_alt};
     color: {p.text_faint};
     border-color: {p.border};
+}}
+QSpinBox:enabled > QLineEdit#qt_spinbox_lineedit,
+QDoubleSpinBox:enabled > QLineEdit#qt_spinbox_lineedit {{
+    background: {p.input_bg};
+    color: {p.text};
+    border: none;
+    padding: 0;
 }}
 /* 只读输入框（如「内容类型」自动填充值）：弱化底色，暗示不用手输 */
 QLineEdit:read-only {{
@@ -1262,14 +1391,14 @@ QScrollArea > QWidget > QWidget {{ background: transparent; }}
 
 /* ---------- 其他 ---------- */
 QProgressBar {{
-    background: {p.bg_alt};
+    background: {p.border_strong};
     border: none;
     border-radius: 4px;
     height: 7px;
     text-align: center;
     color: transparent;
 }}
-QProgressBar::chunk {{ background: {p.accent}; border-radius: 4px; }}
+QProgressBar::chunk {{ background: {p.accent}; border-radius: 4px; min-width: 7px; }}
 QToolTip {{
     background: {p.card};
     color: {p.text};

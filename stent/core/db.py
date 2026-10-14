@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS contents (
     source       TEXT    NOT NULL DEFAULT 'manual',
     source_ref   TEXT    NOT NULL DEFAULT '',
     media_json   TEXT    NOT NULL DEFAULT '[]',
+    extra        TEXT    NOT NULL DEFAULT '',
+    params_json  TEXT    NOT NULL DEFAULT '{}',
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
 );
@@ -125,6 +127,18 @@ def _json_list(value: Any) -> str:
     return json.dumps(list(value), ensure_ascii=False)
 
 
+def _json_dict(value: Any) -> str:
+    """把 dict 存成 JSON 文本（快捷参数这类键值对用它）。"""
+    if value is None:
+        return "{}"
+    if isinstance(value, str):
+        return value or "{}"
+    try:
+        return json.dumps(dict(value), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
+
 def _loads(value: Any, default: Any) -> Any:
     if not value:
         return default
@@ -156,8 +170,32 @@ class Database:
     def init(self) -> None:
         with self._lock:
             self.conn.executescript(SCHEMA)
+            self._migrate()
             self.conn.commit()
             self._ensure_profile()
+
+    #: 后加的列 → 建表语句。``CREATE TABLE IF NOT EXISTS`` 不会给**已有**表补列，
+    #: 老用户升级上来时这些字段会整列缺失，所以必须显式迁移一次。
+    MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        # (表名, 列名, 列定义)
+        ("contents", "extra", "TEXT NOT NULL DEFAULT ''"),
+        ("contents", "params_json", "TEXT NOT NULL DEFAULT '{}'"),
+    )
+
+    def _migrate(self) -> None:
+        """给老库补上后加的列（幂等，失败只记日志）。"""
+        for table, column, definition in self.MIGRATIONS:
+            try:
+                columns = {row["name"] for row in self.query(f"PRAGMA table_info({table})")}
+            except Exception:  # noqa: BLE001 - 表不存在时跳过
+                continue
+            if not columns or column in columns:
+                continue
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                log.info("数据库迁移：%s 增加列 %s", table, column)
+            except Exception:  # noqa: BLE001 - 并发迁移或列已存在都不算错
+                log.debug("数据库迁移失败：%s.%s", table, column, exc_info=True)
 
     def close(self) -> None:
         with self._lock:
@@ -205,6 +243,10 @@ class Database:
             "source": fields.get("source", "manual"),
             "source_ref": fields.get("source_ref", ""),
             "media_json": _json_list(fields.get("media")),
+            # 创作时的输入：补充要求与快捷参数。不存的话，从草稿箱载回来后
+            # 这两项就空了，用户没法用同一组设定重新生成。
+            "extra": fields.get("extra", ""),
+            "params_json": _json_dict(fields.get("params")),
             "created_at": stamp,
             "updated_at": stamp,
         }
@@ -220,6 +262,7 @@ class Database:
             "titles": ("titles_json", _json_list),
             "tags": ("tags_json", _json_list),
             "media": ("media_json", _json_list),
+            "params": ("params_json", _json_dict),
         }
         sets: list[str] = []
         params: list[Any] = []
@@ -478,6 +521,7 @@ def _decode_content(row: dict[str, Any]) -> dict[str, Any]:
     row["titles"] = _loads(row.pop("titles_json", "[]"), [])
     row["tags"] = _loads(row.pop("tags_json", "[]"), [])
     row["media"] = _loads(row.pop("media_json", "[]"), [])
+    row["params"] = _loads(row.pop("params_json", "{}"), {})
     return row
 
 

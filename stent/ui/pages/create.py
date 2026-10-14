@@ -623,7 +623,7 @@ class CreatePage(BasePage):
         if not topic:
             self.toast("请先填写主题", "warn")
             return None
-        values = {key: chip.value() for key, chip in self.param_chips.items()}
+        values = self._param_values()
         return CreationRequest(
             topic=topic,
             platform=self.platform_combo.currentData() or "xiaohongshu",
@@ -1033,6 +1033,11 @@ class CreatePage(BasePage):
             summary=self.summary_edit.toPlainText().strip(),
             tags=self._current_tags(),
             status="ready",
+            # 一起存下「创作输入」：补充要求与快捷参数。
+            # 只存成品的话，从草稿箱载回来这两项就空了——用户想用同一组设定
+            # 让 AI 重生成时，只能凭记忆把参数再点一遍。
+            extra=self.extra_edit.toPlainText().strip(),
+            params=self._param_values(),
         )
         try:
             if self._editing_id:
@@ -1088,10 +1093,29 @@ class CreatePage(BasePage):
                 if self.titles_list.item(row).text() == content["title"]:
                     self.titles_list.setCurrentRow(row)
                     break
+        # 创作输入一并恢复：补充要求与快捷参数是「再生成一次」的上下文，
+        # 丢了就等于让用户从零重来（草稿里存过的都会带回来）
+        self.extra_edit.setPlainText(content.get("extra", "") or "")
+        self._set_param_values(content.get("params") or {})
         self.banner.show_message(f"已载入草稿 #{content.get('id')}", "info")
         self._update_counts()
         # 载入的如果是「刚自检过的那一版」，直接把上次报告恢复出来
         self._on_content_edited()
+
+    # ------------------------------------------------------------------
+    # 快捷参数：读写集中在一处，保存 / 载入才不会漏项
+    # ------------------------------------------------------------------
+    def _param_values(self) -> dict[str, str]:
+        """当前快捷参数的取值（空值也留着，便于判断「哪一项没设」）。"""
+        return {key: chip.value() for key, chip in self.param_chips.items()}
+
+    def _set_param_values(self, values: dict) -> None:
+        """把草稿里存过的快捷参数铺回胶囊上（不触发 changed，避免连带重排）。"""
+        if not isinstance(values, dict):
+            return
+        for key, chip in self.param_chips.items():
+            chip.set_value(str(values.get(key) or ""), emit=False)
+        self._refresh_param_placeholder()
 
 
 class DraftDialog(QDialog):

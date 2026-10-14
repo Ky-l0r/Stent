@@ -137,8 +137,8 @@ class MainWindow(FramelessWindow, WorkerHost):
         self.profile_button.clicked.connect(lambda: self.navigate("profile"))
         bar.add_right(self.profile_button)
 
-        self.theme_button = make_button("", icon="moon", theme=self.ctx.theme, ghost=True, tooltip="切换深浅色")
-        self.theme_button.setFixedWidth(40)
+        # 主题切换：图标 + 文字，和「设置」保持同样的视觉重量（纯图标按钮语义不清）
+        self.theme_button = make_button("深色", icon="moon", theme=self.ctx.theme, ghost=True, tooltip="切换深浅色")
         self.theme_button.clicked.connect(self.ctx.toggle_theme)
         bar.add_right(self.theme_button)
 
@@ -173,20 +173,21 @@ class MainWindow(FramelessWindow, WorkerHost):
 
         footer = QFrame()
         footer.setObjectName("SidebarFooter")
-        footer_layout = QVBoxLayout(footer)
-        footer_layout.setContentsMargins(0, 10, 0, 0)
-        footer_layout.setSpacing(4)
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 8, 0, 0)
+        footer_layout.setSpacing(8)
 
-        self.changelog_button = QPushButton("版本更新日志")
+        self.changelog_button = QPushButton("更新日志")
         self.changelog_button.setObjectName("VersionButton")
         self.changelog_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.changelog_button.setIconSize(QSize(15, 15))
+        self.changelog_button.setIconSize(QSize(14, 14))
         self.changelog_button.clicked.connect(self.show_changelog)
-        footer_layout.addWidget(self.changelog_button)
+        footer_layout.addWidget(self.changelog_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.version_label = QLabel(f"v{__version__}　·　Apache-2.0")
+        self.version_label = QLabel(f"v{__version__}")
         self.version_label.setObjectName("Faint")
-        footer_layout.addWidget(self.version_label)
+        footer_layout.addWidget(self.version_label, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        footer_layout.addStretch(0)
 
         layout.addWidget(footer)
 
@@ -309,7 +310,9 @@ class MainWindow(FramelessWindow, WorkerHost):
             icon_name = button.property("nav_icon") or "info"
             color = p.accent if key == self._current else p.text_sub
             button.setIcon(icons.icon(icon_name, color, 17))
-        self.theme_button.setIcon(icons.icon("sun" if theme == "dark" else "moon", p.text_sub, 16))
+        # 暗色下显示「深色 + 太阳」表示当前所处模式；图标用 text_sub 提高一档亮度保证对比
+        self.theme_button.setText("浅色" if theme == "dark" else "深色")
+        self.theme_button.setIcon(icons.icon("sun" if theme == "dark" else "moon", p.text, 16))
         self.settings_button.setIcon(icons.icon("settings", p.text_sub, 16))
         self.profile_button.setIcon(icons.icon("user", p.text_sub, 16))
         self.changelog_button.setIcon(icons.icon("clock", p.text_sub, 15))
@@ -356,10 +359,11 @@ class MainWindow(FramelessWindow, WorkerHost):
         if cm.ready():
             llm = cm.config.llm
             self._llm_status.setText(f"模型：{llm.model}")
-            self._llm_status.setStyleSheet(f"color: {p.accent};")
+            # 状态信息不是链接，用强调色会被误读为可点击；弱化为次级文字色
+            self._llm_status.setStyleSheet(f"color: {p.text_faint};")
         else:
             self._llm_status.setText("未配置模型 · 点右上角「设置」")
-            self._llm_status.setStyleSheet(f"color: {p.accent};")
+            self._llm_status.setStyleSheet(f"color: {p.warning};")
 
     def set_status(self, text: str) -> None:
         self._status_label.setText(text)

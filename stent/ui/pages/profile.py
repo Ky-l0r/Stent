@@ -150,8 +150,9 @@ class ProfilePage(BasePage):
         return card
 
     def _build_dimension_card(self, dim) -> QWidget:
+        # 六张卡各挂一个相同的人形图标只会造成噪音；状态已由标题文字表达
         card = CollapsibleCard(
-            dim.label, icon="user", hint=dim.hint, theme=self.ctx.theme, expanded=False
+            dim.label, hint=dim.hint, theme=self.ctx.theme, expanded=False
         )
         hint = QLabel(dim.hint)
         hint.setObjectName("FieldHint")

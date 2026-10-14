@@ -28,6 +28,7 @@ from ._browser import (
     extract_metric_from_text,
     first_visible,
     first_visible_text,
+    hold_for_review,
     open_browser,
     page_title,
     parse_cn_number,
@@ -355,6 +356,7 @@ class ZhiHuAdapter(PlatformAdapter):
         dry_run: bool = False,
         timeout_sec: int = 300,
         on_progress: Any = None,
+        cancel: Any = None,
     ) -> PublishResult:
         extra = payload.extra or {}
         mode = str(extra.get("mode") or "article").strip().lower()
@@ -396,10 +398,12 @@ class ZhiHuAdapter(PlatformAdapter):
                         return self._publish_answer(
                             sess.page, question_url=question_url, body=body, tags=tags,
                             dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
+                            cancel=cancel, extra=extra,
                         )
                     return self._publish_article(
                         sess.page, title=title, body=body, tags=tags,
                         dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
+                        cancel=cancel, extra=extra,
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(sess.page, self._debug_dir(), "zhihu", "publish-error")
@@ -415,6 +419,7 @@ class ZhiHuAdapter(PlatformAdapter):
     def _publish_answer(
         self, page: Any, *, question_url: str, body: str, tags: list[str],
         dry_run: bool, timeout_sec: int, on_progress: Any,
+        cancel: Any = None, extra: Any = None,
     ) -> PublishResult:
         budget = max(60, timeout_sec)
         deadline = time.time() + budget
@@ -452,11 +457,15 @@ class ZhiHuAdapter(PlatformAdapter):
             )
 
         if dry_run:
-            self._log(on_progress, "已填写完成，等待人工确认（未点击发布）", 90)
+            message = hold_for_review(
+                page, extra=extra, on_progress=on_progress, cancel=cancel,
+                probe=lambda: self._submission_signal(page),
+                done_hint="回答已填写完成（未点击发布）",
+            )
             return PublishResult(
                 ok=True,
                 url=question_url,
-                message="已填写完成，等待人工确认",
+                message=message,
                 detail={"dry_run": True, "mode": "answer", "question": question_title,
                         "hint": "确认正文无误后，在浏览器窗口内手动点击「发布回答」"},
             )
@@ -582,6 +591,7 @@ class ZhiHuAdapter(PlatformAdapter):
     def _publish_article(
         self, page: Any, *, title: str, body: str, tags: list[str],
         dry_run: bool, timeout_sec: int, on_progress: Any,
+        cancel: Any = None, extra: Any = None,
     ) -> PublishResult:
         budget = max(60, timeout_sec)
         deadline = time.time() + budget
@@ -621,11 +631,15 @@ class ZhiHuAdapter(PlatformAdapter):
         self._fill_topics(page, tags)
 
         if dry_run:
-            self._log(on_progress, "已填写完成，等待人工确认（未点击发布）", 90)
+            message = hold_for_review(
+                page, extra=extra, on_progress=on_progress, cancel=cancel,
+                probe=lambda: self._submission_signal(page),
+                done_hint="文章已填写完成（未点击发布）",
+            )
             return PublishResult(
                 ok=True,
                 url=page.url or WRITE_URL,
-                message="已填写完成，等待人工确认",
+                message=message,
                 detail={"dry_run": True, "mode": "article", "tags": tags,
                         "hint": "确认标题/正文/话题无误后，在浏览器窗口内手动点击「发布」并在弹窗中确认"},
             )
@@ -701,6 +715,21 @@ class ZhiHuAdapter(PlatformAdapter):
             page.wait_for_timeout(800)
         # 无弹窗形态：直接提交（老版写文章页）
         return True
+
+    def _submission_signal(self, page: Any) -> str:
+        """非阻塞地判断用户是否已在浏览器里完成发布；没有则返回空串。
+
+        与 :meth:`_wait_result` 同一套判据，只是不阻塞等待。
+        """
+        try:
+            url = page.url or ""
+        except Exception:
+            return ""
+        if "/edit" in url:
+            return ""
+        if any(key in url for key in SUCCESS_URL_KEYWORDS) or "/p/" in url:
+            return "已检测到你完成了发布（页面已跳转），请回「发布记录」把它标记为已发布"
+        return ""
 
     def _wait_result(self, page: Any, *, mode: str, timeout_s: int = 60) -> tuple[bool, str, str]:
         """判发布结果：URL 跳到文章页/回答页且离开编辑页 = 成功；出现失败文案 = 失败；

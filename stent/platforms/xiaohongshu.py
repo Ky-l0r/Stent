@@ -25,10 +25,11 @@ from __future__ import annotations
 import re as _re
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator
 
-from ._browser import collect_content_links, page_title, record_browser_error
+from ._browser import collect_content_links, hold_for_review, page_title, record_browser_error
 from .base import (
     AccountPost,
     LoginState,
@@ -876,6 +877,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
         dry_run: bool = False,
         timeout_sec: int = 300,
         on_progress: Any = None,
+        cancel: Any = None,
     ) -> PublishResult:
         """执行发布。``dry_run=True`` 时只填写表单不提交（人工确认前的预览）。"""
         # 1) 入参校验（发布前检查，超限直接给中文提示）
@@ -934,36 +936,43 @@ class XiaoHongShuAdapter(PlatformAdapter):
                         ok=False,
                         message=f"小红书发布失败：{type(exc).__name__}: {exc}{note}",
                     )
-                # dry-run 的「等待人工确认」阶段必须保住浏览器窗口，故在 close 之前执行
+                # dry-run 的「等待人工确认」阶段必须保住浏览器窗口，故在 close 之前执行。
+                # 收尾结论要写回 message：以前返回值被丢掉，界面上仍旧只显示内层那句
+                # 「已填写完成，等待人工确认」，既不提浏览器会保持打开，也不提怎么结束的。
                 if dry_run and result.ok:
-                    self._hold_for_review(page, payload, on_progress)
+                    result = replace(result, message=self._hold_for_review(
+                        page, payload, on_progress, cancel))
                 return result
         except Exception as exc:  # noqa: BLE001
             return PublishResult(ok=False, message=f"小红书发布异常：{type(exc).__name__}: {exc}")
 
-    def _hold_for_review(self, page: Any, payload: PublishPayload, on_progress: Any) -> None:
-        """dry-run 收尾：保持窗口打开供人工复核，可选调用人工确认回调。
+    def _hold_for_review(self, page: Any, payload: PublishPayload, on_progress: Any,
+                         cancel: Any = None) -> str:
+        """dry-run 收尾：保持窗口打开供人工复核，返回一句可展示的结论。
 
-        ``payload.extra["confirm_callback"](page)`` 返回 True 表示人工已确认可以关闭；
-        否则最多保持 ``payload.extra["hold_sec"]``（默认 180 秒，上限 600 秒）后关闭。
+        统一走 :func:`_browser.hold_for_review`：小红书原先自己实现了一份，
+        而抖音 / B 站 / 知乎 根本没有这一步（填完就关浏览器）。现在四个平台
+        共用同一套收尾逻辑，行为一致：用户点完发布、或自己关掉窗口、或到上限，
+        三种情况都能干净结束。
         """
-        extra = payload.extra or {}
-        hold_sec = 180
+        return hold_for_review(
+            page,
+            extra=payload.extra,
+            on_progress=on_progress,
+            cancel=cancel,
+            probe=lambda: self._submission_signal(page),
+            done_hint="笔记已填写完成（未点击发布）",
+        )
+
+    def _submission_signal(self, page: Any) -> str:
+        """非阻塞地判断用户是否已在浏览器里完成发布；没有则返回空串。"""
         try:
-            hold_sec = int(extra.get("hold_sec", 180))
+            url = page.url or ""
         except Exception:
-            hold_sec = 180
-        hold_sec = max(30, min(600, hold_sec))
-        callback = extra.get("confirm_callback")
-        if callable(callback):
-            self._log(on_progress, "已填写完成，等待人工确认…", 95)
-            wait_until(lambda: bool(callback(page)), timeout_s=hold_sec, interval_s=1.0)
-            return
-        self._log(on_progress, f"已填写完成，浏览器窗口保持 {hold_sec} 秒供人工复核…", 95)
-        try:
-            page.wait_for_timeout(hold_sec * 1000)
-        except Exception:
-            pass
+            return ""
+        if "/publish/success" in url or "published=true" in url:
+            return "已检测到你完成了发布（页面已跳转），请回「发布记录」把它标记为已发布"
+        return ""
 
     def _publish_flow(
         self,
