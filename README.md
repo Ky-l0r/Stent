@@ -332,6 +332,7 @@ Stent/
 ├── tests/                      自检与回归脚本 + 工程一致性校验（见 docs/development.md）
 ├── docs/                       开发文档与截图
 ├── CHANGELOG.md                更新日志（应用内「版本更新日志」入口读取）
+├── AGENTS.md                   AI 编码代理的项目约定（门禁型）
 ├── CONTRIBUTING.md             贡献指南
 ├── LICENSE                     Apache-2.0
 └── NOTICE                      上游来源与修改声明

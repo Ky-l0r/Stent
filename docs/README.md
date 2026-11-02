@@ -9,6 +9,7 @@
 仓库根目录另有：
 
 - [`../README.md`](../README.md) —— 面向使用者的功能与流程说明
+- [`../AGENTS.md`](../AGENTS.md) —— 面向 AI 编码代理的门禁型约定（自动推送、验证分级、忌讳）
 - [`../CHANGELOG.md`](../CHANGELOG.md) —— 版本更新日志（应用内「版本更新日志」入口读取）
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) —— 贡献指南
 - [`../NOTICE`](../NOTICE) —— 上游来源与修改声明
