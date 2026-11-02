@@ -58,7 +58,7 @@ git commit -F - <<'EOF'
 
 空一行写为什么——diff 已经说明了改动本身，这里补的是动机与取舍。
 EOF
-git fetch origin
+git -c http.sslBackend=schannel fetch origin
 git status -sb                # 确认领先/落后关系
 git -c http.sslBackend=schannel push origin HEAD   # 本机必需，原因见 3.6
 git log --oneline -1
@@ -106,6 +106,8 @@ Git 默认后端因此在握手阶段直接失败：
 | `git -c http.sslBackend=openssl -c http.sslCAInfo=<系统 bundle + 导出的 BeyondDimension 根>` | 成功，但步骤繁琐，仅作备用 |
 
 - 前四种绕法的共同前提：证书链仍然完整校验，只是不再查询吊销状态。
+- 带 `-c` 只作用于当次命令，且**所有访问远端的命令都要带**：`fetch` / `pull` / `push` /
+  `clone` 都会在同一个握手环节失败，不要只给 `push` 加参数。
 - 根因应在环境侧解决（关掉加速工具、换系统 `C:\Program Files\Git\cmd\git.exe`、或补 CA），
   **这是本机特性，不是仓库该承担的配置**：不要把它写进 `.git/config` 提交上去，
   也不要改 remote 地址、不要写死代理、不要把 token 塞进 URL。
@@ -406,7 +408,7 @@ git add <路径> && git commit -F - <<'EOF'
 
 为什么这么改。
 EOF
-git fetch origin && git status -sb
+git -c http.sslBackend=schannel fetch origin && git status -sb
 git -c http.sslBackend=schannel push origin HEAD   # 本机必需，见 3.6
 git status -sb
 ```
