@@ -1,4 +1,7 @@
 # 打包与测试依赖（普通用户不需要安装）
+# 与 pyproject.toml 的 [project.optional-dependencies].dev 保持一致
 -r requirements.txt
 pyinstaller>=6.6
 pytest>=8.0
+ruff>=0.9
+pre-commit>=3.7

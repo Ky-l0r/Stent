@@ -1,0 +1,25 @@
+# 统一编辑器行为，避免「只改了空白」的 diff
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+[*.{md,markdown}]
+# 中文文档按视觉宽度排版，不强制折行
+max_line_length = off
+trim_trailing_whitespace = false
+
+[*.{yml,yaml,json,toml}]
+indent_size = 2
+
+[*.ps1]
+end_of_line = crlf
+
+[*.{bat,cmd}]
+end_of_line = crlf

@@ -1,0 +1,28 @@
+# 本地提交前自检：与 CI 读同一份 pyproject.toml 配置，不在两处各写一套规则。
+#
+# 启用：python -m pip install pre-commit && pre-commit install
+# 手动全量跑一遍：pre-commit run --all-files
+default_install_hook_types: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        # 中文 Markdown 常用行尾双空格表示换行，不清理文档
+        exclude: \.(md|markdown)$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # 与 pyproject.toml 里 ruff>=0.9 对应；升级时本地与 CI 一起升
+    rev: v0.17.0
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format

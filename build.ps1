@@ -3,7 +3,7 @@
     Stent 打包脚本：构建可独立运行的 Windows 目录包（onedir）。
 
 .DESCRIPTION
-    流程：检查环境 → 安装依赖 → 自检 → PyInstaller 打包 → 输出 dist\Stent\Stent.exe
+    流程：检查环境 → 安装依赖 → 静态检查 → 自检 → PyInstaller 打包 → 输出 dist\Stent\Stent.exe
     产物为目录包，双击 Stent.exe 即可运行（目标机器无需安装 Python）。
 
 .PARAMETER SkipDeps
@@ -46,14 +46,14 @@ function Invoke-Checked([string]$Exe, [string[]]$ArgList) {
     }
 }
 
-Write-Step '1/6 检查 Python 环境'
+Write-Step '1/7 检查 Python 环境'
 $python = (Get-Command python -ErrorAction SilentlyContinue)
 if (-not $python) { throw '未找到 python，请先安装 Python 3.10+ 并加入 PATH' }
 # Python 代码里一律用单引号：Windows PowerShell 5.1 传给原生程序时会吞掉参数内的
 # 双引号（PowerShell 7 不会），写成 "Python" 在 5.1 下会变成未定义的变量 Python。
 Invoke-Checked $python.Source @('-c', 'import sys; print(''Python'', sys.version.split()[0]); assert sys.version_info >= (3,10), ''需要 Python 3.10+''')
 
-Write-Step '2/6 安装依赖'
+Write-Step '2/7 安装依赖'
 if ($SkipDeps) {
     Write-Host '已跳过（-SkipDeps）'
 } else {
@@ -65,14 +65,23 @@ if ($InstallBrowser) {
     Invoke-Checked $python.Source @('-m', 'playwright', 'install', 'chromium')
 }
 
-Write-Step '3/6 运行服务层自检'
+Write-Step '3/7 静态检查'
+if ($SkipTests) {
+    Write-Host '已跳过（-SkipTests）'
+} else {
+    Invoke-Checked $python.Source @('-m', 'ruff', 'check', '.')
+    Invoke-Checked $python.Source @('-m', 'ruff', 'format', '--check', '.')
+    Invoke-Checked $python.Source @('tests/check_project.py')
+}
+
+Write-Step '4/7 运行服务层自检'
 if ($SkipTests) {
     Write-Host '已跳过（-SkipTests）'
 } else {
     Invoke-Checked $python.Source @('tests/selftest_all.py')
 }
 
-Write-Step '4/6 运行界面自检（离屏）'
+Write-Step '5/7 运行界面自检（离屏）'
 if ($SkipTests) {
     Write-Host '已跳过（-SkipTests）'
 } else {
@@ -82,13 +91,13 @@ if ($SkipTests) {
 }
 
 if ($Clean) {
-    Write-Step '5/6 清理旧产物'
+    Write-Step '6/7 清理旧产物'
     foreach ($dir in 'build', 'dist') {
         if (Test-Path $dir) { Remove-Item $dir -Recurse -Force; Write-Host "已删除 $dir" }
     }
 }
 
-Write-Step '6/6 PyInstaller 打包（onedir）'
+Write-Step '7/7 PyInstaller 打包（onedir）'
 Invoke-Checked $python.Source @('-m', 'PyInstaller', 'Stent.spec', '--noconfirm', '--clean')
 
 $exe = Join-Path $Root 'dist\Stent\Stent.exe'

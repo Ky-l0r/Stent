@@ -6,17 +6,35 @@ _reference/
 build/
 dist/
 *.spec.bak
+# 误建目录防护：路径中的环境变量未被展开时会在仓库根目录造出这个目录
+%SystemDrive%/
+
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
+.eggs/
 .venv/
 venv/
+.venv*/
 .pytest_cache/
+
+# 代码质量工具缓存
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
 # 编辑器
 .vscode/
 .idea/
 *.swp
+*~
+
+# 本机协作工具的工作区数据（会话记忆、临时计划），不进仓库
+.workbuddy/
+
 # 临时
 *.log
 _plan.txt

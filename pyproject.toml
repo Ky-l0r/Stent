@@ -1,23 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "stent"
-version = "1.1.2"
+# 版本号只有一处真源：stent/__init__.py 的 __version__，打包时由 setuptools 静态读取
+dynamic = ["version"]
 description = "Stent —— 基于 Easel 的桌面端社媒内容智能体"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Stent contributors" }]
-keywords = ["social-media", "ai-agent", "pyside6", "desktop"]
+keywords = ["social-media", "ai-agent", "pyside6", "desktop", "windows"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: Chinese (Simplified)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Typing :: Typed",
+]
 
+# 运行依赖。与 requirements.txt 保持一致——改一处必须同步另一处。
+# httpx 不在此列：只由 openai 传递引入，热点发现刻意走标准库 urllib（见 docs/development.md）。
 dependencies = [
     "PySide6>=6.6,<7",
     "openai>=1.30",
-    "httpx>=0.27",
     "keyring>=25.0",
     "playwright>=1.44",
 ]
 
 [project.optional-dependencies]
-dev = ["pyinstaller>=6.6", "pytest>=8.0"]
+dev = [
+    "pyinstaller>=6.6",
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "pre-commit>=3.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ky-l0r/Stent"
+Repository = "https://github.com/Ky-l0r/Stent"
+Issues = "https://github.com/Ky-l0r/Stent/issues"
+Changelog = "https://github.com/Ky-l0r/Stent/blob/main/CHANGELOG.md"
+Releases = "https://github.com/Ky-l0r/Stent/releases"
 
 [project.scripts]
 stent = "stent.app:main"
@@ -25,16 +58,69 @@ stent = "stent.app:main"
 [project.gui-scripts]
 stent-gui = "stent.app:main"
 
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [tool.setuptools]
 packages = ["stent", "stent.core", "stent.services", "stent.platforms", "stent.ui", "stent.ui.pages"]
+
+[tool.setuptools.dynamic]
+version = { attr = "stent.__version__" }
 
 [tool.setuptools.package-data]
 stent = ["resources/*", "skills/*", "skills/**/*"]
 
+# ---------------------------------------------------------------------------
+# Ruff：lint + format 的唯一配置来源（pre-commit 与 CI 都读这里）
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["stent", "tests"]
+extend-exclude = ["_reference", "_data", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle 错误
+    "W",    # pycodestyle 警告
+    "F",    # pyflakes：未使用导入 / 未定义名
+    "I",    # isort：导入顺序
+    "UP",   # pyupgrade：按目标版本升级写法
+    "B",    # flake8-bugbear：常见陷阱
+    "C4",   # flake8-comprehensions
+    "RUF",  # ruff 自有规则
+]
+ignore = [
+    # 中文注释与文档字符串按「视觉宽度」自然换行，硬折到 100 列反而难读；
+    # 长代码行由 ruff format 负责拆分，所以这里不校验行长。
+    "E501",
+    # 中文全角标点（，。「」）会被判为「歧义字符」，本项目文档就是中文，全部忽略。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # noqa 标注的是刻意为之的行为（BLE001 浏览器写入兜底、N802 Qt 虚函数名、
+    # PLC0415 懒加载），这些规则本身未启用，不当成冗余标注删掉。
+    "RUF100",
+    # `dict(headless=headless, ...)` 用来构造要 `**` 展开的 kwargs，键名与调用签名
+    # 一一对应；改成字面量后要额外维护引号，反而更难对照。
+    "C408",
+    # 选择器元组 / 参数列表都是短序列，`tuple + tuple` 比 `(*tuple, x)` 更像自然语言。
+    "RUF005",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试脚本要在 import 之前设置 STENT_DATA_DIR / sys.path，import 不在文件顶部
+"tests/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+# 行尾符交给 .gitattributes 统一为 LF，这里不强制改写工作区文件，
+# 免得 Windows 上 core.autocrlf=true 的克隆被整篇重写。
+
+# ---------------------------------------------------------------------------
+# pytest：tests/ 下以 test_*.py 为 pytest 用例；selftest_*.py 与 ui_*.py 是
+# 可以直接运行的脚本（见 CONTRIBUTING「提交前必须跑的自检」），不由 pytest 收集。
+# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py", "selftest_*.py"]
+python_files = ["test_*.py"]
+addopts = "-ra"
