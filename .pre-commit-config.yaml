@@ -1,28 +1,43 @@
-# 本地提交前自检：与 CI 读同一份 pyproject.toml 配置，不在两处各写一套规则。
+# 本地提交前自检：读 pyproject.toml 里的 [tool.ruff]，与 CI 用同一份规则。
 #
-# 启用：python -m pip install pre-commit && pre-commit install
+# 刻意用 repo: local 而不是社区的 ruff-pre-commit 远端仓库：本机与不少企业网络
+# 拉 GitHub 会被 TLS 拦截，远端钩子初始化失败会直接阻断每一次 git commit。
+# local 钩子只调用 requirements-dev.txt 里已装好的 ruff，零网络、启动快；
+# 升级 ruff 只需调 requirements-dev.txt 的版本下限，不必再对齐一个 rev。
+#
+# 启用：python -m pip install -r requirements-dev.txt && pre-commit install
 # 手动全量跑一遍：pre-commit run --all-files
 default_install_hook_types: [pre-commit]
 fail_fast: false
 
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+  - repo: local
     hooks:
-      - id: trailing-whitespace
-        # 中文 Markdown 常用行尾双空格表示换行，不清理文档
-        exclude: \.(md|markdown)$
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-toml
-      - id: check-merge-conflict
-      - id: check-added-large-files
-        args: ["--maxkb=2048"]
+      - id: ruff-check
+        name: ruff check（lint，顺带修可安全修复的部分）
+        entry: ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    # 与 pyproject.toml 里 ruff>=0.9 对应；升级时本地与 CI 一起升
-    rev: v0.17.0
-    hooks:
-      - id: ruff
-        args: ["--fix"]
       - id: ruff-format
+        name: ruff format（行宽 100）
+        entry: ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+  # 基础卫生检查：用 Python 一行脚本实现，不额外引依赖、不联网。
+  - repo: local
+    hooks:
+      - id: check-merge-conflict
+        name: 检查遗留的冲突标记
+        entry: python -c "import sys; bad=[f for f in sys.argv[1:] if any(l.startswith(('<<<<<<<', '>>>>>>>')) for l in open(f, encoding='utf-8', errors='ignore'))]; print('\n'.join(bad)); sys.exit(1 if bad else 0)"
+        language: system
+        types: [text]
+
+      - id: check-large-file
+        name: 检查误提交的大文件（>2MB）
+        entry: python -c "import os, sys; bad=[f for f in sys.argv[1:] if os.path.getsize(f) > 2 * 1024 * 1024]; print('\n'.join(bad)); sys.exit(1 if bad else 0)"
+        language: system
+        types: [text]
