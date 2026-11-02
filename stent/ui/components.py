@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -61,7 +62,9 @@ STATUS_ROLE = Qt.ItemDataRole.UserRole + 3
 class Card(QFrame):
     """基础卡片容器：白色圆角 + 细边框。"""
 
-    def __init__(self, parent: QWidget | None = None, *, padding: int = 16, spacing: int = 10) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, padding: int = 16, spacing: int = 10
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("Card")
         self._layout = QVBoxLayout(self)
@@ -175,7 +178,15 @@ class PageHeader(QWidget):
 class StatCard(Card):
     """指标卡：大数字 + 标签 + 可选副标。"""
 
-    def __init__(self, label: str, value: str = "—", *, sub: str = "", accent: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        label: str,
+        value: str = "—",
+        *,
+        sub: str = "",
+        accent: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent, padding=14, spacing=2)
         self._accent = accent
         self.value_label = QLabel(value)
@@ -301,14 +312,18 @@ class StatusBanner(QFrame):
         self._level = "info"
         self._last: tuple[str, bool] | None = None
 
-    def show_message(self, text: str, level: str = "info", *, closable: bool = True, **_kw: Any) -> None:
+    def show_message(
+        self, text: str, level: str = "info", *, closable: bool = True, **_kw: Any
+    ) -> None:
         theme = current_theme()
         self._level = level
         self._last = (text, closable)
         color = level_color(theme, level)
         self.text_label.setText(text)
         self.text_label.setStyleSheet(f"color: {color}; background: transparent;")
-        icon_name = {"error": "alert", "warn": "alert", "warning": "alert", "success": "check"}.get(level, "info")
+        icon_name = {"error": "alert", "warn": "alert", "warning": "alert", "success": "check"}.get(
+            level, "info"
+        )
         self.icon_label.setPixmap(icons.pixmap(icon_name, color, 16))
         self.close_button.setVisible(closable)
         self.setStyleSheet(
@@ -392,7 +407,14 @@ class Toast(QLabel):
 class TagChip(QLabel):
     """标签胶囊。"""
 
-    def __init__(self, text: str, *, theme: str = "light", tone: str = "default", parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str,
+        *,
+        theme: str = "light",
+        tone: str = "default",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.apply_theme(theme, tone)
@@ -654,9 +676,6 @@ class FlowLayout(QLayout):
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         return True
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
 
     def setGeometry(self, rect: QRect) -> None:  # noqa: N802
         super().setGeometry(rect)
@@ -1067,9 +1086,7 @@ class FieldRow(QWidget):
         self._refresh_icon()
 
 
-def field_label(
-    text: str, hint: str = "", *, help_text: str = "", theme: str = ""
-) -> FieldRow:
+def field_label(text: str, hint: str = "", *, help_text: str = "", theme: str = "") -> FieldRow:
     """字段标题行工厂（见 :class:`FieldRow`）。"""
     return FieldRow(text, hint=hint, help_text=help_text, theme=theme)
 
@@ -1270,7 +1287,9 @@ class StatusLight(QLabel):
     #: 空闲时展示的文案
     IDLE_TEXT = "就绪"
 
-    def __init__(self, theme: str = "light", parent: QWidget | None = None, *, idle_text: str = "") -> None:
+    def __init__(
+        self, theme: str = "light", parent: QWidget | None = None, *, idle_text: str = ""
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("StatusLight")
         self.setCursor(Qt.CursorShape.WhatsThisCursor)
@@ -1379,6 +1398,8 @@ class StatusLight(QLabel):
     @property
     def is_idle(self) -> bool:
         return self._level == "idle"
+
+
 class RowBackgroundDelegate(QStyledItemDelegate):
     """统一绘制行底色：悬停微亮、选中加深（暗色主题下变浅）。
 
@@ -1456,9 +1477,6 @@ class _RowHoverFilter(QObject):
                 if candidate >= 0:
                     self._table.viewport().update(self._row_rect(candidate))
         return False
-
-
-
 
 
 # --------------------------------------------------------------------------
@@ -1719,9 +1737,7 @@ class HeatBarDelegate(RowBackgroundDelegate):
             track = QColor(p.border_strong)
             track.setAlpha(110)
             painter.setBrush(QBrush(track))
-            painter.drawRoundedRect(
-                QRectF(bar_left, top, width, self.BAR_HEIGHT), 2, 2
-            )
+            painter.drawRoundedRect(QRectF(bar_left, top, width, self.BAR_HEIGHT), 2, 2)
             painter.setBrush(QBrush(color))
             painter.drawRoundedRect(
                 QRectF(bar_left, top, max(3.0, width * ratio), self.BAR_HEIGHT), 2, 2
@@ -1871,7 +1887,7 @@ class SkeletonList(QWidget):
         self._timer.timeout.connect(self._tick)
         self.setVisible(False)
 
-    def attach(self, view: Any) -> "SkeletonList":
+    def attach(self, view: Any) -> SkeletonList:
         """挂到某个视图的 viewport 上，并跟随其尺寸变化。"""
         self.setParent(view.viewport())
         self._view = view
@@ -1925,8 +1941,7 @@ class SkeletonList(QWidget):
             except RuntimeError:  # pragma: no cover - 视图已销毁
                 pass
         return [
-            (self.width() * start, max(6.0, self.width() * width))
-            for start, width in self.SEGMENTS
+            (self.width() * start, max(6.0, self.width() * width)) for start, width in self.SEGMENTS
         ]
 
     def paintEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名
@@ -1947,9 +1962,7 @@ class SkeletonList(QWidget):
             painter.setBrush(QBrush(bar_color))
             center_y = top + row_height / 2 - self.BAR_HEIGHT / 2
             for left, bar_width in segments:
-                painter.drawRoundedRect(
-                    QRectF(left, center_y, bar_width, self.BAR_HEIGHT), 4, 4
-                )
+                painter.drawRoundedRect(QRectF(left, center_y, bar_width, self.BAR_HEIGHT), 4, 4)
         painter.setOpacity(1.0)
 
 
@@ -2231,7 +2244,7 @@ class TagCloud(QWidget):
         self._rebuild()
 
     @property
-    def flow(self) -> "TagCloud":
+    def flow(self) -> TagCloud:
         """兼容旧引用：流式布局现在直接挂在本控件上，容器就是自己。"""
         return self
 
@@ -2469,11 +2482,15 @@ class CheckReportView(QWidget):
             self.column.insertWidget(index, self._card(None, "未发现问题，可以发布", level="ok"))
             index += 1
         for item in self._errors:
-            self.column.insertWidget(index, self._card(item, getattr(item, "title", ""), level="error"))
+            self.column.insertWidget(
+                index, self._card(item, getattr(item, "title", ""), level="error")
+            )
             index += 1
         if self._suggest_open:
             for item in self._advisories:
-                self.column.insertWidget(index, self._card(item, getattr(item, "title", ""), level="warn"))
+                self.column.insertWidget(
+                    index, self._card(item, getattr(item, "title", ""), level="warn")
+                )
                 index += 1
 
         count = len(self._advisories)
@@ -2670,8 +2687,20 @@ class ScoreReport(QWidget):
             self.verdict_label.setStyleSheet(f"color: {p.text_faint}; background: transparent;")
         else:
             ratio = total_value / 40
-            color = p.success if ratio >= 0.8 else (p.accent if ratio >= 0.6 else (p.warning if ratio >= 0.4 else p.danger))
-            verdict = "很好，可以直接发" if ratio >= 0.8 else ("不错，微调即可" if ratio >= 0.6 else ("一般，建议按下面改" if ratio >= 0.4 else "偏弱，建议重写关键段"))
+            color = (
+                p.success
+                if ratio >= 0.8
+                else (p.accent if ratio >= 0.6 else (p.warning if ratio >= 0.4 else p.danger))
+            )
+            verdict = (
+                "很好，可以直接发"
+                if ratio >= 0.8
+                else (
+                    "不错，微调即可"
+                    if ratio >= 0.6
+                    else ("一般，建议按下面改" if ratio >= 0.4 else "偏弱，建议重写关键段")
+                )
+            )
             self.score_label.setText(str(total_value))
             self.score_label.setStyleSheet(f"color: {color}; background: transparent;")
             self.verdict_label.setText(verdict)
@@ -2881,7 +2910,7 @@ class RowActionsDelegate(RowBackgroundDelegate):
         self.primary_clicked: Callable[[int], None] | None = None
         self.secondary_clicked: Callable[[int], None] | None = None
 
-    def attach(self, table: Any) -> "RowActionsDelegate":
+    def attach(self, table: Any) -> RowActionsDelegate:
         """绑定表格，用于跟踪鼠标悬停到哪个按钮上。"""
         self._table = table
         table.viewport().setMouseTracking(True)
@@ -2937,9 +2966,7 @@ class RowActionsDelegate(RowBackgroundDelegate):
         first_width = int(space * width_a / total)
         top = int(rect.center().y() - self.HEIGHT / 2)
         first = QRect(rect.left() + self.PAD, top, first_width, self.HEIGHT)
-        second = QRect(
-            first.right() + 1 + self.GAP, top, space - first_width, self.HEIGHT
-        )
+        second = QRect(first.right() + 1 + self.GAP, top, space - first_width, self.HEIGHT)
         return first, second
 
     def paint(  # noqa: N802
@@ -3150,7 +3177,9 @@ class FlowSteps(QWidget):
     用户就不知道自己在第几步；这条常驻顶部的步骤条把 4 个阶段拉平展示。
     """
 
-    def __init__(self, labels: Sequence[str], theme: str = "light", parent: QWidget | None = None) -> None:
+    def __init__(
+        self, labels: Sequence[str], theme: str = "light", parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("FlowSteps")
         self._theme = theme

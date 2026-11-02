@@ -24,10 +24,25 @@ from stent.services import analytics as A  # noqa: E402
 
 # 会被判定为「不该出现在面向用户文本里」的英文标识
 FORBIDDEN = (
-    "bilibili", "douyin", "xiaohongshu", "zhihu", "weibo", "weixin_mp",
-    "views", "likes", "comments", "collects", "shares",
-    "engagement_rate", "engagement_score", "consistency", "momentum",
-    "aggregate_engagement_rate", "post_count", "top_lift", "by_platform",
+    "bilibili",
+    "douyin",
+    "xiaohongshu",
+    "zhihu",
+    "weibo",
+    "weixin_mp",
+    "views",
+    "likes",
+    "comments",
+    "collects",
+    "shares",
+    "engagement_rate",
+    "engagement_score",
+    "consistency",
+    "momentum",
+    "aggregate_engagement_rate",
+    "post_count",
+    "top_lift",
+    "by_platform",
 )
 
 SAMPLES = [
@@ -137,8 +152,14 @@ def main() -> None:
     exp = result.get("structure_experience") or []
     check("结构化经验非空", bool(exp))
     exp_text = json.dumps(exp, ensure_ascii=False)
-    check("structure_experience 无英文标识", not hits(exp_text), f"{hits(exp_text)} -> {exp_text[:200]}")
-    check("evidence 已中文化", "总体互动率" in exp_text and "发布一致性" in exp_text, exp_text[:160])
+    check(
+        "structure_experience 无英文标识",
+        not hits(exp_text),
+        f"{hits(exp_text)} -> {exp_text[:200]}",
+    )
+    check(
+        "evidence 已中文化", "总体互动率" in exp_text and "发布一致性" in exp_text, exp_text[:160]
+    )
 
     print("\n=== 画像记忆 ===")
     memory = db.get_profile().get("memory") or []

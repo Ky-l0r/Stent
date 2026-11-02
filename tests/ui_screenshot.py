@@ -32,7 +32,6 @@ def main(theme: str = "light") -> int:
     app = build_application(["stent-shot"])
 
     from PySide6.QtCore import QTimer
-
     from stent.ui.context import AppContext
     from stent.ui.main_window import MainWindow
 
@@ -70,8 +69,10 @@ def main(theme: str = "light") -> int:
 
         def region(rect) -> object:
             scaled = type(rect)(
-                int(rect.x() * dpr), int(rect.y() * dpr),
-                int(rect.width() * dpr), int(rect.height() * dpr),
+                int(rect.x() * dpr),
+                int(rect.y() * dpr),
+                int(rect.width() * dpr),
+                int(rect.height() * dpr),
             )
             return shot.copy(scaled)
 

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import re as _re
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from ._browser import collect_content_links, hold_for_review, page_title, record_browser_error
 from .base import (
@@ -62,7 +63,7 @@ TITLE_MAX = 20
 #: Chromium 启动参数。移除了 Easel 的 ``--no-sandbox`` / ``--disable-dev-shm-usage``
 #: （Linux 容器专用，Windows 桌面下反而加剧不稳定），保留反检测与资源相关参数。
 LAUNCH_ARGS: tuple[str, ...] = (
-    "--disable-blink-features=AutomationControlled",   # 反检测——Easel xhs_publish.py:83
+    "--disable-blink-features=AutomationControlled",  # 反检测——Easel xhs_publish.py:83
     "--disable-gpu",
     "--disable-software-rasterizer",
     "--disable-extensions",
@@ -89,21 +90,25 @@ DEBUG_SUBDIR = "debug"
 #: 登录成功的页面标志：网页版右上角用户区（[E:52][U:login.go:27/81/123]）
 LOGIN_OK_SELECTORS: tuple[str, ...] = (
     ".main-container .user .link-wrapper .channel",
-    ".main-container .user a[href^='/user/profile/']",   # [新增]
-    ".main-container .user img.reds-img",                 # [新增]
+    ".main-container .user a[href^='/user/profile/']",  # [新增]
+    ".main-container .user img.reds-img",  # [新增]
 )
 
 #: 登录二维码（[E:53][U:login.go:102]）
 QRCODE_SELECTORS: tuple[str, ...] = (
     ".login-container .qrcode-img",
-    ".qrcode-img",                                        # [新增]
-    "img[src^='data:image'][class*='qrcode']",            # [新增]
-    "[class*='qrcode'] canvas",                           # [新增]
+    ".qrcode-img",  # [新增]
+    "img[src^='data:image'][class*='qrcode']",  # [新增]
+    "[class*='qrcode'] canvas",  # [新增]
 )
 
 #: 二维码失效后的刷新入口（[新增]，Easel 未处理过期码）
 QR_REFRESH_TEXTS: tuple[str, ...] = (
-    "点击刷新", "刷新二维码", "二维码已失效", "已失效", "重新获取",
+    "点击刷新",
+    "刷新二维码",
+    "二维码已失效",
+    "已失效",
+    "重新获取",
 )
 
 #: 创作平台登录页的登录方式 tab（[新增]，兜底引导）
@@ -133,7 +138,7 @@ UPLOAD_INPUT_MORE_SELECTORS: tuple[str, ...] = (
 #: 图文已上传预览（用于判定每张图上传完成）（[E:60][U:publish.go:326]）
 IMG_PREVIEW_SELECTORS: tuple[str, ...] = (
     ".img-preview-area .pr",
-    "[class*='img-preview'] [class*='pr']",               # [新增]
+    "[class*='img-preview'] [class*='pr']",  # [新增]
 )
 
 #: 视频上传中的进度容器（[新增]；Easel 以「发布按钮可点击」间接判定处理完成）
@@ -147,8 +152,8 @@ VIDEO_UPLOADING_SELECTORS: tuple[str, ...] = (
 TITLE_INPUT_SELECTORS: tuple[str, ...] = (
     "div.d-input input",
     "input[placeholder*='标题']",
-    "input[placeholder*='填写标题']",                      # [新增]
-    "textarea[placeholder*='标题']",                       # [新增]
+    "input[placeholder*='填写标题']",  # [新增]
+    "textarea[placeholder*='标题']",  # [新增]
 )
 
 #: 正文编辑器（Quill 旧版 → tiptap/contenteditable 新版）（[E:64][U:publish.go:672-674]）
@@ -163,15 +168,15 @@ CONTENT_EDITOR_SELECTORS: tuple[str, ...] = (
 #: 正文占位符（旧版用它反查可编辑祖先）（[E:66][U:publish.go getContentElement]）
 CONTENT_PLACEHOLDER_SELECTORS: tuple[str, ...] = (
     "p[data-placeholder*='输入正文描述']",
-    "[data-placeholder*='输入正文描述']",                  # [新增]
+    "[data-placeholder*='输入正文描述']",  # [新增]
 )
 
 #: 话题联想容器与联想项（[E:71-72][U:publish.go:762-768]）
 TOPIC_CONTAINER_SELECTORS: tuple[str, ...] = ("#creator-editor-topic-container",)
 TOPIC_ITEM_SELECTORS: tuple[str, ...] = (
     "#creator-editor-topic-container .item",
-    "#creator-editor-topic-container li",                  # [新增]
-    "[class*='topic-container'] [class*='item']",          # [新增]
+    "#creator-editor-topic-container li",  # [新增]
+    "[class*='topic-container'] [class*='item']",  # [新增]
 )
 
 #: 发布按钮：新版 ``<xhs-publish-btn>`` web component（[E:73][U:publish.go:487]）
@@ -179,32 +184,47 @@ PUBLISH_BTN_NEW_SELECTORS: tuple[str, ...] = ("xhs-publish-btn",)
 #: 发布按钮：旧版 ``.publish-page-publish-btn button.bg-red``（[E:74][U:publish.go:516]）
 PUBLISH_BTN_OLD_SELECTORS: tuple[str, ...] = (
     ".publish-page-publish-btn button.bg-red",
-    ".publish-page-publish-btn button",                    # [新增]
+    ".publish-page-publish-btn button",  # [新增]
 )
 #: 按文案兜底的发布按钮（[新增]，仅在两版结构都失效时尝试）
 PUBLISH_BTN_TEXTS: tuple[str, ...] = ("发布笔记", "发布")
 
 #: 二次确认弹窗的确认按钮文案（[E:463-468]）
 CONFIRM_PUBLISH_TEXTS: tuple[str, ...] = (
-    "确认发布", "确定发布", "继续发布", "立即发布", "确认", "确定",
+    "确认发布",
+    "确定发布",
+    "继续发布",
+    "立即发布",
+    "确认",
+    "确定",
 )
 
 #: 标题 / 正文超限提示（[E:67-68][U:publish.go:624/642]）
 TITLE_OVERFLOW_SELECTORS: tuple[str, ...] = ("div.title-container div.max_suffix",)
 CONTENT_OVERFLOW_SELECTORS: tuple[str, ...] = (
     "div.edit-container div.length-error",
-    "[class*='length-error']",                             # [新增]
+    "[class*='length-error']",  # [新增]
 )
 
 #: 失败现场诊断：可见弹框 / toast / 报错（[E:432-433]）
 DIAG_TEXT_SELECTORS: tuple[str, ...] = (
-    ".d-modal", "[role=dialog]", "[class*=modal]", "[class*=dialog]",
-    ".d-message", ".d-toast", "[class*=toast]", "[class*=error]", "[class*=tip]",
+    ".d-modal",
+    "[role=dialog]",
+    "[class*=modal]",
+    "[class*=dialog]",
+    ".d-message",
+    ".d-toast",
+    "[class*=toast]",
+    "[class*=error]",
+    "[class*=tip]",
 )
 
 #: 发布成功提示（小红书成功后通常原地清空表单，故还需配合 URL / 表单复位判定）（[E:480]）
 SUCCESS_TOAST_SELECTORS: tuple[str, ...] = (
-    ".d-message", ".d-toast", "[class*=toast]", "[class*=message]",
+    ".d-message",
+    ".d-toast",
+    "[class*=toast]",
+    "[class*=message]",
 )
 
 #: 笔记管理页里的笔记链接（用于发布后提取作品链接）
@@ -220,7 +240,7 @@ METRIC_VALUE_SELECTORS: dict[str, tuple[str, ...]] = {
         ".interact-container .like-wrapper .count",
         ".engage-bar .like-wrapper .count",
         "[class*='like-wrapper'] [class*='count']",
-        "[data-v-a9660e72][class*='count']",               # [新增] 小红书 Vue 组件 scoped 属性
+        "[data-v-a9660e72][class*='count']",  # [新增] 小红书 Vue 组件 scoped 属性
     ),
     "collects": (
         ".interact-container .collect-wrapper .count",
@@ -266,6 +286,7 @@ RISK_BODY_MARKERS: tuple[str, ...] = ("IP存在风险", "请切换可靠网络�
 # 纯函数（离线可测，不依赖 playwright）
 # --------------------------------------------------------------------------- #
 
+
 def calc_title_length(text: str) -> int:
     """小红书标题长度口径（移植 Easel ``xhs_publish.py:95`` ``calc_title_length``）。
 
@@ -301,7 +322,14 @@ def parse_cn_number(text: Any) -> int:
     if not s:
         return 0
     multiplier = 1.0
-    for suffix, factor in (("亿", 1e8), ("万", 1e4), ("w", 1e4), ("W", 1e4), ("k", 1e3), ("K", 1e3)):
+    for suffix, factor in (
+        ("亿", 1e8),
+        ("万", 1e4),
+        ("w", 1e4),
+        ("W", 1e4),
+        ("k", 1e3),
+        ("K", 1e3),
+    ):
         if s.endswith(suffix):
             multiplier = factor
             s = s[: -len(suffix)]
@@ -335,13 +363,13 @@ def extract_metric_from_text(text: str, labels: tuple[str, ...]) -> int:
     for label in labels:
         idx = flat.find(label)
         while idx >= 0:
-            tail = flat[idx + len(label): idx + len(label) + 24].lstrip(" ：:·|/")
+            tail = flat[idx + len(label) : idx + len(label) + 24].lstrip(" ：:·|/")
             match = _NUM_TOKEN_RE.match(tail)
             if match:
                 val = parse_cn_number(match.group(1))
                 if val:
                     return val
-            head = flat[max(0, idx - 24): idx].strip()
+            head = flat[max(0, idx - 24) : idx].strip()
             if head:
                 matches = _NUM_TOKEN_RE.findall(head)
                 if matches:
@@ -376,16 +404,25 @@ def normalize_content(text: str) -> str:
 # 浏览器会话
 # --------------------------------------------------------------------------- #
 
+
 class BrowserSession:
     """包一层 ``launch_persistent_context``，提供 ``page`` 与幂等的 ``close()``。
 
     与本项目抖音适配器同构（每个平台各自持有这份轻量封装，换来模块间零耦合）。
     """
 
-    def __init__(self, playwright: Any, user_data_dir: str, *, headless: bool,
-                 timeout_ms: int = 30_000, args: tuple[str, ...] = LAUNCH_ARGS):
-        self._ctx = self._launch(playwright, user_data_dir, headless=headless,
-                                 timeout_ms=timeout_ms, args=args)
+    def __init__(
+        self,
+        playwright: Any,
+        user_data_dir: str,
+        *,
+        headless: bool,
+        timeout_ms: int = 30_000,
+        args: tuple[str, ...] = LAUNCH_ARGS,
+    ):
+        self._ctx = self._launch(
+            playwright, user_data_dir, headless=headless, timeout_ms=timeout_ms, args=args
+        )
         pages = list(getattr(self._ctx, "pages", []) or [])
         self.page = pages[0] if pages else self._ctx.new_page()
         try:
@@ -395,12 +432,18 @@ class BrowserSession:
             pass
 
     @staticmethod
-    def _launch(playwright: Any, user_data_dir: str, *, headless: bool,
-                timeout_ms: int, args: tuple[str, ...]):
+    def _launch(
+        playwright: Any,
+        user_data_dir: str,
+        *,
+        headless: bool,
+        timeout_ms: int,
+        args: tuple[str, ...],
+    ):
         """启动持久化上下文；先试禁用系统代理（小红书直连更稳），失败退回默认。"""
         common: dict[str, Any] = dict(
             headless=headless,
-            locale="zh-CN",                                   # 反检测——Easel xhs_publish.py:555
+            locale="zh-CN",  # 反检测——Easel xhs_publish.py:555
             viewport={"width": 1440, "height": 900},
             timeout=timeout_ms,
         )
@@ -421,8 +464,9 @@ class BrowserSession:
 
 
 @contextmanager
-def open_browser(adapter: "XiaoHongShuAdapter", *, headless: bool,
-                 timeout_ms: int = 30_000) -> Iterator[BrowserSession | None]:
+def open_browser(
+    adapter: XiaoHongShuAdapter, *, headless: bool, timeout_ms: int = 30_000
+) -> Iterator[BrowserSession | None]:
     """打开浏览器会话；playwright 缺失/内核缺失时产出 ``None``（由调用方给中文提示）。"""
     try:
         from playwright.sync_api import sync_playwright
@@ -433,7 +477,9 @@ def open_browser(adapter: "XiaoHongShuAdapter", *, headless: bool,
     with sync_playwright() as pw:
         session: BrowserSession | None = None
         try:
-            session = BrowserSession(pw, adapter.profile_dir(), headless=headless, timeout_ms=timeout_ms)
+            session = BrowserSession(
+                pw, adapter.profile_dir(), headless=headless, timeout_ms=timeout_ms
+            )
         except Exception as exc:  # noqa: BLE001
             record_browser_error(exc)
             yield None
@@ -447,6 +493,7 @@ def open_browser(adapter: "XiaoHongShuAdapter", *, headless: bool,
 # --------------------------------------------------------------------------- #
 # DOM 小工具（全部容错，绝不抛异常）
 # --------------------------------------------------------------------------- #
+
 
 def first_visible(page: Any, selectors: tuple[str, ...], *, scope: Any = None) -> Any:
     """按候选顺序返回第一个可见元素；都没有返回 None。"""
@@ -545,8 +592,11 @@ def click_text_in(page: Any, scope: Any, texts: tuple[str, ...]) -> bool:
     """在 scope 内按文案点击（先 button/a，再 text= 节点，最后 JS 遍历）。"""
     base = scope if scope is not None else page
     for text in texts:
-        for sel in (f"button:has-text('{text}')", f"a:has-text('{text}')",
-                    f"[role=button]:has-text('{text}')"):
+        for sel in (
+            f"button:has-text('{text}')",
+            f"a:has-text('{text}')",
+            f"[role=button]:has-text('{text}')",
+        ):
             try:
                 for el in base.query_selector_all(sel):
                     try:
@@ -642,6 +692,7 @@ def with_longer_timeout(page: Any, timeout_ms: int = 120_000) -> Iterator[None]:
 # 适配器
 # --------------------------------------------------------------------------- #
 
+
 class XiaoHongShuAdapter(PlatformAdapter):
     """小红书适配器（图文 / 视频笔记，creator.xiaohongshu.com 创作者中心）。"""
 
@@ -661,12 +712,12 @@ class XiaoHongShuAdapter(PlatformAdapter):
     @property
     def limits(self) -> PlatformLimits:
         return PlatformLimits(
-            title_max=TITLE_MAX,        # 标题 ≤ 20 全角字（upstream pkg/xhsutil/title.go）
-            body_max=1000,              # 正文 ≤ 1000 字（Easel SKILL.md 约束）
+            title_max=TITLE_MAX,  # 标题 ≤ 20 全角字（upstream pkg/xhsutil/title.go）
+            body_max=1000,  # 正文 ≤ 1000 字（Easel SKILL.md 约束）
             body_min=0,
             tags_max=10,
-            requires_media=True,        # 小红书笔记必须有图或视频
-            media_max=18,               # 图文最多 18 张
+            requires_media=True,  # 小红书笔记必须有图或视频
+            media_max=18,  # 图文最多 18 张
             media_kinds=("image", "video"),
             supports_video=True,
             notes="图文与视频二选一，不可混用；标题按全角字数计（20 字上限）",
@@ -692,12 +743,15 @@ class XiaoHongShuAdapter(PlatformAdapter):
         if box and box.get("width", 0) > 20:
             pad = 6
             try:
-                page.screenshot(path=out_path, clip={
-                    "x": max(0, box["x"] - pad),
-                    "y": max(0, box["y"] - pad),
-                    "width": box["width"] + pad * 2,
-                    "height": box["height"] + pad * 2,
-                })
+                page.screenshot(
+                    path=out_path,
+                    clip={
+                        "x": max(0, box["x"] - pad),
+                        "y": max(0, box["y"] - pad),
+                        "width": box["width"] + pad * 2,
+                        "height": box["height"] + pad * 2,
+                    },
+                )
                 return
             except Exception:
                 pass
@@ -776,8 +830,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return False, ("浏览器不可用：请先安装 playwright 与 chromium"
-                                   "（pip install playwright && playwright install chromium）")
+                    return False, (
+                        "浏览器不可用：请先安装 playwright 与 chromium"
+                        "（pip install playwright && playwright install chromium）"
+                    )
                 page = sess.page
                 try:
                     page.goto(EXPLORE_URL, wait_until="domcontentloaded", timeout=45_000)
@@ -795,8 +851,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
                         pass
                     if self._is_logged_in(page):
                         return True, "小红书已登录"
-                    return False, ("小红书判定当前网络为风险 IP（安全限制 300012）——"
-                                   "请换干净网络/家宽代理后重试，或在正常网络下登录后拷贝登录态目录")
+                    return False, (
+                        "小红书判定当前网络为风险 IP（安全限制 300012）——"
+                        "请换干净网络/家宽代理后重试，或在正常网络下登录后拷贝登录态目录"
+                    )
                 if state is LoginState.LOGGED_OUT:
                     return False, "小红书未登录，请先点击「登录」扫码"
                 return False, "无法确认小红书登录态（页面可能改版或加载超时）"
@@ -808,8 +866,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=False) as sess:
                 if sess is None:
-                    return False, ("浏览器不可用：请先安装 playwright 与 chromium"
-                                   "（pip install playwright && playwright install chromium）")
+                    return False, (
+                        "浏览器不可用：请先安装 playwright 与 chromium"
+                        "（pip install playwright && playwright install chromium）"
+                    )
                 page = sess.page
                 # 先探一次：已登录则无需扫码
                 try:
@@ -848,7 +908,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 except Exception:
                     pass
                 try:
-                    click_text_in(page, page, LOGIN_TABS_BY_TEXT)   # 切到「扫码登录」
+                    click_text_in(page, page, LOGIN_TABS_BY_TEXT)  # 切到「扫码登录」
                 except Exception:
                     pass
                 page.wait_for_timeout(1_200)
@@ -865,8 +925,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 if "closed" in low or "target" in low:
                     return False, "登录窗口已被关闭，请重新点击「登录」"
                 return False, f"登录过程中浏览器异常：{type(exc).__name__}"
-        return False, (f"{timeout_sec}s 内未检测到登录成功（二维码可能已过期）。"
-                       f"请重新点击「登录」再扫一次（二维码截图：{qr_path}）")
+        return False, (
+            f"{timeout_sec}s 内未检测到登录成功（二维码可能已过期）。"
+            f"请重新点击「登录」再扫一次（二维码截图：{qr_path}）"
+        )
 
     # -- 发布 ----------------------------------------------------------
     def publish(
@@ -899,19 +961,29 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 message=f"正文超长（{len(body)}/{lim.body_max} 字），请精简后再发布",
             )
         if len(tags) > lim.tags_max:
-            return PublishResult(ok=False, message=f"话题过多（{len(tags)}/{lim.tags_max} 个），请删减后再发布")
+            return PublishResult(
+                ok=False, message=f"话题过多（{len(tags)}/{lim.tags_max} 个），请删减后再发布"
+            )
 
         media = [str(p) for p in (payload.media or []) if str(p).strip()]
         if not media:
-            return PublishResult(ok=False, message="小红书笔记必须有图片或视频，请先在预览里选择媒体文件")
+            return PublishResult(
+                ok=False, message="小红书笔记必须有图片或视频，请先在预览里选择媒体文件"
+            )
         missing = [p for p in media if not Path(p).expanduser().is_file()]
         if missing:
             return PublishResult(ok=False, message=f"媒体文件不存在：{missing[0]}")
         if len(media) > lim.media_max:
-            return PublishResult(ok=False, message=f"媒体文件过多（{len(media)}/{lim.media_max}），请删减后再发布")
+            return PublishResult(
+                ok=False, message=f"媒体文件过多（{len(media)}/{lim.media_max}），请删减后再发布"
+            )
 
         # 判断图文还是视频：视频只能单独一个（Easel SKILL.md：两者不可混用）
-        videos = [p for p in media if Path(p).suffix.lower() in (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")]
+        videos = [
+            p
+            for p in media
+            if Path(p).suffix.lower() in (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
+        ]
         images = [p for p in media if p not in videos]
         if videos and images:
             return PublishResult(ok=False, message="小红书图文与视频不可混用，请只保留一种媒体")
@@ -922,12 +994,21 @@ class XiaoHongShuAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return PublishResult(ok=False, message="浏览器不可用：请先安装 playwright 与 chromium")
+                    return PublishResult(
+                        ok=False, message="浏览器不可用：请先安装 playwright 与 chromium"
+                    )
                 page = sess.page
                 try:
                     result = self._publish_flow(
-                        page, title=title, body=body, tags=tags, media=media, kind=kind,
-                        dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
+                        page,
+                        title=title,
+                        body=body,
+                        tags=tags,
+                        media=media,
+                        kind=kind,
+                        dry_run=dry_run,
+                        timeout_sec=timeout_sec,
+                        on_progress=on_progress,
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(page, self._debug_dir(), "publish-error")
@@ -940,14 +1021,16 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 # 收尾结论要写回 message：以前返回值被丢掉，界面上仍旧只显示内层那句
                 # 「已填写完成，等待人工确认」，既不提浏览器会保持打开，也不提怎么结束的。
                 if dry_run and result.ok:
-                    result = replace(result, message=self._hold_for_review(
-                        page, payload, on_progress, cancel))
+                    result = replace(
+                        result, message=self._hold_for_review(page, payload, on_progress, cancel)
+                    )
                 return result
         except Exception as exc:  # noqa: BLE001
             return PublishResult(ok=False, message=f"小红书发布异常：{type(exc).__name__}: {exc}")
 
-    def _hold_for_review(self, page: Any, payload: PublishPayload, on_progress: Any,
-                         cancel: Any = None) -> str:
+    def _hold_for_review(
+        self, page: Any, payload: PublishPayload, on_progress: Any, cancel: Any = None
+    ) -> str:
         """dry-run 收尾：保持窗口打开供人工复核，返回一句可展示的结论。
 
         统一走 :func:`_browser.hold_for_review`：小红书原先自己实现了一份，
@@ -995,11 +1078,18 @@ class XiaoHongShuAdapter(PlatformAdapter):
         try:
             page.goto(PUBLISH_URL, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
-            return PublishResult(ok=False, message=f"打开发布页失败：{type(exc).__name__}（请检查网络或代理）")
+            return PublishResult(
+                ok=False, message=f"打开发布页失败：{type(exc).__name__}（请检查网络或代理）"
+            )
         page.wait_for_timeout(1_500)
         if not self._is_logged_in(page):
-            if "login" in (page.url or "").lower() or query_safe(page, QRCODE_SELECTORS) is not None:
-                return PublishResult(ok=False, message="小红书未登录，请先在「账号」页扫码登录后再发布")
+            if (
+                "login" in (page.url or "").lower()
+                or query_safe(page, QRCODE_SELECTORS) is not None
+            ):
+                return PublishResult(
+                    ok=False, message="小红书未登录，请先在「账号」页扫码登录后再发布"
+                )
 
         # 2) 切「上传图文 / 上传视频」tab
         tab_name = "上传视频" if kind == "video" else "上传图文"
@@ -1009,7 +1099,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 message=f"未找到发布 TAB「{tab_name}」（小红书可能改版）"
-                        + (f"，失败现场已落盘：{where}" if where else ""),
+                + (f"，失败现场已落盘：{where}" if where else ""),
             )
         page.wait_for_timeout(1_000)
 
@@ -1021,14 +1111,14 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 return PublishResult(
                     ok=False,
                     message="未找到视频上传入口（file input），无法上传"
-                            + (f"，失败现场已落盘：{where}" if where else ""),
+                    + (f"，失败现场已落盘：{where}" if where else ""),
                 )
             if not self._wait_publish_clickable(page, timeout_s=600):
                 where = dump_debug(page, self._debug_dir(), "video-not-ready")
                 return PublishResult(
                     ok=False,
                     message="视频上传/转码超时或编辑器未就绪（已按未发布处理）"
-                            + (f"，失败现场已落盘：{where}" if where else ""),
+                    + (f"，失败现场已落盘：{where}" if where else ""),
                 )
             page.wait_for_timeout(1_000)
         else:
@@ -1049,7 +1139,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 message="未找到标题输入框（小红书可能改版）"
-                        + (f"，失败现场已落盘：{where}" if where else ""),
+                + (f"，失败现场已落盘：{where}" if where else ""),
             )
         if not clear_and_type(page, title_el, title):
             return PublishResult(ok=False, message="标题输入失败，请重试或在浏览器窗口内手动填写")
@@ -1064,7 +1154,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 message="未找到正文编辑器（小红书可能改版）"
-                        + (f"，失败现场已落盘：{where}" if where else ""),
+                + (f"，失败现场已落盘：{where}" if where else ""),
             )
         if body and not clear_and_type(page, content_el, body):
             return PublishResult(ok=False, message="正文输入失败，请重试或在浏览器窗口内手动填写")
@@ -1087,7 +1177,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 message=f"平台提示内容超出长度限制：{overflow}"
-                        + (f"，失败现场已落盘：{where}" if where else ""),
+                + (f"，失败现场已落盘：{where}" if where else ""),
             )
 
         # 8) dry_run：停在最后一步，绝不点击发布
@@ -1109,17 +1199,21 @@ class XiaoHongShuAdapter(PlatformAdapter):
 
         # 9) 正式发布：等按钮可点击 → 点击 → 二次确认 → 成功校验
         self._log(on_progress, "等待「发布」按钮就绪…", 80)
-        found = self._wait_publish_clickable(page, timeout_s=min(60, max(15, int(deadline - time.time()))))
+        found = self._wait_publish_clickable(
+            page, timeout_s=min(60, max(15, int(deadline - time.time())))
+        )
         if not found:
             where = dump_debug(page, self._debug_dir(), "publish-button-not-ready")
             return PublishResult(
                 ok=False,
                 message="「发布」按钮迟迟不可点击（可能校验未过或仍在处理媒体），已按未发布处理"
-                        + (f"，失败现场已落盘：{where}" if where else ""),
+                + (f"，失败现场已落盘：{where}" if where else ""),
             )
         self._log(on_progress, "提交发布…", 88)
         if not self._click_publish_button(page, found):
-            return PublishResult(ok=False, message="点击「发布」按钮失败，请改为在浏览器窗口内人工发布")
+            return PublishResult(
+                ok=False, message="点击「发布」按钮失败，请改为在浏览器窗口内人工发布"
+            )
         page.wait_for_timeout(1_000)
         self._confirm_publish_dialog(page)
 
@@ -1141,8 +1235,13 @@ class XiaoHongShuAdapter(PlatformAdapter):
             ok=True,
             url=note_url,
             message=message,
-            detail={"kind": kind, "title": title, "tags": tags,
-                    "note_url": note_url, "publish_page_url": page.url or ""},
+            detail={
+                "kind": kind,
+                "title": title,
+                "tags": tags,
+                "note_url": note_url,
+                "publish_page_url": page.url or "",
+            },
         )
 
     # -- 发布子步骤 ----------------------------------------------------
@@ -1225,7 +1324,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
         """上传视频（等「发布按钮可点击」由调用方负责，≤10min）。"""
         for sel in UPLOAD_INPUT_FIRST_SELECTORS:
             try:
-                with with_longer_timeout(page, 600_000):   # 大视频写入可能很慢
+                with with_longer_timeout(page, 600_000):  # 大视频写入可能很慢
                     page.set_input_files(sel, path)
                 page.wait_for_timeout(1_000)
                 return True
@@ -1248,10 +1347,12 @@ class XiaoHongShuAdapter(PlatformAdapter):
 
         移植 Easel ``_content_element``（xhs_publish.py:339）/ upstream ``getContentElement``。
         """
-        for sel in ("div.ql-editor",
-                    "div[role='textbox'][contenteditable='true']",
-                    "div.tiptap[contenteditable='true']",
-                    "div.editor-container [contenteditable='true']"):
+        for sel in (
+            "div.ql-editor",
+            "div[role='textbox'][contenteditable='true']",
+            "div.tiptap[contenteditable='true']",
+            "div.editor-container [contenteditable='true']",
+        ):
             try:
                 el = page.query_selector(sel)
             except Exception:
@@ -1312,7 +1413,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
         except Exception:
             click_soft(content_el)
         try:
-            page.keyboard.press("Control+End")   # 光标移到正文末尾
+            page.keyboard.press("Control+End")  # 光标移到正文末尾
             page.wait_for_timeout(400)
         except Exception:
             pass
@@ -1321,10 +1422,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
             if not tag:
                 continue
             try:
-                page.keyboard.type(" ")          # 与正文/上一话题分隔，确保 # 起新 token
+                page.keyboard.type(" ")  # 与正文/上一话题分隔，确保 # 起新 token
                 page.keyboard.type("#")
                 page.wait_for_timeout(300)
-                for ch in tag:                   # 逐字输入，不再 click
+                for ch in tag:  # 逐字输入，不再 click
                     page.keyboard.type(ch)
                     page.wait_for_timeout(40)
                 page.wait_for_timeout(1_000)
@@ -1332,10 +1433,10 @@ class XiaoHongShuAdapter(PlatformAdapter):
                 return
             item = first_visible(page, TOPIC_ITEM_SELECTORS)
             if item is not None:
-                click_soft(item)                 # 点联想第一项 = 真正绑定话题
+                click_soft(item)  # 点联想第一项 = 真正绑定话题
             else:
                 try:
-                    page.keyboard.type(" ")      # 无联想则退化为空格分隔（至少保留 #文字）
+                    page.keyboard.type(" ")  # 无联想则退化为空格分隔（至少保留 #文字）
                 except Exception:
                     pass
             try:
@@ -1467,13 +1568,19 @@ class XiaoHongShuAdapter(PlatformAdapter):
                     return True, f"发布成功（{text[:40]}）"
             # 表单已复位：标题框 + 图片预览都消失 = 已提交回到空上传页
             try:
-                if (query_safe(page, TITLE_INPUT_SELECTORS) is None
-                        and first_visible(page, IMG_PREVIEW_SELECTORS) is None):
+                if (
+                    query_safe(page, TITLE_INPUT_SELECTORS) is None
+                    and first_visible(page, IMG_PREVIEW_SELECTORS) is None
+                ):
                     return True, "发布成功（编辑表单已清空复位）"
             except Exception:
                 pass
             page.wait_for_timeout(500)
-        return False, "发布未确认成功：点击发布后未跳离发布页、未见成功提示。" + self._diag_after_publish(page)
+        return (
+            False,
+            "发布未确认成功：点击发布后未跳离发布页、未见成功提示。"
+            + self._diag_after_publish(page),
+        )
 
     def _find_latest_note_url(self, page: Any) -> str:
         """发布成功后到笔记管理页提取最新作品链接；取不到返回空串（不算发布失败）。"""
@@ -1504,9 +1611,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
         return ""
 
     # -- 数据 ----------------------------------------------------------
-    def list_account_posts(
-        self, *, headless: bool = True, limit: int = 50
-    ) -> list[AccountPost]:
+    def list_account_posts(self, *, headless: bool = True, limit: int = 50) -> list[AccountPost]:
         """小红书**不提供**账号导入，请用「粘贴作品链接」登记。
 
         原因：创作中心的「已发布笔记」接口未公开且随版本变动，实测在真实账号上
@@ -1540,8 +1645,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
                         limit=limit,
                     )
                     out = [
-                        AccountPost(url=link, platform_id=link.rsplit("/", 1)[-1])
-                        for link in links
+                        AccountPost(url=link, platform_id=link.rsplit("/", 1)[-1]) for link in links
                     ]
         except Exception:
             return out
@@ -1602,9 +1706,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
         """把创作中心返回的一行转成 :class:`AccountPost`（字段名容忍多种写法）。"""
         if not isinstance(row, dict):
             return None
-        note_id = str(
-            row.get("note_id") or row.get("noteId") or row.get("id") or ""
-        ).strip()
+        note_id = str(row.get("note_id") or row.get("noteId") or row.get("id") or "").strip()
         if not note_id:
             return None
         title = str(
@@ -1772,11 +1874,17 @@ class XiaoHongShuAdapter(PlatformAdapter):
             return {}
         try:
             import json
+
             raw = json.loads(payload)
         except Exception:
             return {}
-        mapping = {"likes": "liked", "collects": "collected", "comments": "comment",
-                   "shares": "shared", "views": "view"}
+        mapping = {
+            "likes": "liked",
+            "collects": "collected",
+            "comments": "comment",
+            "shares": "shared",
+            "views": "view",
+        }
         out: dict[str, int] = {}
         for key, field in mapping.items():
             val = parse_cn_number(raw.get(field))
@@ -1788,6 +1896,7 @@ class XiaoHongShuAdapter(PlatformAdapter):
 # --------------------------------------------------------------------------- #
 # 模块内小工具
 # --------------------------------------------------------------------------- #
+
 
 def _query_all_safe(page: Any, selectors: tuple[str, ...]) -> list[Any]:
     """容错 ``query_selector_all``：逐候选聚合，异常跳过。"""

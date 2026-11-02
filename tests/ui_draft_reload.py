@@ -51,7 +51,6 @@ def main() -> int:
 
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
-
     from stent.ui.context import AppContext
     from stent.ui.main_window import MainWindow
 
@@ -87,9 +86,17 @@ def main() -> int:
         contents = db.list_contents(limit=5)
         check("草稿已入库", bool(contents), f"{len(contents)} 条")
         saved = contents[0]
-        check("草稿存下了补充要求", saved["extra"].startswith("必须提到三个具体品牌"), repr(saved["extra"]))
+        check(
+            "草稿存下了补充要求",
+            saved["extra"].startswith("必须提到三个具体品牌"),
+            repr(saved["extra"]),
+        )
         check("草稿存下了快捷参数", saved["params"].get("goal") == "直接带货", str(saved["params"]))
-        check("空值参数也一并存下（便于判断没设过）", "audience" in saved["params"], str(saved["params"]))
+        check(
+            "空值参数也一并存下（便于判断没设过）",
+            "audience" in saved["params"],
+            str(saved["params"]),
+        )
 
         print("\n=== 载回草稿：输入区必须完整恢复 ===")
         # 先把输入区清干净，模拟「关掉程序再打开」
@@ -106,17 +113,32 @@ def main() -> int:
         page._load_content(db.get_content(int(saved["id"])))
         pump()
 
-        check("补充要求已恢复",
-              page.extra_edit.toPlainText().strip() == "必须提到三个具体品牌；不要出现价格；结尾引导评论",
-              repr(page.extra_edit.toPlainText()))
-        check("快捷参数-内容目标已恢复", page.param_chips["goal"].value() == "直接带货",
-              page.param_chips["goal"].value())
-        check("快捷参数-语气风格已恢复", page.param_chips["tone"].value() == "犀利点评",
-              page.param_chips["tone"].value())
-        check("快捷参数-目标受众已恢复", page.param_chips["audience"].value() == "职场新人",
-              page.param_chips["audience"].value())
-        check("参数胶囊文字同步更新", "直接带货" in page.param_chips["goal"].text(),
-              page.param_chips["goal"].text())
+        check(
+            "补充要求已恢复",
+            page.extra_edit.toPlainText().strip()
+            == "必须提到三个具体品牌；不要出现价格；结尾引导评论",
+            repr(page.extra_edit.toPlainText()),
+        )
+        check(
+            "快捷参数-内容目标已恢复",
+            page.param_chips["goal"].value() == "直接带货",
+            page.param_chips["goal"].value(),
+        )
+        check(
+            "快捷参数-语气风格已恢复",
+            page.param_chips["tone"].value() == "犀利点评",
+            page.param_chips["tone"].value(),
+        )
+        check(
+            "快捷参数-目标受众已恢复",
+            page.param_chips["audience"].value() == "职场新人",
+            page.param_chips["audience"].value(),
+        )
+        check(
+            "参数胶囊文字同步更新",
+            "直接带货" in page.param_chips["goal"].text(),
+            page.param_chips["goal"].text(),
+        )
 
         print("\n=== 再生成一次：请求里带的是原设定的参数 ===")
         req = page._request()
@@ -130,16 +152,25 @@ def main() -> int:
 
         print("\n=== 不存输入的老草稿也不能炸 ===")
         legacy_id = db.create_content(
-            topic="老草稿", platform="bilibili", title="t", body="老正文", status="ready",
+            topic="老草稿",
+            platform="bilibili",
+            title="t",
+            body="老正文",
+            status="ready",
         )
         page._load_content(db.get_content(legacy_id))
         pump()
         check("老草稿载入不报错", page.body_edit.toPlainText().strip() == "老正文")
-        check("老草稿的补充要求为空而不是 None",
-              page.extra_edit.toPlainText() == "", repr(page.extra_edit.toPlainText()))
-        check("老草稿的参数全部清空（不会串到上一份草稿）",
-              all(chip.value() == "" for chip in page.param_chips.values()),
-              str({k: c.value() for k, c in page.param_chips.items()}))
+        check(
+            "老草稿的补充要求为空而不是 None",
+            page.extra_edit.toPlainText() == "",
+            repr(page.extra_edit.toPlainText()),
+        )
+        check(
+            "老草稿的参数全部清空（不会串到上一份草稿）",
+            all(chip.value() == "" for chip in page.param_chips.values()),
+            str({k: c.value() for k, c in page.param_chips.items()}),
+        )
 
         window.close()
         pump()

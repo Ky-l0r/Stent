@@ -18,6 +18,21 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ._browser import (  # noqa: F401 — 平台共用工具
+    BrowserSession,
+    clear_and_type,
+    click_soft,
+    collect_content_links,
+    dump_debug,
+    extract_metric_from_text,
+    first_visible,
+    first_visible_text,
+    hold_for_review,
+    open_browser,
+    page_title,
+    parse_cn_number,
+    paste_into_focused,
+)
 from .base import (
     AccountPost,
     LoginState,
@@ -58,7 +73,7 @@ HD_PUBLISH_SELECTORS: tuple[str, ...] = (
     "#douyin-creator-master-side-upload-wrap button",
     'button:has-text("高清发布")',
     'div:has-text("高清发布")',
-    'text=发布视频',
+    "text=发布视频",
 )
 
 #: 登录判定：出现二维码即未登录
@@ -79,7 +94,7 @@ QR_REFRESH_TEXTS: tuple[str, ...] = ("点击刷新", "刷新二维码", "二维�
 TAB_VIDEO_SELECTORS: tuple[str, ...] = (
     'div[class*="tab-item"]:has-text("发布视频")',
     '[class*="tab"]:has-text("发布视频")',
-    'text=发布视频',
+    "text=发布视频",
 )
 
 #: 隐藏的 file input（视频必须通过它上传）
@@ -149,8 +164,14 @@ SMS_WALL_SELECTORS: tuple[str, ...] = (
     "[data-e2e='verification-dialog']",
 )
 SMS_WALL_KEYWORDS: tuple[str, ...] = (
-    "身份验证", "接收短信", "短信验证", "验证方式", "短信已发送",
-    "验证码已发送", "获取验证码", "验证并登录",
+    "身份验证",
+    "接收短信",
+    "短信验证",
+    "验证方式",
+    "短信已发送",
+    "验证码已发送",
+    "获取验证码",
+    "验证并登录",
 )
 SMS_MODAL_SELECTORS: tuple[str, ...] = SMS_WALL_SELECTORS + (
     "[class*='semi-modal-content']",
@@ -160,9 +181,17 @@ SMS_MODAL_SELECTORS: tuple[str, ...] = SMS_WALL_SELECTORS + (
 SMS_SEND_TEXTS: tuple[str, ...] = ("获取验证码", "发送验证码", "重新发送")
 SMS_SUBMIT_TEXTS: tuple[str, ...] = ("验证并登录", "确定", "登录", "验证", "提交")
 SMS_ERROR_TEXTS: tuple[str, ...] = (
-    "验证码错误", "验证码填写错误", "验证码输入错误", "验证码不正确",
-    "验证码已过期", "验证码过期", "请重新获取", "请重新发送",
-    "验证失败", "输入错误", "已失效",
+    "验证码错误",
+    "验证码填写错误",
+    "验证码输入错误",
+    "验证码不正确",
+    "验证码已过期",
+    "验证码过期",
+    "请重新获取",
+    "请重新发送",
+    "验证失败",
+    "输入错误",
+    "已失效",
 )
 
 #: 发布失败/超时时的现场落盘目录（相对登录态目录）
@@ -184,23 +213,6 @@ METRIC_VALUE_SELECTORS: dict[str, tuple[str, ...]] = {
     "views": ('[data-e2e="video-play-count"]', '[class*="play-count"]'),
 }
 
-from ._browser import (  # noqa: F401 — 平台共用工具
-    BrowserSession,
-    clear_and_type,
-    click_soft,
-    collect_content_links,
-    dump_debug,
-    extract_metric_from_text,
-    first_visible,
-    first_visible_text,
-    hold_for_review,
-    open_browser,
-    page_title,
-    parse_cn_number,
-    paste_into_focused,
-)
-
-
 # --------------------------------------------------------------------------- #
 # 纯工具函数（离线可测，不依赖 playwright）
 # --------------------------------------------------------------------------- #
@@ -218,12 +230,16 @@ def _extract_work_id(url: str) -> str:
         return ""
     return next((g for g in match.groups() if g), "")
 
+
 def looks_like_douyin_share_url(url: str) -> bool:
     """判断是否为抖音作品分享链接（www.douyin.com/video/xxx、v.douyin.com 短链）。"""
     if not url:
         return False
     low = url.strip().lower()
-    return any(k in low for k in ("douyin.com/video", "douyin.com/note", "v.douyin.com", "iesdouyin.com/share"))
+    return any(
+        k in low
+        for k in ("douyin.com/video", "douyin.com/note", "v.douyin.com", "iesdouyin.com/share")
+    )
 
 
 def clean_title(text: Any) -> str:
@@ -250,6 +266,7 @@ def clean_title(text: Any) -> str:
 # 适配器
 # --------------------------------------------------------------------------- #
 
+
 class DouYinAdapter(PlatformAdapter):
     """抖音适配器（视频作品，creator.douyin.com Web 端）。"""
 
@@ -269,8 +286,8 @@ class DouYinAdapter(PlatformAdapter):
     @property
     def limits(self) -> PlatformLimits:
         return PlatformLimits(
-            title_max=30,          # 作品标题
-            body_max=2200,         # 作品简介
+            title_max=30,  # 作品标题
+            body_max=2200,  # 作品简介
             body_min=0,
             tags_max=5,
             requires_media=True,
@@ -310,7 +327,10 @@ class DouYinAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return False, "浏览器不可用：请先安装 playwright 与 chromium（pip install playwright && playwright install chromium）"
+                    return (
+                        False,
+                        "浏览器不可用：请先安装 playwright 与 chromium（pip install playwright && playwright install chromium）",
+                    )
                 page = sess.page
                 try:
                     page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
@@ -424,7 +444,11 @@ class DouYinAdapter(PlatformAdapter):
                     if not src.startswith("data:image"):
                         continue
                     box = img.bounding_box()
-                    if box and 100 <= box["width"] <= 320 and abs(box["width"] - box["height"]) < 40:
+                    if (
+                        box
+                        and 100 <= box["width"] <= 320
+                        and abs(box["width"] - box["height"]) < 40
+                    ):
                         return img
                 except Exception:
                     continue
@@ -471,12 +495,15 @@ class DouYinAdapter(PlatformAdapter):
         if box and box.get("width", 0) > 20:
             pad = 6
             try:
-                page.screenshot(path=out_path, clip={
-                    "x": max(0, box["x"] - pad),
-                    "y": max(0, box["y"] - pad),
-                    "width": box["width"] + pad * 2,
-                    "height": box["height"] + pad * 2,
-                })
+                page.screenshot(
+                    path=out_path,
+                    clip={
+                        "x": max(0, box["x"] - pad),
+                        "y": max(0, box["y"] - pad),
+                        "width": box["width"] + pad * 2,
+                        "height": box["height"] + pad * 2,
+                    },
+                )
                 return
             except Exception:
                 pass
@@ -569,7 +596,12 @@ class DouYinAdapter(PlatformAdapter):
     def _sms_submit_code(self, page: Any, code: str) -> bool:
         scope = self._sms_scope(page) or page
         filled = False
-        for sel in ('input[placeholder*="验证码"]', 'input[maxlength="6"]', 'input[type="tel"]', "input"):
+        for sel in (
+            'input[placeholder*="验证码"]',
+            'input[maxlength="6"]',
+            'input[type="tel"]',
+            "input",
+        ):
             try:
                 for el in scope.query_selector_all(sel):
                     try:
@@ -622,11 +654,17 @@ class DouYinAdapter(PlatformAdapter):
         if not title:
             return PublishResult(ok=False, message="抖音作品标题不能为空")
         if len(title) > lim.title_max:
-            return PublishResult(ok=False, message=f"标题过长（{len(title)}/{lim.title_max} 字），请精简后再发布")
+            return PublishResult(
+                ok=False, message=f"标题过长（{len(title)}/{lim.title_max} 字），请精简后再发布"
+            )
         if len(body) > lim.body_max:
-            return PublishResult(ok=False, message=f"作品简介过长（{len(body)}/{lim.body_max} 字），请精简后再发布")
+            return PublishResult(
+                ok=False, message=f"作品简介过长（{len(body)}/{lim.body_max} 字），请精简后再发布"
+            )
         if len(tags) > lim.tags_max:
-            return PublishResult(ok=False, message=f"话题过多（{len(tags)}/{lim.tags_max}），请删减后再发布")
+            return PublishResult(
+                ok=False, message=f"话题过多（{len(tags)}/{lim.tags_max}），请删减后再发布"
+            )
         media = [p for p in (payload.media or []) if p]
         if not media:
             return PublishResult(ok=False, message="抖音发布视频必填，请在预览里选择视频文件")
@@ -637,12 +675,21 @@ class DouYinAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return PublishResult(ok=False, message="浏览器不可用：请先安装 playwright 与 chromium")
+                    return PublishResult(
+                        ok=False, message="浏览器不可用：请先安装 playwright 与 chromium"
+                    )
                 try:
                     return self._publish_flow(
-                        sess.page, title=title, body=body, tags=tags, video=str(video),
-                        dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
-                        cancel=cancel, extra=payload.extra or {},
+                        sess.page,
+                        title=title,
+                        body=body,
+                        tags=tags,
+                        video=str(video),
+                        dry_run=dry_run,
+                        timeout_sec=timeout_sec,
+                        on_progress=on_progress,
+                        cancel=cancel,
+                        extra=payload.extra or {},
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(sess.page, self._debug_dir(), "douyin", "publish-error")
@@ -675,7 +722,9 @@ class DouYinAdapter(PlatformAdapter):
         try:
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
-            return PublishResult(ok=False, message=f"打开抖音创作者中心失败：{type(exc).__name__}（请检查网络）")
+            return PublishResult(
+                ok=False, message=f"打开抖音创作者中心失败：{type(exc).__name__}（请检查网络）"
+            )
         page.wait_for_timeout(1_500)
 
         state = self._probe_login(page, wait_s=10)
@@ -688,7 +737,8 @@ class DouYinAdapter(PlatformAdapter):
                 where = dump_debug(page, self._debug_dir(), "douyin", "no-upload-page")
                 return PublishResult(
                     ok=False,
-                    message="未找到「高清发布」入口，无法进入上传页（抖音可能改版）" + (f"，现场：{where}" if where else ""),
+                    message="未找到「高清发布」入口，无法进入上传页（抖音可能改版）"
+                    + (f"，现场：{where}" if where else ""),
                 )
 
         self._log(on_progress, "选择「发布视频」…", 18)
@@ -702,7 +752,8 @@ class DouYinAdapter(PlatformAdapter):
             where = dump_debug(page, self._debug_dir(), "douyin", "no-file-input")
             return PublishResult(
                 ok=False,
-                message="未找到视频上传入口（file input），无法上传" + (f"，现场：{where}" if where else ""),
+                message="未找到视频上传入口（file input），无法上传"
+                + (f"，现场：{where}" if where else ""),
             )
 
         self._log(on_progress, "等待视频上传与转码…", 40)
@@ -721,7 +772,8 @@ class DouYinAdapter(PlatformAdapter):
             where = dump_debug(page, self._debug_dir(), "douyin", "no-title-input")
             return PublishResult(
                 ok=False,
-                message="未找到作品标题输入框（抖音可能改版）" + (f"，现场：{where}" if where else ""),
+                message="未找到作品标题输入框（抖音可能改版）"
+                + (f"，现场：{where}" if where else ""),
             )
         desc = body
         if tags:
@@ -733,7 +785,10 @@ class DouYinAdapter(PlatformAdapter):
         if dry_run:
             # 填完就把浏览器关掉 = 用户什么都来不及做：这里保持窗口打开等人工确认
             message = hold_for_review(
-                page, extra=extra, on_progress=on_progress, cancel=cancel,
+                page,
+                extra=extra,
+                on_progress=on_progress,
+                cancel=cancel,
                 probe=lambda: self._submission_signal(page),
                 done_hint="表单已填写完成（未点击发布）",
             )
@@ -741,8 +796,12 @@ class DouYinAdapter(PlatformAdapter):
                 ok=True,
                 url=page.url or "",
                 message=message,
-                detail={"dry_run": True, "video": video, "tags": tags,
-                        "hint": "确认标题/简介/封面无误后，在浏览器窗口内手动点击「发布」"},
+                detail={
+                    "dry_run": True,
+                    "video": video,
+                    "tags": tags,
+                    "hint": "确认标题/简介/封面无误后，在浏览器窗口内手动点击「发布」",
+                },
             )
 
         self._log(on_progress, "等待「发布」按钮就绪…", 75)
@@ -752,7 +811,7 @@ class DouYinAdapter(PlatformAdapter):
             return PublishResult(
                 ok=False,
                 message="「发布」按钮迟迟未就绪（可能仍在转码或表单校验未通过），已按未发布处理"
-                        + (f"，现场：{where}" if where else ""),
+                + (f"，现场：{where}" if where else ""),
             )
 
         self._log(on_progress, "提交发布…", 85)
@@ -812,7 +871,9 @@ class DouYinAdapter(PlatformAdapter):
         # 兜底：有些版本必须点击上传按钮触发 filechooser
         try:
             with page.expect_file_chooser(timeout=8_000) as fc:
-                trigger = first_visible(page, ('div[class*="drag-upload"]', 'text=点击上传', 'text=上传视频'))
+                trigger = first_visible(
+                    page, ('div[class*="drag-upload"]', "text=点击上传", "text=上传视频")
+                )
                 if trigger is None:
                     return False
                 click_soft(trigger)
@@ -944,8 +1005,9 @@ class DouYinAdapter(PlatformAdapter):
             ok = False
             if btn is not None:
                 try:
-                    ok = (btn.get_attribute("disabled") is None
-                          and btn.get_attribute("aria-disabled") not in ("true", "1"))
+                    ok = btn.get_attribute("disabled") is None and btn.get_attribute(
+                        "aria-disabled"
+                    ) not in ("true", "1")
                 except Exception:
                     ok = False
             stable = stable + 1 if ok else 0
@@ -1004,7 +1066,10 @@ class DouYinAdapter(PlatformAdapter):
                         continue
                     if "成功" in text:
                         return True, f"抖音发布成功（{text}）", url
-                    if any(k in text for k in ("失败", "错误", "不能", "不支持", "请先", "请选择", "请上传")):
+                    if any(
+                        k in text
+                        for k in ("失败", "错误", "不能", "不支持", "请先", "请选择", "请上传")
+                    ):
                         return False, f"抖音发布失败：{text}", url
             except Exception:
                 pass
@@ -1018,17 +1083,23 @@ class DouYinAdapter(PlatformAdapter):
                     page.wait_for_timeout(1_500)
                     continue
                 if time.time() - sms_since > 120:
-                    return False, (
-                        "抖音发布触发短信验证，已下发验证码但未收到。请把验证码写入文件 "
-                        f"{self._sms_code_file()} 后重试发布"
-                    ), page.url or ""
+                    return (
+                        False,
+                        (
+                            "抖音发布触发短信验证，已下发验证码但未收到。请把验证码写入文件 "
+                            f"{self._sms_code_file()} 后重试发布"
+                        ),
+                        page.url or "",
+                    )
             page.wait_for_timeout(1_000)
-        return False, "发布结果未确认（未跳转、无成功提示），请到抖音创作者中心内容管理页人工核对是否已发出", page.url or ""
+        return (
+            False,
+            "发布结果未确认（未跳转、无成功提示），请到抖音创作者中心内容管理页人工核对是否已发出",
+            page.url or "",
+        )
 
     # -- 数据 ----------------------------------------------------------
-    def list_account_posts(
-        self, *, headless: bool = True, limit: int = 50
-    ) -> list[AccountPost]:
+    def list_account_posts(self, *, headless: bool = True, limit: int = 50) -> list[AccountPost]:
         """扫描账号下的作品（需要已登录）。
 
         **只扫创作中心「内容管理」页**。这里踩过一个坑：早先还扫了个人主页
@@ -1166,7 +1237,11 @@ class DouYinAdapter(PlatformAdapter):
                 data[key] = val
         if not any(data.values()):
             return None
-        raw: dict[str, Any] = {"url": url, "source": "douyin-share-page", "text_hint": page_text[:400]}
+        raw: dict[str, Any] = {
+            "url": url,
+            "source": "douyin-share-page",
+            "text_hint": page_text[:400],
+        }
         for key, selectors in METRIC_VALUE_SELECTORS.items():
             if data.get(key):
                 raw[f"{key}_selector"] = selectors[0]

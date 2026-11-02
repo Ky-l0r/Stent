@@ -15,8 +15,9 @@ import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from .. import paths
 
@@ -358,9 +359,13 @@ class Database:
         params.append(limit)
         return self.query(sql, tuple(params))
 
-    def posts_needing_sync(self, min_interval_minutes: int = 30, limit: int = 50) -> list[dict[str, Any]]:
+    def posts_needing_sync(
+        self, min_interval_minutes: int = 30, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """需要增量拉取指标的已发布内容（企划书 4.3：只拉新数据）。"""
-        threshold = (datetime.now() - timedelta(minutes=min_interval_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        threshold = (datetime.now() - timedelta(minutes=min_interval_minutes)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         return self.query(
             """SELECT * FROM posts
                WHERE status = 'published' AND (last_synced = '' OR last_synced < ?)
@@ -369,7 +374,9 @@ class Database:
         )
 
     # -- 指标 ------------------------------------------------------------
-    def add_metric(self, post_id: int, data: dict[str, Any], captured_at: str | None = None) -> None:
+    def add_metric(
+        self, post_id: int, data: dict[str, Any], captured_at: str | None = None
+    ) -> None:
         stamp = captured_at or now()
         with self._lock:
             self.conn.execute(
@@ -398,7 +405,8 @@ class Database:
 
     def metric_series(self, post_id: int, limit: int = 60) -> list[dict[str, Any]]:
         rows = self.query(
-            "SELECT * FROM metrics WHERE post_id = ? ORDER BY captured_at ASC LIMIT ?", (post_id, limit)
+            "SELECT * FROM metrics WHERE post_id = ? ORDER BY captured_at ASC LIMIT ?",
+            (post_id, limit),
         )
         return rows
 
@@ -506,7 +514,9 @@ class Database:
         return _loads(row["value"], default)
 
     # -- 日志 ------------------------------------------------------------
-    def log_action(self, platform: str, action: str, detail: str = "", post_id: int | None = None) -> None:
+    def log_action(
+        self, platform: str, action: str, detail: str = "", post_id: int | None = None
+    ) -> None:
         self.execute(
             "INSERT INTO publish_log (post_id, platform, action, detail, created_at) VALUES (?, ?, ?, ?, ?)",
             (post_id, platform, action, detail, now()),

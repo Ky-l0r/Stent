@@ -116,13 +116,17 @@ class PublishPage(BasePage):
         self.history_button = make_button("发布记录", icon="clock", theme=self.ctx.theme)
         self.history_button.clicked.connect(self.open_history)
         header.add_action(self.history_button)
-        self.refresh_button = make_button("刷新内容", icon="refresh", theme=self.ctx.theme, ghost=True)
+        self.refresh_button = make_button(
+            "刷新内容", icon="refresh", theme=self.ctx.theme, ghost=True
+        )
         self.refresh_button.clicked.connect(self.reload_contents)
         header.add_action(self.refresh_button)
         self.add(header)
 
         # 步骤条常驻顶部：左右两列卡片各自滚动时也能看出整体进度
-        self.flow_steps = FlowSteps(["选择内容", "发布设置", "发布前检查", "预览确认"], theme=self.ctx.theme)
+        self.flow_steps = FlowSteps(
+            ["选择内容", "发布设置", "发布前检查", "预览确认"], theme=self.ctx.theme
+        )
         self.add(self.flow_steps)
 
         self.env_card = self._build_env_card()
@@ -165,10 +169,14 @@ class PublishPage(BasePage):
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.install_button = make_button("一键安装环境", icon="download", theme=self.ctx.theme, primary=True)
+        self.install_button = make_button(
+            "一键安装环境", icon="download", theme=self.ctx.theme, primary=True
+        )
         self.install_button.clicked.connect(self.install_environment)
         row.addWidget(self.install_button)
-        self.copy_command_button = make_button("复制安装命令", icon="copy", theme=self.ctx.theme, ghost=True)
+        self.copy_command_button = make_button(
+            "复制安装命令", icon="copy", theme=self.ctx.theme, ghost=True
+        )
         self.copy_command_button.setToolTip("自动安装失败时，可把命令粘贴到终端手动执行")
         self.copy_command_button.clicked.connect(self._copy_install_command)
         row.addWidget(self.copy_command_button)
@@ -319,7 +327,9 @@ class PublishPage(BasePage):
 
         content_card = Card(padding=14, spacing=8)
         content_card.add(
-            CardTitle("1 · 选择内容", icon="pen-line", hint="来自创作页的草稿", theme=self.ctx.theme)
+            CardTitle(
+                "1 · 选择内容", icon="pen-line", hint="来自创作页的草稿", theme=self.ctx.theme
+            )
         )
         self.content_list = QListWidget()
         self.content_list.setMinimumHeight(150)
@@ -437,7 +447,9 @@ class PublishPage(BasePage):
 
         advanced = QHBoxLayout()
         advanced.setSpacing(8)
-        self.advanced_button = make_button("高级选项…", icon="sliders", theme=self.ctx.theme, ghost=True)
+        self.advanced_button = make_button(
+            "高级选项…", icon="sliders", theme=self.ctx.theme, ghost=True
+        )
         self.advanced_button.setToolTip("包含「直接自动发布」等高风险操作")
         self.advanced_button.clicked.connect(self.open_advanced_options)
         advanced.addWidget(self.advanced_button)
@@ -532,12 +544,17 @@ class PublishPage(BasePage):
         # 与 _check_card_chrome() 的常量口径一致。
         check_card.setMinimumHeight(CHECK_VIEWPORT_MIN_H + CHECK_CARD_CHROME_H)
         check_title = CardTitle(
-            "3 · 发布前检查", icon="check", hint="敏感词、字数、格式、媒体附件", theme=self.ctx.theme
+            "3 · 发布前检查",
+            icon="check",
+            hint="敏感词、字数、格式、媒体附件",
+            theme=self.ctx.theme,
         )
         self.check_score = QLabel("—")
         self.check_score.setObjectName("ScoreBadge")
         check_title.add_action(self.check_score)
-        self.recheck_button = make_button("重新检查", icon="refresh", theme=self.ctx.theme, ghost=True)
+        self.recheck_button = make_button(
+            "重新检查", icon="refresh", theme=self.ctx.theme, ghost=True
+        )
         self.recheck_button.clicked.connect(lambda: self.prepare(force=True))
         check_title.add_action(self.recheck_button)
         check_card.add(check_title)
@@ -548,8 +565,12 @@ class PublishPage(BasePage):
 
     def _build_preview_card(self) -> QWidget:
         preview_card = Card(padding=14, spacing=8)
-        preview_title = CardTitle("4 · 预览", icon="eye", hint="发布到平台后的样子", theme=self.ctx.theme)
-        self.copy_preview_button = make_button("复制可粘贴文案", icon="copy", theme=self.ctx.theme, ghost=True)
+        preview_title = CardTitle(
+            "4 · 预览", icon="eye", hint="发布到平台后的样子", theme=self.ctx.theme
+        )
+        self.copy_preview_button = make_button(
+            "复制可粘贴文案", icon="copy", theme=self.ctx.theme, ghost=True
+        )
         self.copy_preview_button.clicked.connect(self.copy_text)
         preview_title.add_action(self.copy_preview_button)
         preview_card.add(preview_title)
@@ -598,7 +619,9 @@ class PublishPage(BasePage):
         else:
             self.platform_icon.setPixmap(icons.pixmap("send", p.text_faint, 16))
         self.platform_value.setText(f"发布到 {label}" if platform else "未选择内容")
-        overridden = bool(self._platform_override) and self._platform_override != self._content_platform()
+        overridden = (
+            bool(self._platform_override) and self._platform_override != self._content_platform()
+        )
         self.platform_hint.setText(
             "已手动更换平台，发布时会按新平台重新适配" if overridden else "平台由所选草稿决定"
         )
@@ -616,9 +639,9 @@ class PublishPage(BasePage):
         if self._platform_override:
             menu.addSeparator()
             menu.addAction("恢复为草稿绑定的平台", lambda: self._set_platform(""))
-        menu.exec(self.change_platform_button.mapToGlobal(
-            self.change_platform_button.rect().bottomLeft()
-        ))
+        menu.exec(
+            self.change_platform_button.mapToGlobal(self.change_platform_button.rect().bottomLeft())
+        )
 
     def _set_platform(self, key: str) -> None:
         self._platform_override = key or ""
@@ -637,11 +660,14 @@ class PublishPage(BasePage):
         self.content_list.clear()
         for content in self._contents:
             title = content.get("title") or content.get("topic") or "（无标题）"
-            label = platform_label(content.get("platform", "")) if content.get("platform") else "未指定"
+            label = (
+                platform_label(content.get("platform", "")) if content.get("platform") else "未指定"
+            )
             item = QListWidgetItem(title)
             # 两行式：第一行标题，第二行小字元信息，编号/平台不再随标题长度错位
             item.setData(
-                TwoLineItemDelegate.TITLE_ROLE, title,
+                TwoLineItemDelegate.TITLE_ROLE,
+                title,
             )
             item.setData(
                 TwoLineItemDelegate.META_ROLE,

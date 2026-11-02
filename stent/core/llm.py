@@ -54,7 +54,9 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(status, int) and (status == 429 or status >= 500):
         return True
     text = str(exc).lower()
-    return any(k in text for k in ("timeout", "timed out", "connection", "temporarily", "overloaded"))
+    return any(
+        k in text for k in ("timeout", "timed out", "connection", "temporarily", "overloaded")
+    )
 
 
 # --------------------------------------------------------------------------

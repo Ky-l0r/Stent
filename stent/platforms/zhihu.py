@@ -153,7 +153,13 @@ METRIC_VALUE_SELECTORS: dict[str, tuple[str, ...]] = {
     "shares": ('button[aria-label*="分享"]', '[class*="ShareButton"]'),
     "views": ('[class*="ViewCount"]', '[class*="ReadCount"]', '[class*="ContentItem-status"]'),
 }
-METRIC_EXCLUDE_SELECTORS: tuple[str, ...] = ("header", "nav", ".AppHeader", ".QuestionHeader", ".CornerButtons")
+METRIC_EXCLUDE_SELECTORS: tuple[str, ...] = (
+    "header",
+    "nav",
+    ".AppHeader",
+    ".QuestionHeader",
+    ".CornerButtons",
+)
 
 DEBUG_DIR_NAME = "debug"
 
@@ -161,6 +167,7 @@ DEBUG_DIR_NAME = "debug"
 # --------------------------------------------------------------------------- #
 # 纯工具函数
 # --------------------------------------------------------------------------- #
+
 
 def normalize_question_url(url: str) -> str:
     """把回答链接 / 问题链接归一化成问题页 URL；无法识别时原样返回。
@@ -174,7 +181,7 @@ def normalize_question_url(url: str) -> str:
     idx = s.find(marker)
     if idx < 0:
         return s
-    rest = s[idx + len(marker):]
+    rest = s[idx + len(marker) :]
     digits = ""
     for ch in rest:
         if ch.isdigit():
@@ -193,14 +200,13 @@ def looks_like_article_url(url: str) -> bool:
 
 
 #: 作品链接规则（账号导入时用它从创作者中心筛出自己的文章与回答）
-_WORK_URL_RE = _re.compile(
-    r"(?:zhuanlan\.zhihu\.com/p/\d+|zhihu\.com/question/\d+/answer/\d+)"
-)
+_WORK_URL_RE = _re.compile(r"(?:zhuanlan\.zhihu\.com/p/\d+|zhihu\.com/question/\d+/answer/\d+)")
 
 
 # --------------------------------------------------------------------------- #
 # 适配器
 # --------------------------------------------------------------------------- #
+
 
 class ZhiHuAdapter(PlatformAdapter):
     """知乎适配器（回答 / 文章两种模式）。"""
@@ -218,7 +224,7 @@ class ZhiHuAdapter(PlatformAdapter):
     @property
     def limits(self) -> PlatformLimits:
         return PlatformLimits(
-            title_max=100,        # 文章标题（回答模式无标题）
+            title_max=100,  # 文章标题（回答模式无标题）
             body_max=20000,
             body_min=1,
             tags_max=5,
@@ -244,7 +250,10 @@ class ZhiHuAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return False, "浏览器不可用：请先安装 playwright 与 chromium（pip install playwright && playwright install chromium）"
+                    return (
+                        False,
+                        "浏览器不可用：请先安装 playwright 与 chromium（pip install playwright && playwright install chromium）",
+                    )
                 page = sess.page
                 try:
                     page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
@@ -333,12 +342,15 @@ class ZhiHuAdapter(PlatformAdapter):
         if box and box.get("width", 0) > 20:
             pad = 6
             try:
-                page.screenshot(path=out, clip={
-                    "x": max(0, box["x"] - pad),
-                    "y": max(0, box["y"] - pad),
-                    "width": box["width"] + pad * 2,
-                    "height": box["height"] + pad * 2,
-                })
+                page.screenshot(
+                    path=out,
+                    clip={
+                        "x": max(0, box["x"] - pad),
+                        "y": max(0, box["y"] - pad),
+                        "width": box["width"] + pad * 2,
+                        "height": box["height"] + pad * 2,
+                    },
+                )
                 return
             except Exception:
                 pass
@@ -361,7 +373,9 @@ class ZhiHuAdapter(PlatformAdapter):
         extra = payload.extra or {}
         mode = str(extra.get("mode") or "article").strip().lower()
         if mode not in ("answer", "article"):
-            return PublishResult(ok=False, message=f"不支持的知乎发布模式：{mode}（可选 answer / article）")
+            return PublishResult(
+                ok=False, message=f"不支持的知乎发布模式：{mode}（可选 answer / article）"
+            )
 
         # 1) 入参校验
         title = (payload.title or "").strip()
@@ -371,39 +385,66 @@ class ZhiHuAdapter(PlatformAdapter):
         if not body:
             return PublishResult(ok=False, message="知乎正文不能为空")
         if len(body) > lim.body_max:
-            return PublishResult(ok=False, message=f"正文过长（{len(body)}/{lim.body_max} 字），请精简后再发布")
+            return PublishResult(
+                ok=False, message=f"正文过长（{len(body)}/{lim.body_max} 字），请精简后再发布"
+            )
         if len(tags) > lim.tags_max:
-            return PublishResult(ok=False, message=f"话题过多（{len(tags)}/{lim.tags_max}），请删减后再发布")
+            return PublishResult(
+                ok=False, message=f"话题过多（{len(tags)}/{lim.tags_max}），请删减后再发布"
+            )
         question_url = ""
         if mode == "answer":
             raw_url = str(extra.get("question_url") or "").strip()
             question_url = normalize_question_url(raw_url)
             if not question_url or "zhihu.com" not in question_url:
                 # 只接受知乎域名，避免把任意 URL 交给浏览器打开
-                return PublishResult(ok=False, message="问题链接必须指向 zhihu.com，例如 https://www.zhihu.com/question/123")
+                return PublishResult(
+                    ok=False,
+                    message="问题链接必须指向 zhihu.com，例如 https://www.zhihu.com/question/123",
+                )
             if "/question/" not in question_url:
-                return PublishResult(ok=False, message="回答模式需要在 extra 里给出问题链接，例如 {\"mode\":\"answer\",\"question_url\":\"https://www.zhihu.com/question/123\"}")
+                return PublishResult(
+                    ok=False,
+                    message='回答模式需要在 extra 里给出问题链接，例如 {"mode":"answer","question_url":"https://www.zhihu.com/question/123"}',
+                )
         else:
             if not title:
                 return PublishResult(ok=False, message="知乎文章标题不能为空")
             if len(title) > lim.title_max:
-                return PublishResult(ok=False, message=f"文章标题过长（{len(title)}/{lim.title_max} 字），请精简后再发布")
+                return PublishResult(
+                    ok=False,
+                    message=f"文章标题过长（{len(title)}/{lim.title_max} 字），请精简后再发布",
+                )
 
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return PublishResult(ok=False, message="浏览器不可用：请先安装 playwright 与 chromium")
+                    return PublishResult(
+                        ok=False, message="浏览器不可用：请先安装 playwright 与 chromium"
+                    )
                 try:
                     if mode == "answer":
                         return self._publish_answer(
-                            sess.page, question_url=question_url, body=body, tags=tags,
-                            dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
-                            cancel=cancel, extra=extra,
+                            sess.page,
+                            question_url=question_url,
+                            body=body,
+                            tags=tags,
+                            dry_run=dry_run,
+                            timeout_sec=timeout_sec,
+                            on_progress=on_progress,
+                            cancel=cancel,
+                            extra=extra,
                         )
                     return self._publish_article(
-                        sess.page, title=title, body=body, tags=tags,
-                        dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
-                        cancel=cancel, extra=extra,
+                        sess.page,
+                        title=title,
+                        body=body,
+                        tags=tags,
+                        dry_run=dry_run,
+                        timeout_sec=timeout_sec,
+                        on_progress=on_progress,
+                        cancel=cancel,
+                        extra=extra,
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(sess.page, self._debug_dir(), "zhihu", "publish-error")
@@ -417,9 +458,17 @@ class ZhiHuAdapter(PlatformAdapter):
 
     # ---- 回答模式 ----------------------------------------------------
     def _publish_answer(
-        self, page: Any, *, question_url: str, body: str, tags: list[str],
-        dry_run: bool, timeout_sec: int, on_progress: Any,
-        cancel: Any = None, extra: Any = None,
+        self,
+        page: Any,
+        *,
+        question_url: str,
+        body: str,
+        tags: list[str],
+        dry_run: bool,
+        timeout_sec: int,
+        on_progress: Any,
+        cancel: Any = None,
+        extra: Any = None,
     ) -> PublishResult:
         budget = max(60, timeout_sec)
         deadline = time.time() + budget
@@ -428,7 +477,9 @@ class ZhiHuAdapter(PlatformAdapter):
         try:
             page.goto(question_url, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
-            return PublishResult(ok=False, message=f"打开问题页失败：{type(exc).__name__}（请检查网络/链接）")
+            return PublishResult(
+                ok=False, message=f"打开问题页失败：{type(exc).__name__}（请检查网络/链接）"
+            )
         page.wait_for_timeout(2_000)
 
         state = self._probe_login(page, wait_s=8)
@@ -445,7 +496,8 @@ class ZhiHuAdapter(PlatformAdapter):
             where = dump_debug(page, self._debug_dir(), "zhihu", "answer-editor-fail")
             return PublishResult(
                 ok=False,
-                message="未能唤起知乎回答编辑器（可能已改版或需要先登录）" + (f"，现场：{where}" if where else ""),
+                message="未能唤起知乎回答编辑器（可能已改版或需要先登录）"
+                + (f"，现场：{where}" if where else ""),
             )
 
         self._log(on_progress, "写入回答内容…", 45)
@@ -453,12 +505,16 @@ class ZhiHuAdapter(PlatformAdapter):
             where = dump_debug(page, self._debug_dir(), "zhihu", "answer-type-fail")
             return PublishResult(
                 ok=False,
-                message="未找到回答正文编辑器，无法写入内容" + (f"，现场：{where}" if where else ""),
+                message="未找到回答正文编辑器，无法写入内容"
+                + (f"，现场：{where}" if where else ""),
             )
 
         if dry_run:
             message = hold_for_review(
-                page, extra=extra, on_progress=on_progress, cancel=cancel,
+                page,
+                extra=extra,
+                on_progress=on_progress,
+                cancel=cancel,
                 probe=lambda: self._submission_signal(page),
                 done_hint="回答已填写完成（未点击发布）",
             )
@@ -466,8 +522,12 @@ class ZhiHuAdapter(PlatformAdapter):
                 ok=True,
                 url=question_url,
                 message=message,
-                detail={"dry_run": True, "mode": "answer", "question": question_title,
-                        "hint": "确认正文无误后，在浏览器窗口内手动点击「发布回答」"},
+                detail={
+                    "dry_run": True,
+                    "mode": "answer",
+                    "question": question_title,
+                    "hint": "确认正文无误后，在浏览器窗口内手动点击「发布回答」",
+                },
             )
 
         self._log(on_progress, "提交回答…", 80)
@@ -483,8 +543,12 @@ class ZhiHuAdapter(PlatformAdapter):
             self._log(on_progress, "发布完成", 100)
             return PublishResult(ok=True, url=url, message=message)
         where = dump_debug(page, self._debug_dir(), "zhihu", "answer-unconfirmed")
-        return PublishResult(ok=False, url=url, message=message + (f"，现场已落盘：{where}" if where else ""),
-                             detail={"unconfirmed": True})
+        return PublishResult(
+            ok=False,
+            url=url,
+            message=message + (f"，现场已落盘：{where}" if where else ""),
+            detail={"unconfirmed": True},
+        )
 
     def _question_title(self, page: Any) -> str:
         el = first_visible(page, ("h1.QuestionHeader-title", ".QuestionHeader-title", "h1"))
@@ -589,18 +653,25 @@ class ZhiHuAdapter(PlatformAdapter):
 
     # ---- 文章模式 ----------------------------------------------------
     def _publish_article(
-        self, page: Any, *, title: str, body: str, tags: list[str],
-        dry_run: bool, timeout_sec: int, on_progress: Any,
-        cancel: Any = None, extra: Any = None,
+        self,
+        page: Any,
+        *,
+        title: str,
+        body: str,
+        tags: list[str],
+        dry_run: bool,
+        timeout_sec: int,
+        on_progress: Any,
+        cancel: Any = None,
+        extra: Any = None,
     ) -> PublishResult:
-        budget = max(60, timeout_sec)
-        deadline = time.time() + budget
-
         self._log(on_progress, "打开知乎写文章页…", 5)
         try:
             page.goto(WRITE_URL, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
-            return PublishResult(ok=False, message=f"打开知乎写文章页失败：{type(exc).__name__}（请检查网络）")
+            return PublishResult(
+                ok=False, message=f"打开知乎写文章页失败：{type(exc).__name__}（请检查网络）"
+            )
         page.wait_for_timeout(2_500)
 
         state = self._probe_login(page, wait_s=8)
@@ -611,20 +682,28 @@ class ZhiHuAdapter(PlatformAdapter):
         title_el = first_visible(page, TITLE_SELECTORS)
         if title_el is None:
             where = dump_debug(page, self._debug_dir(), "zhihu", "article-title-fail")
-            return PublishResult(ok=False, message="未找到文章标题输入框（知乎可能改版）"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="未找到文章标题输入框（知乎可能改版）"
+                + (f"，现场：{where}" if where else ""),
+            )
         if not clear_and_type(page, title_el, title, delay_ms=8):
             try:
                 title_el.fill(title)
             except Exception:
                 where = dump_debug(page, self._debug_dir(), "zhihu", "article-title-type-fail")
-                return PublishResult(ok=False, message="文章标题写入失败" + (f"，现场：{where}" if where else ""))
+                return PublishResult(
+                    ok=False, message="文章标题写入失败" + (f"，现场：{where}" if where else "")
+                )
 
         self._log(on_progress, "写入文章正文…", 45)
         if not self._fill_editor(page, body):
             where = dump_debug(page, self._debug_dir(), "zhihu", "article-body-fail")
-            return PublishResult(ok=False, message="未找到文章正文编辑器，无法写入内容"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="未找到文章正文编辑器，无法写入内容"
+                + (f"，现场：{where}" if where else ""),
+            )
         page.wait_for_timeout(600)
 
         self._log(on_progress, "填写话题标签…", 60)
@@ -632,7 +711,10 @@ class ZhiHuAdapter(PlatformAdapter):
 
         if dry_run:
             message = hold_for_review(
-                page, extra=extra, on_progress=on_progress, cancel=cancel,
+                page,
+                extra=extra,
+                on_progress=on_progress,
+                cancel=cancel,
                 probe=lambda: self._submission_signal(page),
                 done_hint="文章已填写完成（未点击发布）",
             )
@@ -640,15 +722,21 @@ class ZhiHuAdapter(PlatformAdapter):
                 ok=True,
                 url=page.url or WRITE_URL,
                 message=message,
-                detail={"dry_run": True, "mode": "article", "tags": tags,
-                        "hint": "确认标题/正文/话题无误后，在浏览器窗口内手动点击「发布」并在弹窗中确认"},
+                detail={
+                    "dry_run": True,
+                    "mode": "article",
+                    "tags": tags,
+                    "hint": "确认标题/正文/话题无误后，在浏览器窗口内手动点击「发布」并在弹窗中确认",
+                },
             )
 
         self._log(on_progress, "打开发布设置…", 75)
         if not self._click_publish(page, mode="article"):
             where = dump_debug(page, self._debug_dir(), "zhihu", "article-publish-btn-fail")
-            return PublishResult(ok=False, message="未找到「发布」按钮，未提交"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="未找到「发布」按钮，未提交" + (f"，现场：{where}" if where else ""),
+            )
 
         self._log(on_progress, "等待平台回执…", 90)
         ok, message, url = self._wait_result(page, mode="article", timeout_s=60)
@@ -656,8 +744,12 @@ class ZhiHuAdapter(PlatformAdapter):
             self._log(on_progress, "发布完成", 100)
             return PublishResult(ok=True, url=url, message=message)
         where = dump_debug(page, self._debug_dir(), "zhihu", "article-unconfirmed")
-        return PublishResult(ok=False, url=url, message=message + (f"，现场已落盘：{where}" if where else ""),
-                             detail={"unconfirmed": True})
+        return PublishResult(
+            ok=False,
+            url=url,
+            message=message + (f"，现场已落盘：{where}" if where else ""),
+            detail={"unconfirmed": True},
+        )
 
     def _fill_topics(self, page: Any, tags: list[str]) -> None:
         """best-effort 填话题标签（失败不影响发布）。"""
@@ -679,9 +771,11 @@ class ZhiHuAdapter(PlatformAdapter):
     def _click_publish(self, page: Any, *, mode: str) -> bool:
         """点发布：文章模式要处理「发布设置」抽屉里的二次确认。"""
         if mode == "answer":
-            return (click_text_in(page, page, "发布回答")
-                    or click_text_in(page, page, "提交修改")
-                    or click_text_in(page, page, "发布"))
+            return (
+                click_text_in(page, page, "发布回答")
+                or click_text_in(page, page, "提交修改")
+                or click_text_in(page, page, "发布")
+            )
 
         clicked = False
         for sel in PUBLISH_ENTRY_SELECTORS:
@@ -755,12 +849,14 @@ class ZhiHuAdapter(PlatformAdapter):
             except Exception:
                 pass
             page.wait_for_timeout(1_000)
-        return False, "知乎发布结果未确认（未跳转到文章/回答页），请到「创作中心 → 内容管理」人工核对是否已发布", page.url or ""
+        return (
+            False,
+            "知乎发布结果未确认（未跳转到文章/回答页），请到「创作中心 → 内容管理」人工核对是否已发布",
+            page.url or "",
+        )
 
     # -- 数据 ----------------------------------------------------------
-    def list_account_posts(
-        self, *, headless: bool = True, limit: int = 50
-    ) -> list[AccountPost]:
+    def list_account_posts(self, *, headless: bool = True, limit: int = 50) -> list[AccountPost]:
         """从「创作者中心」扫描账号下的文章 / 回答链接（需要已登录）。"""
         out: list[AccountPost] = []
         try:

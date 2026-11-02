@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any
 
 from ..core.llm import LLMClient, LLMError, Message
 from ..services.profile import profile_service
@@ -350,7 +351,9 @@ def build_messages(req: CreationRequest, *, profile_prompt: str = "") -> list[Me
         best_hours=style.best_hours,
     )
     if profile_prompt:
-        system += f"\n{profile_prompt}\n（创作时必须匹配上述账号定位与风格；历史经验优先于通用套路。）\n"
+        system += (
+            f"\n{profile_prompt}\n（创作时必须匹配上述账号定位与风格；历史经验优先于通用套路。）\n"
+        )
 
     parts = [f"主题：{req.topic.strip()}"]
     if req.source_text.strip():
@@ -473,7 +476,10 @@ class CreatorService:
 
     @staticmethod
     def platforms() -> list[dict[str, str]]:
-        return [{"key": s.key, "label": s.label, "content_type": s.content_type} for s in PLATFORM_STYLES.values()]
+        return [
+            {"key": s.key, "label": s.label, "content_type": s.content_type}
+            for s in PLATFORM_STYLES.values()
+        ]
 
     # -- 多平台一次成稿 --------------------------------------------------
     def create_multi(
@@ -525,7 +531,10 @@ class CreatorService:
             "只输出标题，每行一个，不要编号、不要解释、不要引号。"
         )
         raw = llm.chat(
-            [Message("system", system), Message("user", f"主题：{req.topic}\n\n正文：\n{body[:2000]}")],
+            [
+                Message("system", system),
+                Message("user", f"主题：{req.topic}\n\n正文：\n{body[:2000]}"),
+            ],
             temperature=0.9,
             cancel=cancel,
         )
@@ -551,7 +560,9 @@ class CreatorService:
             f"平台：{style.label}\n平台规范：{style.body_guide}\n"
             f"标题：{result.title}\n正文：\n{result.body[:2000]}"
         )
-        raw = llm.chat([Message("system", system), Message("user", user)], temperature=0.2, cancel=cancel)
+        raw = llm.chat(
+            [Message("system", system), Message("user", user)], temperature=0.2, cancel=cancel
+        )
         import json
         import re
 

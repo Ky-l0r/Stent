@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -29,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.db import db
-from ...platforms import keys as platform_keys, platform_label
+from ...platforms import platform_label
 from ...services.analytics import AnalyticsService
 from ..components import (
     Card,
@@ -156,7 +155,9 @@ class AnalyticsPage(BasePage):
 
         # ---- 趋势 ----
         trend_card = Card(padding=14, spacing=10)
-        trend_title = CardTitle("趋势", icon="chart", hint="按时间、平台、主题维度查看变化", theme=self.ctx.theme)
+        trend_title = CardTitle(
+            "趋势", icon="chart", hint="按时间、平台、主题维度查看变化", theme=self.ctx.theme
+        )
         self.trend_card_title = trend_title
         trend_card.add(trend_title)
 
@@ -219,7 +220,13 @@ class AnalyticsPage(BasePage):
         )
         # 日期筛选：只看某个时间段的表现，避免半年前的老爆款一直霸榜
         self.rank_days_combo = QComboBox()
-        for label, days in (("近 7 天", 7), ("近 30 天", 30), ("近 90 天", 90), ("近 180 天", 180), ("全部", 3650)):
+        for label, days in (
+            ("近 7 天", 7),
+            ("近 30 天", 30),
+            ("近 90 天", 90),
+            ("近 180 天", 180),
+            ("全部", 3650),
+        ):
             self.rank_days_combo.addItem(label, days)
         self.rank_days_combo.setCurrentIndex(1)
         self.rank_days_combo.currentIndexChanged.connect(lambda _: self.reload())
@@ -296,7 +303,9 @@ class AnalyticsPage(BasePage):
         platform_card = Card(padding=14, spacing=8)
         platform_card.add(CardTitle("平台分布", icon="send", theme=self.ctx.theme))
         self.platform_table = QTableWidget(0, 6)
-        self.platform_table.setHorizontalHeaderLabels(["平台", "篇数", "平均播放", "平均点赞", "平均收藏", "水平"])
+        self.platform_table.setHorizontalHeaderLabels(
+            ["平台", "篇数", "平均播放", "平均点赞", "平均收藏", "水平"]
+        )
         self.platform_table.verticalHeader().setVisible(False)
         self.platform_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.platform_table.setShowGrid(False)
@@ -334,18 +343,25 @@ class AnalyticsPage(BasePage):
         # ---- 头部（放在滚动区外，始终可见）----
         header = PageHeader("数据分析", "同步平台指标、查看趋势与排行，并把经验回流到账号画像")
         header.add_action(self.status_light)
-        self.sync_button = make_button("同步指标", icon="refresh", theme=self.ctx.theme, primary=True)
+        self.sync_button = make_button(
+            "同步指标", icon="refresh", theme=self.ctx.theme, primary=True
+        )
         self.sync_button.clicked.connect(lambda: self.sync(force=False))
         header.add_action(self.sync_button)
         # 全量刷新是「数据对不上时的补救手段」，加图标与明确措辞，别再让它隐形
         self.full_sync_button = make_button(
-            "强制全量刷新", icon="refresh", theme=self.ctx.theme, ghost=True,
+            "强制全量刷新",
+            icon="refresh",
+            theme=self.ctx.theme,
+            ghost=True,
             tooltip="忽略增量间隔，重新拉取全部已发布内容的指标",
         )
         self.full_sync_button.clicked.connect(lambda: self.sync(force=True))
         header.add_action(self.full_sync_button)
         # 有数据时引导卡会收起，所以入口在主按钮旁边也放一个
-        self.register_button = make_button("登记已有作品", icon="link", theme=self.ctx.theme, ghost=True)
+        self.register_button = make_button(
+            "登记已有作品", icon="link", theme=self.ctx.theme, ghost=True
+        )
         self.register_button.setToolTip("从账号导入作品，或粘贴作品链接，把它们纳入指标同步")
         self.register_button.clicked.connect(self.open_register)
         header.add_action(self.register_button)
@@ -437,7 +453,8 @@ class AnalyticsPage(BasePage):
         ok = bool(result.get("ok"))
         level = "success" if ok and result.get("added") else "warn"
         self.banner.show_message(
-            str(result.get("message") or "导入完成"), level,
+            str(result.get("message") or "导入完成"),
+            level,
             summary=f"导入 {result.get('added', 0)} 篇" if ok else "导入未完成",
         )
         if ok and result.get("added"):
@@ -469,7 +486,9 @@ class AnalyticsPage(BasePage):
         skipped = int(result.get("skipped", 0))
         failed = int(result.get("failed", 0))
         details = result.get("details") or []
-        failures = [d for d in details if "已登记" not in str(d.get("message", "")) and d.get("message")]
+        failures = [
+            d for d in details if "已登记" not in str(d.get("message", "")) and d.get("message")
+        ]
 
         if added:
             self.banner.show_message(
@@ -503,7 +522,9 @@ class AnalyticsPage(BasePage):
         rank_days = self.rank_days_combo.currentData() or 30
         try:
             overview = self._service.overview(days=days, platform=platform)
-            trend = self._service.trend(days=days, platform=platform, metric=metric, cumulative=cumulative)
+            trend = self._service.trend(
+                days=days, platform=platform, metric=metric, cumulative=cumulative
+            )
             # 排行有自己的日期筛选，取足够多条以便「展开全部」
             ranked = self._service.rank_contents(
                 days=rank_days, by=self.rank_by_combo.currentData() or "engagement", limit=200
@@ -548,7 +569,9 @@ class AnalyticsPage(BasePage):
         ranges = benchmark.get("engagement_ranges") or []
         range_text = "~".join(f"{r:g}%" for r in ranges) if ranges else "—"
         self.benchmark_label.setText(
-            f"平台水平：{rating}（参考区间 {range_text}）" if has_data else "发布并同步后，这里会显示你的平台水平"
+            f"平台水平：{rating}（参考区间 {range_text}）"
+            if has_data
+            else "发布并同步后，这里会显示你的平台水平"
         )
         self.latest_label.setText(f"数据截至：{overview.get('latest_captured_at') or '暂无'}")
 
@@ -568,10 +591,20 @@ class AnalyticsPage(BasePage):
 
     def _set_filters_enabled(self, enabled: bool) -> None:
         """零数据时把筛选器置灰：能点但点了没反应，比灰着更让人困惑。"""
-        for combo in (self.days_combo, self.metric_combo, self.platform_combo, self.cumulative_combo):
+        for combo in (
+            self.days_combo,
+            self.metric_combo,
+            self.platform_combo,
+            self.cumulative_combo,
+        ):
             combo.setEnabled(enabled)
         tip = "" if enabled else "同步数据后可用"
-        for combo in (self.days_combo, self.metric_combo, self.platform_combo, self.cumulative_combo):
+        for combo in (
+            self.days_combo,
+            self.metric_combo,
+            self.platform_combo,
+            self.cumulative_combo,
+        ):
             combo.setToolTip(tip)
 
     def _refresh_guide(self, overview: dict) -> None:
@@ -800,7 +833,7 @@ class AnalyticsPage(BasePage):
         failed = result.get("failed", 0)
         skipped = result.get("skipped", 0)
         errors = result.get("errors") or []
-        level = "success" if synced and not failed else ("warn" if synced or skipped else "warn")
+        level = "success" if synced and not failed else "warn"
         text = f"同步完成：成功 {synced} 条，失败 {failed} 条，跳过 {skipped} 条"
         if errors:
             first = errors[0]
@@ -938,9 +971,7 @@ class RegisterPostDialog(QDialog):
         title.setObjectName("PageTitle")
         layout.addWidget(title)
 
-        intro = QLabel(
-            "把你在平台上早就发过的作品纳入指标同步，之后就能在趋势与排行里看到它们。"
-        )
+        intro = QLabel("把你在平台上早就发过的作品纳入指标同步，之后就能在趋势与排行里看到它们。")
         intro.setObjectName("DialogHint")
         intro.setWordWrap(True)
         layout.addWidget(intro)

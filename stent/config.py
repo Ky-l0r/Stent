@@ -38,16 +38,25 @@ class ProviderPreset:
     model: str
 
     def as_dict(self) -> dict[str, str]:
-        return {"key": self.key, "label": self.label, "base_url": self.base_url, "model": self.model}
+        return {
+            "key": self.key,
+            "label": self.label,
+            "base_url": self.base_url,
+            "model": self.model,
+        }
 
 
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o"),
     ProviderPreset("deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
-    ProviderPreset("qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+    ProviderPreset(
+        "qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"
+    ),
     ProviderPreset("kimi", "Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
     ProviderPreset("zhipu", "智谱", "https://open.bigmodel.cn/api/paas/v4", "glm-4"),
-    ProviderPreset("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3"),
+    ProviderPreset(
+        "siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3"
+    ),
     ProviderPreset("ollama", "Ollama（本地）", "http://localhost:11434/v1", "qwen2.5:7b"),
     ProviderPreset("custom", "中转 / one-api（自定义）", "", ""),
 )
@@ -82,7 +91,10 @@ def _dpapi(protect: bool, data: bytes) -> bytes:
     crypt32 = ctypes.windll.crypt32
     kernel32 = ctypes.windll.kernel32
 
-    blob_in = _DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+    blob_in = _DATA_BLOB(
+        len(data),
+        ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)),
+    )
     blob_out = _DATA_BLOB()
     func = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
     args = [ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)]
@@ -196,7 +208,9 @@ class SecretStore:
                 self._remove_fallback()
                 return True
             if self.mode == "dpapi":
-                (paths.data_dir() / FALLBACK_SECRET_FILE).write_bytes(_dpapi(True, value.encode("utf-8")))
+                (paths.data_dir() / FALLBACK_SECRET_FILE).write_bytes(
+                    _dpapi(True, value.encode("utf-8"))
+                )
                 return True
             return False
 
@@ -268,7 +282,9 @@ class AppConfig:
     hotlist_platforms: list[str] = field(
         default_factory=lambda: ["weibo", "douyin", "zhihu", "bilibili", "baidu", "toutiao"]
     )
-    publish_platforms: list[str] = field(default_factory=lambda: ["xiaohongshu", "douyin", "zhihu", "bilibili"])
+    publish_platforms: list[str] = field(
+        default_factory=lambda: ["xiaohongshu", "douyin", "zhihu", "bilibili"]
+    )
     embedding_model: str = ""  # 留空则使用关键词检索降级（企划书 4.4）
     analytics_auto_sync: bool = True
     minimize_to_tray: bool = False
@@ -284,7 +300,7 @@ class AppConfig:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
+    def from_dict(cls, data: dict[str, Any]) -> AppConfig:
         data = dict(data or {})
         llm_raw = data.pop("llm", None) or {}
         cfg = cls()

@@ -26,7 +26,6 @@ def scan(theme: str = "dark") -> list[tuple[str, str, str, str]]:
 
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QLabel
-
     from stent.ui.context import AppContext
     from stent.ui.main_window import MainWindow
 
@@ -70,8 +69,7 @@ def scan(theme: str = "dark") -> list[tuple[str, str, str, str]]:
             bg = ranked[0][0]
             # 文字像素：与背景差异最大且占据一定比例的颜色
             candidates = [
-                (c, n) for c, n in buckets.items()
-                if n >= 3 and abs(lum(c) - lum(bg)) > 25
+                (c, n) for c, n in buckets.items() if n >= 3 and abs(lum(c) - lum(bg)) > 25
             ]
             if not candidates:
                 continue
@@ -79,15 +77,21 @@ def scan(theme: str = "dark") -> list[tuple[str, str, str, str]]:
             bg_lum, fg_lum = lum(bg), lum(text_color)
             if theme == "dark" and fg_lum < bg_lum:
                 problems.append(
-                    (page_name, text[:26],
-                     f"#{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}",
-                     f"#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}")
+                    (
+                        page_name,
+                        text[:26],
+                        f"#{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}",
+                        f"#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}",
+                    )
                 )
             elif theme == "light" and fg_lum > bg_lum + 60:
                 problems.append(
-                    (page_name, text[:26],
-                     f"#{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}",
-                     f"#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}")
+                    (
+                        page_name,
+                        text[:26],
+                        f"#{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}",
+                        f"#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}",
+                    )
                 )
 
     for key in ("hotsearch", "create", "publish", "analytics", "profile"):

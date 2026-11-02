@@ -187,9 +187,7 @@ class PlatformAdapter(ABC):
         """拉取账号级指标（粉丝数等），可选实现。"""
         return None
 
-    def list_account_posts(
-        self, *, headless: bool = True, limit: int = 50
-    ) -> list[AccountPost]:
+    def list_account_posts(self, *, headless: bool = True, limit: int = 50) -> list[AccountPost]:
         """列出账号下已发布的作品，可选实现。
 
         实现后，用户不必再逐条粘贴链接——数据分析页可以「从账号导入作品」，

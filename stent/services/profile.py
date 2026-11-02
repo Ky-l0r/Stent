@@ -107,11 +107,7 @@ class ProfileService:
     # -- 状态 ------------------------------------------------------------
     def is_configured(self) -> bool:
         profile = self.get()
-        return any(
-            str(profile.get(d.key) or "").strip()
-            for d in DIMENSIONS
-            if d.key != "memory"
-        )
+        return any(str(profile.get(d.key) or "").strip() for d in DIMENSIONS if d.key != "memory")
 
     def completeness(self) -> int:
         """画像完整度百分比，用于 UI 进度条。"""

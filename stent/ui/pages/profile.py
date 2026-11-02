@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -67,7 +66,9 @@ class ProfilePage(BasePage):
         self.save_button = make_button("保存画像", icon="save", theme=self.ctx.theme, primary=True)
         self.save_button.clicked.connect(self.save)
         header.add_action(self.save_button)
-        self.export_button = make_button("导出 Markdown", icon="external", theme=self.ctx.theme, ghost=True)
+        self.export_button = make_button(
+            "导出 Markdown", icon="external", theme=self.ctx.theme, ghost=True
+        )
         self.export_button.clicked.connect(self.export_markdown)
         header.add_action(self.export_button)
         self.add(header)
@@ -143,7 +144,9 @@ class ProfilePage(BasePage):
         sample.clicked.connect(lambda: self.assist_input.setPlainText(SAMPLE_INTRO))
         row.addWidget(sample)
         row.addStretch(1)
-        self.assist_button = make_button("生成画像草稿", icon="sparkles", theme=self.ctx.theme, primary=True)
+        self.assist_button = make_button(
+            "生成画像草稿", icon="sparkles", theme=self.ctx.theme, primary=True
+        )
         self.assist_button.clicked.connect(self.generate_draft)
         row.addWidget(self.assist_button)
         card.add_layout(row)
@@ -151,9 +154,7 @@ class ProfilePage(BasePage):
 
     def _build_dimension_card(self, dim) -> QWidget:
         # 六张卡各挂一个相同的人形图标只会造成噪音；状态已由标题文字表达
-        card = CollapsibleCard(
-            dim.label, hint=dim.hint, theme=self.ctx.theme, expanded=False
-        )
+        card = CollapsibleCard(dim.label, hint=dim.hint, theme=self.ctx.theme, expanded=False)
         hint = QLabel(dim.hint)
         hint.setObjectName("FieldHint")
         hint.setWordWrap(True)
@@ -180,7 +181,9 @@ class ProfilePage(BasePage):
         row = QHBoxLayout()
         row.setSpacing(8)
         self.memory_input = QLineEdit()
-        self.memory_input.setPlaceholderText("手动补一条经验，例如「标题带具体数字的笔记收藏率更高」")
+        self.memory_input.setPlaceholderText(
+            "手动补一条经验，例如「标题带具体数字的笔记收藏率更高」"
+        )
         self.memory_input.returnPressed.connect(self.add_memory)
         row.addWidget(self.memory_input, 1)
         add_button = make_button("添加", icon="plus", theme=self.ctx.theme, primary=True)
@@ -207,7 +210,9 @@ class ProfilePage(BasePage):
         bottom.addWidget(goto)
         bottom.addStretch(1)
         # 破坏性操作：靠右、红色文字、点了还要二次确认
-        self.clear_memory_button = make_button("清空全部记忆", icon="trash", theme=self.ctx.theme, danger=True)
+        self.clear_memory_button = make_button(
+            "清空全部记忆", icon="trash", theme=self.ctx.theme, danger=True
+        )
         self.clear_memory_button.clicked.connect(self.clear_memory)
         bottom.addWidget(self.clear_memory_button)
         card.add_layout(bottom)

@@ -19,10 +19,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from ..config import config_manager
 from ..core.db import db
@@ -118,9 +119,7 @@ SOURCES: dict[str, tuple[Source, ...]] = {
         _s("xxapi", f"{BASE_XXAPI}/api/douyinhot", "douyin_xx"),
         _s("60s", f"{BASE_60S}/v2/douyin", "sixty"),
     ),
-    "zhihu": (
-        _s("60s", f"{BASE_60S}/v2/zhihu", "sixty"),
-    ),
+    "zhihu": (_s("60s", f"{BASE_60S}/v2/zhihu", "sixty"),),
     "bilibili": (
         _s("xxapi", f"{BASE_XXAPI}/api/bilibilihot", "strlist"),
         _s("60s", f"{BASE_60S}/v2/bili", "sixty"),
@@ -129,20 +128,12 @@ SOURCES: dict[str, tuple[Source, ...]] = {
         _s("xxapi", f"{BASE_XXAPI}/api/baiduhot", "xxapi"),
         _s("60s", f"{BASE_60S}/v2/baidu/hot", "sixty"),
     ),
-    "toutiao": (
-        _s("60s", f"{BASE_60S}/v2/toutiao", "sixty"),
-    ),
-    "rednote": (
-        _s("60s", f"{BASE_60S}/v2/rednote", "sixty"),
-    ),
+    "toutiao": (_s("60s", f"{BASE_60S}/v2/toutiao", "sixty"),),
+    "rednote": (_s("60s", f"{BASE_60S}/v2/rednote", "sixty"),),
     # 以下两个是「垂类频道」：主流热榜偏综合，游戏 / 数码 / 时政这类内容
     # 常常进不了总榜，单独收一路可以让垂类筛选真正有内容可选。
-    "it-news": (
-        _s("60s", f"{BASE_60S}/v2/it-news", "sixty"),
-    ),
-    "60s": (
-        _s("60s", f"{BASE_60S}/v2/60s", "strlist"),
-    ),
+    "it-news": (_s("60s", f"{BASE_60S}/v2/it-news", "sixty"),),
+    "60s": (_s("60s", f"{BASE_60S}/v2/60s", "strlist"),),
 }
 
 PLATFORM_LABELS: dict[str, str] = {
@@ -184,53 +175,204 @@ SEARCH_TEMPLATES: dict[str, str] = {
 #: （例如「游戏」在「科技」前、「AI」在「科技」后但与「科技」同分时让位给科技）。
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "科技": (
-        "芯片", "华为", "苹果", "小米", "操作系统", "卫星", "航天", "专利", "科技",
-        "互联网", "开源", "发布会", "5G", "6G",
+        "芯片",
+        "华为",
+        "苹果",
+        "小米",
+        "操作系统",
+        "卫星",
+        "航天",
+        "专利",
+        "科技",
+        "互联网",
+        "开源",
+        "发布会",
+        "5G",
+        "6G",
     ),
     "数码": (
-        "手机", "笔记本", "平板", "耳机", "显卡", "相机", "充电", "测评", "路由器",
-        "显示器", "固态", "智能手表", "无人机",
+        "手机",
+        "笔记本",
+        "平板",
+        "耳机",
+        "显卡",
+        "相机",
+        "充电",
+        "测评",
+        "路由器",
+        "显示器",
+        "固态",
+        "智能手表",
+        "无人机",
     ),
     "AI": (
-        "AI", "人工智能", "大模型", "智能体", "算力", "GPT", "机器人", "算法",
-        "深度学习", "OpenAI", "超级智能", "生成式",
+        "AI",
+        "人工智能",
+        "大模型",
+        "智能体",
+        "算力",
+        "GPT",
+        "机器人",
+        "算法",
+        "深度学习",
+        "OpenAI",
+        "超级智能",
+        "生成式",
     ),
     "游戏": (
-        "游戏", "手游", "电竞", "玩家", "开服", "联机", "Steam", "主机", "网游",
-        "皮肤", "版本更新", "副本", "氪金",
+        "游戏",
+        "手游",
+        "电竞",
+        "玩家",
+        "开服",
+        "联机",
+        "Steam",
+        "主机",
+        "网游",
+        "皮肤",
+        "版本更新",
+        "副本",
+        "氪金",
     ),
     "动漫": ("动漫", "动画", "番剧", "漫画", "二次元", "声优", "手办", "国漫", "新番"),
     "影视": (
-        "电影", "电视剧", "剧集", "票房", "导演", "演员", "开播", "定档", "首映",
-        "影帝", "预告", "综艺", "纪录片",
+        "电影",
+        "电视剧",
+        "剧集",
+        "票房",
+        "导演",
+        "演员",
+        "开播",
+        "定档",
+        "首映",
+        "影帝",
+        "预告",
+        "综艺",
+        "纪录片",
     ),
     "音乐": ("歌手", "演唱会", "单曲", "专辑", "音乐节", "乐队", "新歌", "巡演", "歌词"),
     "娱乐": ("明星", "爱豆", "粉丝", "绯闻", "塌房", "颁奖", "红毯", "代言", "艺人"),
     "财经": (
-        "股市", "A股", "基金", "GDP", "央行", "利率", "比特币", "黄金", "关税",
-        "融资", "上市", "财报", "降息", "汇率", "营收",
+        "股市",
+        "A股",
+        "基金",
+        "GDP",
+        "央行",
+        "利率",
+        "比特币",
+        "黄金",
+        "关税",
+        "融资",
+        "上市",
+        "财报",
+        "降息",
+        "汇率",
+        "营收",
     ),
-    "汽车": ("汽车", "新能源车", "特斯拉", "比亚迪", "车主", "续航", "车企", "试驾", "充电桩", "智驾"),
+    "汽车": (
+        "汽车",
+        "新能源车",
+        "特斯拉",
+        "比亚迪",
+        "车主",
+        "续航",
+        "车企",
+        "试驾",
+        "充电桩",
+        "智驾",
+    ),
     "房产": ("楼市", "二手房", "土地", "公积金", "购房", "地产", "租房", "房贷"),
     "体育": (
-        "比赛", "夺冠", "奥运", "亚运", "足球", "篮球", "球员", "联赛", "冠军",
-        "世界杯", "乒乓球", "游泳", "国足", "网球", "全运会",
+        "比赛",
+        "夺冠",
+        "奥运",
+        "亚运",
+        "足球",
+        "篮球",
+        "球员",
+        "联赛",
+        "冠军",
+        "世界杯",
+        "乒乓球",
+        "游泳",
+        "国足",
+        "网球",
+        "全运会",
     ),
     "军事": ("军演", "导弹", "战机", "航母", "国防", "部队", "军事", "阅兵", "演习"),
     "国际": (
-        "美国", "俄罗斯", "日本", "乌克兰", "以色列", "联合国", "总统", "外交",
-        "欧洲", "韩国", "白宫", "欧盟", "特朗普",
+        "美国",
+        "俄罗斯",
+        "日本",
+        "乌克兰",
+        "以色列",
+        "联合国",
+        "总统",
+        "外交",
+        "欧洲",
+        "韩国",
+        "白宫",
+        "欧盟",
+        "特朗普",
     ),
     "时政": ("国务院", "两会", "政策", "部署", "中央", "省委", "民生", "十四五", "发布会"),
     "社会": (
-        "警方", "通报", "事故", "争议", "回应", "官方", "罚款", "判决", "网友",
-        "救援", "失联", "诈骗", "曝光", "热搜",
+        "警方",
+        "通报",
+        "事故",
+        "争议",
+        "回应",
+        "官方",
+        "罚款",
+        "判决",
+        "网友",
+        "救援",
+        "失联",
+        "诈骗",
+        "曝光",
+        "热搜",
     ),
-    "教育": ("高考", "考研", "学校", "教师", "学生", "录取", "开学", "作业", "留学", "校园", "培训"),
-    "健康": ("医院", "医生", "疫苗", "流感", "养生", "体检", "睡眠", "减肥", "用药", "疾病", "急救"),
+    "教育": (
+        "高考",
+        "考研",
+        "学校",
+        "教师",
+        "学生",
+        "录取",
+        "开学",
+        "作业",
+        "留学",
+        "校园",
+        "培训",
+    ),
+    "健康": (
+        "医院",
+        "医生",
+        "疫苗",
+        "流感",
+        "养生",
+        "体检",
+        "睡眠",
+        "减肥",
+        "用药",
+        "疾病",
+        "急救",
+    ),
     "美食": ("美食", "食谱", "餐厅", "火锅", "奶茶", "外卖", "探店", "菜谱", "月饼", "预制菜"),
     "旅游": ("旅游", "景区", "门票", "出行", "航班", "高铁", "签证", "自驾", "酒店", "游客"),
-    "职场": ("就业", "招聘", "工资", "加班", "裁员", "考公", "面试", "副业", "创业", "老板", "离职"),
+    "职场": (
+        "就业",
+        "招聘",
+        "工资",
+        "加班",
+        "裁员",
+        "考公",
+        "面试",
+        "副业",
+        "创业",
+        "老板",
+        "离职",
+    ),
     "情感": ("恋爱", "婚姻", "离婚", "彩礼", "相亲", "分手", "婆媳", "情感"),
     "母婴": ("育儿", "宝宝", "孕妈", "奶粉", "产假", "亲子", "儿童", "幼儿园"),
     "宠物": ("宠物", "铲屎官", "流浪动物", "动物园", "熊猫", "猫咪", "狗狗"),
@@ -342,7 +484,9 @@ def _parse_xxapi(raw: list[Any], platform: str) -> list[dict[str, Any]]:
             continue
         out.append(
             {
-                "rank": int(item.get("index") or item.get("rank") or item.get("position") or idx + 1),
+                "rank": int(
+                    item.get("index") or item.get("rank") or item.get("position") or idx + 1
+                ),
                 "title": title,
                 "url": str(item.get("url") or item.get("link") or _search_url(platform, title)),
                 "heat": _fmt_heat(item.get("hot") or item.get("hot_value") or ""),
@@ -459,7 +603,7 @@ class HotSearchService:
                 break
             return None, [f"{source.name}：{last_error}"]
 
-        queue: "queue_mod.Queue[tuple[Source, list[HotItem] | None, str]]" = queue_mod.Queue()
+        queue: queue_mod.Queue[tuple[Source, list[HotItem] | None, str]] = queue_mod.Queue()
         for source in sources:
             threading.Thread(
                 target=self._source_worker,
@@ -489,7 +633,7 @@ class HotSearchService:
 
     def _source_worker(
         self,
-        queue: "queue_mod.Queue[tuple[Source, list[HotItem] | None, str]]",
+        queue: queue_mod.Queue[tuple[Source, list[HotItem] | None, str]],
         platform: str,
         source: Source,
     ) -> None:
@@ -506,7 +650,9 @@ class HotSearchService:
         return max(60, min(ttl, 3600))
 
     def enabled_platforms(self) -> list[str]:
-        platforms = list(getattr(config_manager.config, "hotlist_platforms", None) or DEFAULT_PLATFORMS)
+        platforms = list(
+            getattr(config_manager.config, "hotlist_platforms", None) or DEFAULT_PLATFORMS
+        )
         return [p for p in platforms if p in SOURCES] or list(DEFAULT_PLATFORMS)
 
     # -- 单平台 ----------------------------------------------------------
@@ -530,7 +676,9 @@ class HotSearchService:
 
         sources = SOURCES.get(platform)
         if not sources:
-            return PlatformResult(platform=platform, label=label, error=f"暂不支持该平台：{platform}")
+            return PlatformResult(
+                platform=platform, label=label, error=f"暂不支持该平台：{platform}"
+            )
 
         winner, errors = self._race_sources(platform, sources)
         if winner is not None:
@@ -625,7 +773,9 @@ class HotSearchService:
                     done += 1
                     if on_progress:
                         try:
-                            on_progress(PLATFORM_LABELS.get(platform, platform), int(done / total * 100))
+                            on_progress(
+                                PLATFORM_LABELS.get(platform, platform), int(done / total * 100)
+                            )
                         except Exception:
                             pass
 
@@ -658,7 +808,11 @@ class HotSearchService:
             if allow is not None and platform not in allow:
                 continue
             for item in result.items:
-                if key and key not in item.title.lower() and key not in (item.keyword or "").lower():
+                if (
+                    key
+                    and key not in item.title.lower()
+                    and key not in (item.keyword or "").lower()
+                ):
                     continue
                 if wanted and (item.category or "综合") not in wanted:
                     continue

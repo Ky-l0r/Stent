@@ -33,29 +33,29 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "AnalyticsService",
     "BENCHMARKS",
     "DEFAULT_BENCHMARK",
     "METRIC_KEYS",
-    "PROGRESS_METRIC_KEYS",
     "TIME_BUCKETS",
     "WEEKDAYS",
+    "AnalyticsService",
     "available_platforms",
-    "evaluate_benchmark",
-    "get_adapter",
-    "resolve_adapter",
-    "safe_div",
     "engagement_rate",
     "engagement_score",
-    "pct_change",
+    "evaluate_benchmark",
+    "get_adapter",
     "mean",
     "median",
+    "pct_change",
+    "resolve_adapter",
+    "safe_div",
     "sample_warning",
 ]
 
@@ -364,9 +364,7 @@ def benchmark_for(platform: str | None) -> dict[str, Any]:
     return BENCHMARKS.get(key, DEFAULT_BENCHMARK)
 
 
-def evaluate_benchmark(
-    value_pct: float | None, ranges: Sequence[float]
-) -> str | None:
+def evaluate_benchmark(value_pct: float | None, ranges: Sequence[float]) -> str | None:
     """按基准区间给出中文评级：偏低 / 平均 / 良好 / 优秀；无数据返回 None。"""
     if value_pct is None:
         return None
@@ -866,7 +864,9 @@ class AnalyticsService:
                 )
         except Exception as exc:  # noqa: BLE001 - 数据库异常不向外抛
             log.exception("读取待同步帖子失败")
-            result["errors"].append({"platform": "", "post_id": None, "error": f"读取待同步列表失败：{exc}"})
+            result["errors"].append(
+                {"platform": "", "post_id": None, "error": f"读取待同步列表失败：{exc}"}
+            )
             return result
 
         if wanted:
@@ -897,7 +897,11 @@ class AnalyticsService:
             if not url:
                 result["skipped"] += 1
                 result["errors"].append(
-                    {"platform": platform, "post_id": post_id, "error": "帖子缺少链接，无法拉取指标"}
+                    {
+                        "platform": platform,
+                        "post_id": post_id,
+                        "error": "帖子缺少链接，无法拉取指标",
+                    }
                 )
                 _emit(on_progress, f"跳过（无链接）：{post.get('title') or post_id}", percent)
                 continue
@@ -926,7 +930,11 @@ class AnalyticsService:
             except Exception as exc:  # noqa: BLE001 - 单条失败不影响整体
                 result["failed"] += 1
                 result["errors"].append(
-                    {"platform": platform, "post_id": post_id, "error": f"{type(exc).__name__}: {exc}"}
+                    {
+                        "platform": platform,
+                        "post_id": post_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
                 )
                 log.warning("拉取指标失败 %s %s: %s", platform, url, exc)
                 continue
@@ -934,16 +942,18 @@ class AnalyticsService:
             if snapshot is None:
                 result["failed"] += 1
                 result["errors"].append(
-                    {"platform": platform, "post_id": post_id, "error": "适配器未返回指标（可能未登录或需要人工处理）"}
+                    {
+                        "platform": platform,
+                        "post_id": post_id,
+                        "error": "适配器未返回指标（可能未登录或需要人工处理）",
+                    }
                 )
                 continue
 
             try:
                 payload = snapshot.as_dict() if hasattr(snapshot, "as_dict") else dict(snapshot)
             except Exception:  # noqa: BLE001
-                payload = {
-                    key: getattr(snapshot, key, 0) for key in (*METRIC_KEYS, "raw")
-                }
+                payload = {key: getattr(snapshot, key, 0) for key in (*METRIC_KEYS, "raw")}
 
             try:
                 self.db.add_metric(post_id, payload)
@@ -1064,7 +1074,9 @@ class AnalyticsService:
             return {"ok": False, "post_id": 0, "platform": key, "message": f"写入记录失败：{exc}"}
 
         try:
-            self.db.log_action(key, "register_post", f"登记平台已有作品：{canonical}", post_id=post_id)
+            self.db.log_action(
+                key, "register_post", f"登记平台已有作品：{canonical}", post_id=post_id
+            )
         except Exception:  # noqa: BLE001
             log.debug("写审计日志失败", exc_info=True)
 
@@ -1129,13 +1141,15 @@ class AnalyticsService:
             else:
                 out["failed"] += 1
             out["details"].append(
-                {"url": link, "platform": result.get("platform", ""), "message": result.get("message", "")}
+                {
+                    "url": link,
+                    "platform": result.get("platform", ""),
+                    "message": result.get("message", ""),
+                }
             )
         return out
 
-    def discover_account_posts(
-        self, platform: str, *, limit: int = 50
-    ) -> dict[str, Any]:
+    def discover_account_posts(self, platform: str, *, limit: int = 50) -> dict[str, Any]:
         """从已登录的账号拉取作品列表并自动登记。
 
         相比逐条粘贴链接，这条路一次就能把历史作品补齐；列表里若已带指标
@@ -1165,8 +1179,7 @@ class AnalyticsService:
         lister = getattr(adapter, "list_account_posts", None)
         if not callable(lister) or not _overrides_account_listing(adapter):
             out["message"] = (
-                f"{_platform_label(key)}暂不支持自动导入作品列表，"
-                "请改用「粘贴作品链接」逐个登记"
+                f"{_platform_label(key)}暂不支持自动导入作品列表，请改用「粘贴作品链接」逐个登记"
             )
             return out
 
@@ -1197,9 +1210,7 @@ class AnalyticsService:
             url = getattr(item, "url", "") or ""
             if not url:
                 continue
-            result = self.register_post(
-                url, platform=key, title=getattr(item, "title", "") or ""
-            )
+            result = self.register_post(url, platform=key, title=getattr(item, "title", "") or "")
             if not result.get("ok"):
                 out["failed"] += 1
                 continue
@@ -1327,7 +1338,9 @@ class AnalyticsService:
             try:
                 data = adapter.fetch_account_metrics()
             except Exception as exc:  # noqa: BLE001
-                out["errors"].append({"platform": platform, "error": f"{type(exc).__name__}: {exc}"})
+                out["errors"].append(
+                    {"platform": platform, "error": f"{type(exc).__name__}: {exc}"}
+                )
                 continue
             if not data:
                 out["errors"].append({"platform": platform, "error": "账号级指标为空"})
@@ -1374,15 +1387,11 @@ class AnalyticsService:
             "avg_engagement_rate": mean(per_post_rates),
             "median_engagement_rate": median(per_post_rates),
             "aggregate_engagement_rate": aggregate_rate,
-            "engagement_rate_coverage": coverage(
-                [r.get("engagement_rate") for r in rows]
-            ),
+            "engagement_rate_coverage": coverage([r.get("engagement_rate") for r in rows]),
             "benchmark": {
                 "label": benchmark.get("label"),
                 "engagement_ranges": list(benchmark.get("engagement") or []),
-                "rating": evaluate_benchmark(
-                    aggregate_rate, benchmark.get("engagement") or ()
-                ),
+                "rating": evaluate_benchmark(aggregate_rate, benchmark.get("engagement") or ()),
                 "note": benchmark.get("note"),
             },
             "latest_captured_at": latest,
@@ -1412,9 +1421,7 @@ class AnalyticsService:
                     "avg_views": mean([r.get("views") for r in items]),
                     "avg_likes": mean([r.get("likes") for r in items]),
                     "avg_collects": mean([r.get("collects") for r in items]),
-                    "avg_engagement_rate": mean(
-                        [r.get("engagement_rate") for r in items]
-                    ),
+                    "avg_engagement_rate": mean([r.get("engagement_rate") for r in items]),
                     "aggregate_engagement_rate": rate,
                     "rating": evaluate_benchmark(rate, benchmark.get("engagement") or ()),
                     "avg_score": mean([r.get("engagement_score") for r in items]),
@@ -1708,7 +1715,9 @@ class AnalyticsService:
             saved = self._persist_memory(summary, experience, days, stats)
             result["memory_saved"] = saved
         result["ok"] = True
-        result["message"] = "归因完成" + ("，已写入账号画像记忆。" if result["memory_saved"] else "。")
+        result["message"] = "归因完成" + (
+            "，已写入账号画像记忆。" if result["memory_saved"] else "。"
+        )
         _emit(on_progress, result["message"], 100)
         return result
 
@@ -1780,9 +1789,7 @@ class AnalyticsService:
         posts, _, _ = self._raw_data(days=days, platform=platform)
         return posts
 
-    def _snapshot_rows(
-        self, days: int = 30, platform: str | None = None
-    ) -> list[dict[str, Any]]:
+    def _snapshot_rows(self, days: int = 30, platform: str | None = None) -> list[dict[str, Any]]:
         """窗口内每个已发布内容的「最近一条快照」，并附带派生指标。
 
         返回字段：``post_id / platform / title / url / published_at / created_at /
@@ -1896,9 +1903,7 @@ class AnalyticsService:
                 {
                     "platform": platform_name,
                     "post_count": len(items),
-                    "avg_engagement_rate": _round(
-                        mean([r.get("engagement_rate") for r in items])
-                    ),
+                    "avg_engagement_rate": _round(mean([r.get("engagement_rate") for r in items])),
                 }
                 for platform_name, items in _group_platforms(rows)
             ],
@@ -1906,9 +1911,7 @@ class AnalyticsService:
                 {
                     "topic": topic,
                     "post_count": len(items),
-                    "avg_engagement_rate": _round(
-                        mean([r.get("engagement_rate") for r in items])
-                    ),
+                    "avg_engagement_rate": _round(mean([r.get("engagement_rate") for r in items])),
                     "avg_views": _round(mean([r.get("views") for r in items])),
                 }
                 for topic, items in _group_topics(rows)
@@ -1981,6 +1984,7 @@ class AnalyticsService:
         days: int,
     ) -> str:
         """构造归因 prompt（含确定性统计 + Top/Bottom 明细）。"""
+
         def render(items: list[dict[str, Any]]) -> str:
             if not items:
                 return "（样本不足，本期无对照）"
@@ -2057,12 +2061,21 @@ class AnalyticsService:
 
     def _normalize_experience(self, raw: Any) -> list[dict[str, str]]:
         """把 LLM 返回的结构经验归一化成固定字段的列表。"""
-        items: list[Any] = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        items: list[Any] = (
+            raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        )
         out: list[dict[str, str]] = []
         for item in items:
             if isinstance(item, str):
-                out.append({"name": _localize_terms(item)[:40], "structure": "", "evidence": "",
-                            "transferable_when": "", "example": ""})
+                out.append(
+                    {
+                        "name": _localize_terms(item)[:40],
+                        "structure": "",
+                        "evidence": "",
+                        "transferable_when": "",
+                        "example": "",
+                    }
+                )
                 continue
             if not isinstance(item, dict):
                 continue
@@ -2158,7 +2171,9 @@ def _group_topics(rows: Sequence[dict[str, Any]]) -> list[tuple[str, list[dict[s
     """按主题分组（同一条内容可归入多个主题）。"""
     buckets: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        topics = [t for t in re.split(r"[，,;；/\s]+", str(row.get("topic") or "")) if t] or ["未分类"]
+        topics = [t for t in re.split(r"[，,;；/\s]+", str(row.get("topic") or "")) if t] or [
+            "未分类"
+        ]
         for topic in topics:
             buckets.setdefault(topic, []).append(row)
     return sorted(buckets.items(), key=lambda kv: -len(kv[1]))

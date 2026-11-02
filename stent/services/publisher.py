@@ -14,9 +14,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from ..core.db import db, now
 from ..platforms import (
@@ -217,7 +217,11 @@ class PublishService:
         limits = platform_limits(platform)
         adapter = get_adapter(platform)
         supported = adapter is not None
-        support_note = "" if supported else f"{platform_label(platform)}的自动化适配器暂不可用，可复制文案后人工发布"
+        support_note = (
+            ""
+            if supported
+            else f"{platform_label(platform)}的自动化适配器暂不可用，可复制文案后人工发布"
+        )
 
         try:
             report = self.precheck.check(payload, limits, platform=platform)
@@ -259,7 +263,9 @@ class PublishService:
         lines.append(payload.body or "（正文为空）")
         if payload.tags:
             lines.append("")
-            lines.append("【标签】" + " ".join(t if t.startswith("#") else f"#{t}" for t in payload.tags))
+            lines.append(
+                "【标签】" + " ".join(t if t.startswith("#") else f"#{t}" for t in payload.tags)
+            )
         if payload.media:
             lines.append("")
             lines.append(f"【媒体】{len(payload.media)} 个文件")
@@ -281,7 +287,9 @@ class PublishService:
             log.exception("登录态检测失败：%s", platform)
             return False, f"检测失败：{exc}"
 
-    def login(self, platform: str, *, on_progress: Callable | None = None, timeout_sec: int = 300) -> tuple[bool, str]:
+    def login(
+        self, platform: str, *, on_progress: Callable | None = None, timeout_sec: int = 300
+    ) -> tuple[bool, str]:
         adapter = get_adapter(platform)
         if adapter is None:
             return False, f"{platform_label(platform)}的适配器不可用"
@@ -319,7 +327,6 @@ class PublishService:
             用户关掉主程序时要靠它立刻收尾（否则浏览器窗口会被留在桌面上）。
         """
         platform = preparation.platform
-        label = preparation.label
         db_ = self._db
 
         if not confirmed:
@@ -371,7 +378,13 @@ class PublishService:
             log.exception("发布异常：%s", platform)
             db_.update_post(post_id, status="failed", error=str(exc))
             db_.log_action(platform, "publish_error", str(exc), post_id=post_id)
-            return PublishOutcome(ok=False, platform=platform, post_id=post_id, message=f"发布异常：{exc}", dry_run=dry_run)
+            return PublishOutcome(
+                ok=False,
+                platform=platform,
+                post_id=post_id,
+                message=f"发布异常：{exc}",
+                dry_run=dry_run,
+            )
 
         if result.ok:
             status = "draft_filled" if dry_run else "published"
@@ -389,13 +402,19 @@ class PublishService:
                     status="ready" if dry_run else "published",
                     platform=platform,
                 )
-            db_.log_action(platform, "publish_ok" if not dry_run else "publish_dry_run", result.message, post_id=post_id)
+            db_.log_action(
+                platform,
+                "publish_ok" if not dry_run else "publish_dry_run",
+                result.message,
+                post_id=post_id,
+            )
             return PublishOutcome(
                 ok=True,
                 platform=platform,
                 post_id=post_id,
                 url=result.url or "",
-                message=result.message or ("已填写完成，请到浏览器中确认并发布" if dry_run else "发布成功"),
+                message=result.message
+                or ("已填写完成，请到浏览器中确认并发布" if dry_run else "发布成功"),
                 dry_run=dry_run,
                 detail=result.detail or {},
             )
@@ -403,7 +422,11 @@ class PublishService:
         db_.update_post(post_id, status="failed", error=result.message)
         db_.log_action(platform, "publish_fail", result.message, post_id=post_id)
         return PublishOutcome(
-            ok=False, platform=platform, post_id=post_id, message=result.message or "发布失败", dry_run=dry_run
+            ok=False,
+            platform=platform,
+            post_id=post_id,
+            message=result.message or "发布失败",
+            dry_run=dry_run,
         )
 
     # -- 记录 ------------------------------------------------------------
@@ -416,7 +439,9 @@ class PublishService:
     def mark_published_manually(self, post_id: int, url: str = "") -> None:
         """用户在浏览器里手动完成最终发布后，回来标记为已发布。"""
         self._db.update_post(post_id, status="published", url=url, published_at=now(), error="")
-        self._db.log_action("", "manual_confirm", f"用户在浏览器中完成发布，url={url}", post_id=post_id)
+        self._db.log_action(
+            "", "manual_confirm", f"用户在浏览器中完成发布，url={url}", post_id=post_id
+        )
 
     def mark_failed_manually(self, post_id: int, reason: str = "") -> None:
         """用户回浏览器发现没发成功，手动标记失败（避免记录一直挂在「待确认」）。"""
@@ -444,7 +469,6 @@ class PublishService:
         面向非技术用户：这里把「该敲哪条命令」变成一次点击。命令仍然会执行，
         只是不再需要用户自己复制粘贴——失败时把原始输出回传给界面供排查。
         """
-        import subprocess  # noqa: PLC0415
         import sys  # noqa: PLC0415
 
         def report(message: str, percent: int = -1) -> None:
@@ -724,7 +748,9 @@ def environment_status() -> EnvironmentStatus:
             detail="浏览器内核已安装，登录与发布都可以正常使用。",
         )
 
-    installed = sorted(p.name for p in root.glob("chromium-*") if p.is_dir()) if root.is_dir() else []
+    installed = (
+        sorted(p.name for p in root.glob("chromium-*") if p.is_dir()) if root.is_dir() else []
+    )
     if revision and installed:
         # 装了内核但版本对不上：Playwright 只认自己那一版，必须重新下载
         existing = "、".join(installed[:3])
@@ -774,7 +800,6 @@ def local_login_state(platform: str) -> tuple[bool, str]:
     这里只检查持久化目录里有没有对应站点的 Cookie，毫秒级返回，
     用来给出「大概已登录 / 从未登录」的第一印象；需要确认时再点单平台的「检测」。
     """
-    import os
     from pathlib import Path
 
     key = (platform or "").strip().lower()
@@ -827,7 +852,8 @@ def local_login_state(platform: str) -> tuple[bool, str]:
 
 def account_overview() -> list[dict[str, Any]]:
     """列出各平台的账号状态概览（供设置页「平台账号」栏目渲染）。"""
-    from ..platforms import keys as platform_keys, platform_label
+    from ..platforms import keys as platform_keys
+    from ..platforms import platform_label
 
     out: list[dict[str, Any]] = []
     for key in platform_keys():

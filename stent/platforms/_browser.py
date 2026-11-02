@@ -13,9 +13,10 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .base import emit
 
@@ -37,7 +38,13 @@ COMMON_LAUNCH_ARGS: tuple[str, ...] = (
 )
 
 #: 判定「未登录」的通用信号（各平台自行追加）
-GENERIC_LOGGED_OUT_KEYWORDS: tuple[str, ...] = ("扫码登录", "密码登录", "验证码登录", "立即登录", "登录后")
+GENERIC_LOGGED_OUT_KEYWORDS: tuple[str, ...] = (
+    "扫码登录",
+    "密码登录",
+    "验证码登录",
+    "立即登录",
+    "登录后",
+)
 
 _NUM_TOKEN_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*[万亿wWkK]?)")
 
@@ -45,6 +52,7 @@ _NUM_TOKEN_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*[万亿wWkK]?)")
 # --------------------------------------------------------------------------- #
 # 纯函数
 # --------------------------------------------------------------------------- #
+
 
 def parse_cn_number(text: Any) -> int:
     """把中文计数的展示值解析成整数。
@@ -64,7 +72,14 @@ def parse_cn_number(text: Any) -> int:
     if not s:
         return 0
     multiplier = 1.0
-    for suffix, factor in (("亿", 1e8), ("万", 1e4), ("w", 1e4), ("W", 1e4), ("k", 1e3), ("K", 1e3)):
+    for suffix, factor in (
+        ("亿", 1e8),
+        ("万", 1e4),
+        ("w", 1e4),
+        ("W", 1e4),
+        ("k", 1e3),
+        ("K", 1e3),
+    ):
         if s.endswith(suffix):
             multiplier = factor
             s = s[: -len(suffix)]
@@ -95,13 +110,13 @@ def extract_metric_from_text(text: str, labels: tuple[str, ...]) -> int:
     for label in labels:
         idx = flat.find(label)
         while idx >= 0:
-            tail = flat[idx + len(label): idx + len(label) + 24].lstrip(" ：:·|/")
+            tail = flat[idx + len(label) : idx + len(label) + 24].lstrip(" ：:·|/")
             match = _NUM_TOKEN_RE.match(tail)
             if match:
                 val = parse_cn_number(match.group(1))
                 if val:
                     return val
-            head = flat[max(0, idx - 24): idx].strip()
+            head = flat[max(0, idx - 24) : idx].strip()
             if head:
                 matches = _NUM_TOKEN_RE.findall(head)
                 if matches:
@@ -116,13 +131,22 @@ def extract_metric_from_text(text: str, labels: tuple[str, ...]) -> int:
 # 浏览器会话
 # --------------------------------------------------------------------------- #
 
+
 class BrowserSession:
     """包装 ``launch_persistent_context``，提供 ``page`` 与幂等的 ``close()``。"""
 
-    def __init__(self, playwright: Any, user_data_dir: str, *, headless: bool,
-                 timeout_ms: int = 30_000, args: tuple[str, ...] = COMMON_LAUNCH_ARGS):
-        self._ctx = self._launch(playwright, user_data_dir, headless=headless,
-                                 timeout_ms=timeout_ms, args=args)
+    def __init__(
+        self,
+        playwright: Any,
+        user_data_dir: str,
+        *,
+        headless: bool,
+        timeout_ms: int = 30_000,
+        args: tuple[str, ...] = COMMON_LAUNCH_ARGS,
+    ):
+        self._ctx = self._launch(
+            playwright, user_data_dir, headless=headless, timeout_ms=timeout_ms, args=args
+        )
         pages = list(getattr(self._ctx, "pages", []) or [])
         self.page = pages[0] if pages else self._ctx.new_page()
         try:
@@ -132,8 +156,14 @@ class BrowserSession:
             pass
 
     @staticmethod
-    def _launch(playwright: Any, user_data_dir: str, *, headless: bool,
-                timeout_ms: int, args: tuple[str, ...]):
+    def _launch(
+        playwright: Any,
+        user_data_dir: str,
+        *,
+        headless: bool,
+        timeout_ms: int,
+        args: tuple[str, ...],
+    ):
         """启动持久化上下文；先试禁用系统代理（国内平台直连更稳），失败退回默认。"""
         common: dict[str, Any] = dict(
             headless=headless,
@@ -186,8 +216,9 @@ def record_browser_error(exc: BaseException) -> None:
 
 
 @contextmanager
-def open_browser(adapter: Any, *, headless: bool,
-                 args: tuple[str, ...] = COMMON_LAUNCH_ARGS) -> Iterator[BrowserSession | None]:
+def open_browser(
+    adapter: Any, *, headless: bool, args: tuple[str, ...] = COMMON_LAUNCH_ARGS
+) -> Iterator[BrowserSession | None]:
     """打开浏览器会话；playwright 缺失 / 内核缺失时产出 ``None``（调用方给中文提示）。"""
     global _last_error
     try:
@@ -214,6 +245,7 @@ def open_browser(adapter: Any, *, headless: bool,
 # --------------------------------------------------------------------------- #
 # DOM 小工具
 # --------------------------------------------------------------------------- #
+
 
 def first_visible(page: Any, selectors: tuple[str, ...], *, require_enabled: bool = False) -> Any:
     """按候选顺序返回第一个可见元素（可选要求未禁用）；都没有返回 None。"""
@@ -284,7 +316,11 @@ def click_text_in(page: Any, scope: Any, text: str) -> bool:
     """在 scope 内按文本点击（先 button/a，再 text= 节点，最后 JS 遍历）。"""
     if scope is None:
         scope = page
-    for sel in (f"button:has-text('{text}')", f"a:has-text('{text}')", f"[role=button]:has-text('{text}')"):
+    for sel in (
+        f"button:has-text('{text}')",
+        f"a:has-text('{text}')",
+        f"[role=button]:has-text('{text}')",
+    ):
         try:
             for el in scope.query_selector_all(sel):
                 try:
@@ -341,8 +377,9 @@ def clear_and_type(page: Any, el: Any, text: str, *, delay_ms: int = 15) -> bool
 def paste_into_focused(page: Any, text: str) -> bool:
     """用 ClipboardEvent 把长文粘进当前聚焦的富文本编辑器（Draft.js/slate 通用）。"""
     try:
-        return bool(page.evaluate(
-            """(text) => {
+        return bool(
+            page.evaluate(
+                """(text) => {
                 const el = document.activeElement;
                 if (!el) return false;
                 try {
@@ -352,8 +389,9 @@ def paste_into_focused(page: Any, text: str) -> bool:
                     return true;
                 } catch (e) { return false; }
             }""",
-            text,
-        ))
+                text,
+            )
+        )
     except Exception:
         return False
 
@@ -524,7 +562,11 @@ MAX_HOLD_SEC = 3600
 
 def resolve_hold_sec(extra: Any) -> int:
     """从 ``payload.extra`` 读「保持浏览器打开」的秒数（做上下限保护）。"""
-    raw = (extra or {}).get("hold_sec", DEFAULT_HOLD_SEC) if isinstance(extra, dict) else DEFAULT_HOLD_SEC
+    raw = (
+        (extra or {}).get("hold_sec", DEFAULT_HOLD_SEC)
+        if isinstance(extra, dict)
+        else DEFAULT_HOLD_SEC
+    )
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -573,8 +615,12 @@ def hold_for_review(
     hold_sec = max(MIN_HOLD_SEC, min(MAX_HOLD_SEC, hold_sec))
     callback = (extra or {}).get("confirm_callback") if isinstance(extra, dict) else None
 
-    emit(on_progress, f"{done_hint}：浏览器会保持打开（最长 {hold_sec // 60} 分钟），"
-                      f"确认无误后直接点发布即可；关掉浏览器窗口也会结束本次操作", 95)
+    emit(
+        on_progress,
+        f"{done_hint}：浏览器会保持打开（最长 {hold_sec // 60} 分钟），"
+        f"确认无误后直接点发布即可；关掉浏览器窗口也会结束本次操作",
+        95,
+    )
 
     deadline = time.time() + hold_sec
     while time.time() < deadline:

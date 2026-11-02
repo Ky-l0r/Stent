@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
@@ -18,7 +19,7 @@ from ..core.llm import LLMCancelled
 log = logging.getLogger(__name__)
 
 #: 已从宿主移除但底层线程仍未结束的 worker，保留引用以避免 QThread 析构崩溃
-_ORPHANS: list["TaskWorker"] = []
+_ORPHANS: list[TaskWorker] = []
 
 
 def friendly_error(exc: BaseException) -> str:
@@ -48,7 +49,7 @@ class TaskWorker(QThread):
     stream = Signal(str, str)
     done = Signal()
 
-    def __init__(self, fn: Callable[["TaskWorker"], Any], parent: Any = None, name: str = "") -> None:
+    def __init__(self, fn: Callable[[TaskWorker], Any], parent: Any = None, name: str = "") -> None:
         super().__init__(parent)
         self._fn = fn
         self._cancel_event = threading.Event()
@@ -152,7 +153,7 @@ class WorkerHost:
                 pass
 
 
-def pending_workers() -> list["TaskWorker"]:
+def pending_workers() -> list[TaskWorker]:
     """仍在运行的残留任务。"""
     return [worker for worker in _ORPHANS if worker.isRunning()]
 

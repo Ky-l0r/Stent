@@ -74,7 +74,9 @@ class HotSearchPage(BasePage):
         )
         # 状态灯放在主操作左侧：日常状态只占一枚小圆点，页面顶部留给标题与刷新按钮
         header.add_action(self.status_light)
-        self.refresh_button = make_button("刷新热榜", icon="refresh", theme=self.ctx.theme, primary=True)
+        self.refresh_button = make_button(
+            "刷新热榜", icon="refresh", theme=self.ctx.theme, primary=True
+        )
         self.refresh_button.clicked.connect(lambda: self.reload(force=True))
         header.add_action(self.refresh_button)
         self.add(header)
@@ -141,7 +143,9 @@ class HotSearchPage(BasePage):
         toolbar.add(filters)
 
     def _build_platform_chips(self) -> None:
-        enabled = set(getattr(config_manager.config, "hotlist_platforms", None) or DEFAULT_PLATFORMS)
+        enabled = set(
+            getattr(config_manager.config, "hotlist_platforms", None) or DEFAULT_PLATFORMS
+        )
         chips: list[QWidget] = []
         for key in ALL_PLATFORMS:
             if key not in PLATFORM_LABELS:
@@ -149,7 +153,8 @@ class HotSearchPage(BasePage):
             chip = FilterChip(
                 PLATFORM_LABELS[key],
                 checked=key in enabled,
-                tooltip=f"聚合「{PLATFORM_LABELS[key]}」热榜" + ("" if key in DEFAULT_PLATFORMS else "（垂类频道）"),
+                tooltip=f"聚合「{PLATFORM_LABELS[key]}」热榜"
+                + ("" if key in DEFAULT_PLATFORMS else "（垂类频道）"),
             )
             chip.toggled.connect(lambda checked, k=key: self._on_chip_toggled(k, checked))
             self._platform_chips[key] = chip
@@ -231,7 +236,9 @@ class HotSearchPage(BasePage):
             heat_column=COL_HEAT,
         )
         self.heat_delegate = self._delegates["heat"]
-        self.actions_delegate = RowActionsDelegate(self.table, column=COL_ACTIONS).attach(self.table)
+        self.actions_delegate = RowActionsDelegate(self.table, column=COL_ACTIONS).attach(
+            self.table
+        )
         self.actions_delegate.primary_clicked = self._send_row
         self.actions_delegate.secondary_clicked = self._open_row
         self.table.setItemDelegateForColumn(COL_ACTIONS, self.actions_delegate)
@@ -396,9 +403,7 @@ class HotSearchPage(BasePage):
         for row, item in enumerate(items):
             self._fill_row(row, item)
         # 条形图按当前列表的峰值归一化，列表一变就要重算
-        self.heat_delegate.set_peak(
-            max((parse_heat(item.heat) for item in items), default=0.0)
-        )
+        self.heat_delegate.set_peak(max((parse_heat(item.heat) for item in items), default=0.0))
         self._set_copy_enabled(False)
 
     def _set_copy_enabled(self, enabled: bool) -> None:

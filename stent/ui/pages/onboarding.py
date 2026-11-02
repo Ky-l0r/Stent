@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -193,7 +192,9 @@ class OnboardingDialog(QDialog, WorkerHost):
 
     # ------------------------------------------------------------------
     def _on_provider(self) -> None:
-        preset = next((p for p in PROVIDER_PRESETS if p.key == self.provider_combo.currentData()), None)
+        preset = next(
+            (p for p in PROVIDER_PRESETS if p.key == self.provider_combo.currentData()), None
+        )
         if preset is None or not preset.base_url:
             return
         self.base_url_edit.setText(preset.base_url)
@@ -258,7 +259,9 @@ class OnboardingDialog(QDialog, WorkerHost):
         self.test_button.setEnabled(False)
         self.test_button.setText("测试中…")
         self.test_result.setText("正在请求服务商…")
-        client = LLMClient(LLMConfig(base_url=base_url, model=model, timeout=25), self.api_key_edit.text().strip())
+        client = LLMClient(
+            LLMConfig(base_url=base_url, model=model, timeout=25), self.api_key_edit.text().strip()
+        )
         self._worker = self.run_task(
             lambda worker: client.test_connection(),
             on_result=self._on_tested,
@@ -270,7 +273,9 @@ class OnboardingDialog(QDialog, WorkerHost):
     def _on_tested(self, result) -> None:
         ok, message = result
         self.test_result.setText(("✓ " if ok else "✗ ") + message)
-        self.test_result.setStyleSheet(f"color: {palette(self.ctx.theme).success if ok else palette(self.ctx.theme).danger};")
+        self.test_result.setStyleSheet(
+            f"color: {palette(self.ctx.theme).success if ok else palette(self.ctx.theme).danger};"
+        )
 
     def _on_test_done(self) -> None:
         self.test_button.setEnabled(True)

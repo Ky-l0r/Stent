@@ -10,7 +10,7 @@ import argparse
 import logging
 import os
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from . import __version__, paths
 from .core.db import db
@@ -191,6 +191,7 @@ def run_selftest(app, ctx) -> int:
 
     shutdown_workers(4000)
     return 0 if ok_count == len(results) else 1
+
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

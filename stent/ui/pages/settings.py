@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -34,7 +33,8 @@ from PySide6.QtWidgets import (
 from ... import __version__, paths
 from ...config import PROVIDER_PRESETS, preset_for, secrets
 from ...core.llm import LLMClient
-from ...platforms import keys as platform_keys, platform_label
+from ...platforms import keys as platform_keys
+from ...platforms import platform_label
 from ...services.hotsearch import DEFAULT_PLATFORMS, PLATFORM_LABELS
 from .. import icons
 from ..components import CollapsibleCard, PageHeader, ScrollArea, make_button
@@ -81,7 +81,9 @@ class SettingsPage(BasePage):
             layout.addWidget(card)
         layout.addStretch(1)
 
-        header = PageHeader("设置", "配置 LLM 接入、平台账号、通用偏好与本地存储；所有配置只保存在本机")
+        header = PageHeader(
+            "设置", "配置 LLM 接入、平台账号、通用偏好与本地存储；所有配置只保存在本机"
+        )
         header.add_action(self.status_light)
         self.save_button = make_button("保存设置", icon="save", theme=self.ctx.theme, primary=True)
         self.save_button.clicked.connect(self.save)
@@ -176,7 +178,9 @@ class SettingsPage(BasePage):
         self.test_button = make_button("测试连通性", icon="check", theme=self.ctx.theme)
         self.test_button.clicked.connect(self.test_connection)
         row.addWidget(self.test_button)
-        self.models_button = make_button("拉取模型列表", icon="refresh", theme=self.ctx.theme, ghost=True)
+        self.models_button = make_button(
+            "拉取模型列表", icon="refresh", theme=self.ctx.theme, ghost=True
+        )
         self.models_button.clicked.connect(self.list_models)
         row.addWidget(self.models_button)
         row.addStretch(1)
@@ -505,7 +509,11 @@ class SettingsPage(BasePage):
     # ------------------------------------------------------------------
     def _build_general_card(self) -> QWidget:
         card = CollapsibleCard(
-            "通用", icon="settings", hint="主题、热榜缓存与窗口动画", theme=self.ctx.theme, expanded=False
+            "通用",
+            icon="settings",
+            hint="主题、热榜缓存与窗口动画",
+            theme=self.ctx.theme,
+            expanded=False,
         )
 
         form = QFormLayout()
@@ -551,7 +559,11 @@ class SettingsPage(BasePage):
 
     def _build_storage_card(self) -> QWidget:
         card = CollapsibleCard(
-            "存储与安全", icon="folder", hint="本地数据目录与诊断导出", theme=self.ctx.theme, expanded=False
+            "存储与安全",
+            icon="folder",
+            hint="本地数据目录与诊断导出",
+            theme=self.ctx.theme,
+            expanded=False,
         )
 
         self.paths_label = QLabel()
@@ -565,7 +577,9 @@ class SettingsPage(BasePage):
         open_button = make_button("打开数据目录", icon="folder", theme=self.ctx.theme)
         open_button.clicked.connect(self.open_data_dir)
         row.addWidget(open_button)
-        export_button = make_button("导出诊断信息", icon="external", theme=self.ctx.theme, ghost=True)
+        export_button = make_button(
+            "导出诊断信息", icon="external", theme=self.ctx.theme, ghost=True
+        )
         export_button.clicked.connect(self.export_diagnostics)
         row.addWidget(export_button)
         row.addStretch(1)
@@ -631,7 +645,11 @@ class SettingsPage(BasePage):
         self.test_result.setText("已保存密钥" if key else "尚未配置密钥")
         self.key_storage_label.setText(
             f"密钥存储方式：{secrets.describe_mode()}"
-            + ("" if secrets.mode != "none" else "　⚠ 当前系统不支持加密存储，密钥仅在本次会话中有效")
+            + (
+                ""
+                if secrets.mode != "none"
+                else "　⚠ 当前系统不支持加密存储，密钥仅在本次会话中有效"
+            )
         )
 
         self.theme_combo.setCurrentIndex(1 if self.ctx.theme == "dark" else 0)
@@ -654,7 +672,9 @@ class SettingsPage(BasePage):
     def _on_provider_changed(self) -> None:
         if self._loading:
             return
-        preset = next((p for p in PROVIDER_PRESETS if p.key == self.provider_combo.currentData()), None)
+        preset = next(
+            (p for p in PROVIDER_PRESETS if p.key == self.provider_combo.currentData()), None
+        )
         if preset is None or not preset.base_url:
             return
         self.base_url_edit.setText(preset.base_url)
@@ -702,7 +722,8 @@ class SettingsPage(BasePage):
 
         self.ctx.config_manager.update(
             hotlist_cache_ttl=int(self.cache_spin.value()),
-            hotlist_platforms=[k for k, b in self.platform_checks.items() if b.isChecked()] or list(DEFAULT_PLATFORMS),
+            hotlist_platforms=[k for k, b in self.platform_checks.items() if b.isChecked()]
+            or list(DEFAULT_PLATFORMS),
             analytics_auto_sync=bool(self.auto_sync_box.isChecked()),
             ui_animations=bool(self.animations_box.isChecked()),
         )
@@ -769,7 +790,9 @@ class SettingsPage(BasePage):
             self.banner.show_message(f"拉取模型列表失败（不影响使用）：{payload}", "warn")
             return
         models = payload if isinstance(payload, list) else []
-        self.banner.show_message(f"该服务商共有 {len(models)} 个模型，例如：{', '.join(models[:6])}", "success")
+        self.banner.show_message(
+            f"该服务商共有 {len(models)} 个模型，例如：{', '.join(models[:6])}", "success"
+        )
 
     def _on_models_done(self) -> None:
         self.models_button.setEnabled(True)

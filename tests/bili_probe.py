@@ -132,8 +132,10 @@ def _dump_partitions(page) -> None:
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     tree = data.get("typelist") or []
-    print(f"\n===== 实时分区树 · 接口 code={data.get('api_code')} · "
-          f"一级 {len(tree)} 个 =====", flush=True)
+    print(
+        f"\n===== 实时分区树 · 接口 code={data.get('api_code')} · 一级 {len(tree)} 个 =====",
+        flush=True,
+    )
     if data.get("error"):
         print(f"  接口错误：{data['error']}", flush=True)
     for parent in tree:
@@ -143,7 +145,11 @@ def _dump_partitions(page) -> None:
 
 
 def main() -> int:
-    mode = "drafts" if "--drafts" in sys.argv else ("partitions" if "--partitions" in sys.argv else "form")
+    mode = (
+        "drafts"
+        if "--drafts" in sys.argv
+        else ("partitions" if "--partitions" in sys.argv else "form")
+    )
     dev = "--dev" in sys.argv
     profile = _profile(dev)
     print(f"登录态目录 = {profile}  存在 = {profile.exists()}", flush=True)
@@ -156,14 +162,19 @@ def main() -> int:
 
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(
-            str(profile), headless=True, locale="zh-CN",
+            str(profile),
+            headless=True,
+            locale="zh-CN",
             viewport={"width": 1600, "height": 1000},
             args=["--disable-blink-features=AutomationControlled", "--no-proxy-server"],
         )
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(DRAFT_URL if mode == "drafts" else UPLOAD_URL,
-                      wait_until="domcontentloaded", timeout=60_000)
+            page.goto(
+                DRAFT_URL if mode == "drafts" else UPLOAD_URL,
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
             page.wait_for_timeout(9_000)
             if mode == "partitions":
                 _dump_fields(page, "form")

@@ -7,4 +7,4 @@
 __version__ = "1.1.2"
 __app_name__ = "Stent"
 
-__all__ = ["__version__", "__app_name__"]
+__all__ = ["__app_name__", "__version__"]

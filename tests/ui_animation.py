@@ -32,7 +32,6 @@ def main() -> int:
     app = build_application(["stent-anim"])
 
     from PySide6.QtCore import Qt
-
     from stent.ui.context import AppContext
     from stent.ui.main_window import MainWindow
 
@@ -73,20 +72,26 @@ def main() -> int:
     distinct = sorted(set(widths))
     animated = len(distinct) >= 3
     results.append(
-        ("最大化过程逐帧过渡",
-         animated,
-         f"宽度采样 {len(distinct)} 个不同值：{distinct[:3]} … {distinct[-2:]}")
+        (
+            "最大化过程逐帧过渡",
+            animated,
+            f"宽度采样 {len(distinct)} 个不同值：{distinct[:3]} … {distinct[-2:]}",
+        )
     )
     results.append(
-        ("最大化结束状态正确",
-         maximized_ok and window.geometry() == area,
-         f"isMaximized={maximized_ok} geometry={window.geometry().getRect()} vs {area.getRect()}")
+        (
+            "最大化结束状态正确",
+            maximized_ok and window.geometry() == area,
+            f"isMaximized={maximized_ok} geometry={window.geometry().getRect()} vs {area.getRect()}",
+        )
     )
     results.append(
-        ("动画后内容尺寸已复位",
-         (not window._content_frozen) and window.centralWidget().width() == window.width(),
-         f"内容={window.centralWidget().size().toTuple()} 窗口={window.size().toTuple()}"
-         "（高度差为状态栏，属正常）")
+        (
+            "动画后内容尺寸已复位",
+            (not window._content_frozen) and window.centralWidget().width() == window.width(),
+            f"内容={window.centralWidget().size().toTuple()} 窗口={window.size().toTuple()}"
+            "（高度差为状态栏，属正常）",
+        )
     )
 
     # ---- 还原 ----
@@ -96,14 +101,18 @@ def main() -> int:
     distinct = sorted(set(widths))
     restored_animated = len(distinct) >= 3
     results.append(
-        ("还原过程逐帧过渡",
-         restored_animated,
-         f"宽度采样 {len(distinct)} 个不同值：{distinct[:3]} … {distinct[-2:]}")
+        (
+            "还原过程逐帧过渡",
+            restored_animated,
+            f"宽度采样 {len(distinct)} 个不同值：{distinct[:3]} … {distinct[-2:]}",
+        )
     )
     results.append(
-        ("还原结束状态正确",
-         (not window.isMaximized()) and window.geometry() == original,
-         f"isMaximized={window.isMaximized()} geometry={window.geometry().getRect()} vs {original.getRect()}")
+        (
+            "还原结束状态正确",
+            (not window.isMaximized()) and window.geometry() == original,
+            f"isMaximized={window.isMaximized()} geometry={window.geometry().getRect()} vs {original.getRect()}",
+        )
     )
 
     # ---- 关闭动画后应瞬间切换（性能逃生舱口）----
@@ -118,10 +127,12 @@ def main() -> int:
     wait(300)
     instant = (not enabled) and len(set(widths_off)) <= 2 and window.isMaximized()
     results.append(
-        ("关闭动画后瞬间切换",
-         instant,
-         f"开关={enabled} 切换前 max={was_maximized} 切换后 max={window.isMaximized()} "
-         f"宽度值 {len(set(widths_off))} 个 几何={window.geometry().getRect()}")
+        (
+            "关闭动画后瞬间切换",
+            instant,
+            f"开关={enabled} 切换前 max={was_maximized} 切换后 max={window.isMaximized()} "
+            f"宽度值 {len(set(widths_off))} 个 几何={window.geometry().getRect()}",
+        )
     )
     window.toggle_maximize()
     wait(300)
@@ -136,19 +147,25 @@ def main() -> int:
     minimized = window.isMinimized()
     distinct_op = sorted({round(v, 3) for v in opacities})
     results.append(
-        ("最小化过程有淡出 + 收缩",
-         len(distinct_op) >= 3,
-         f"不透明度采样 {len(distinct_op)} 个不同值：{distinct_op[:3]} … {distinct_op[-2:]}")
+        (
+            "最小化过程有淡出 + 收缩",
+            len(distinct_op) >= 3,
+            f"不透明度采样 {len(distinct_op)} 个不同值：{distinct_op[:3]} … {distinct_op[-2:]}",
+        )
     )
     results.append(
-        ("最小化结束状态正确",
-         minimized and window.geometry() == before_min,
-         f"isMinimized={minimized} geometry={window.geometry().getRect()} vs {before_min.getRect()}")
+        (
+            "最小化结束状态正确",
+            minimized and window.geometry() == before_min,
+            f"isMinimized={minimized} geometry={window.geometry().getRect()} vs {before_min.getRect()}",
+        )
     )
     results.append(
-        ("最小化后不透明度已复位",
-         abs(window.windowOpacity() - 1.0) < 0.01,
-         str(window.windowOpacity()))
+        (
+            "最小化后不透明度已复位",
+            abs(window.windowOpacity() - 1.0) < 0.01,
+            str(window.windowOpacity()),
+        )
     )
 
     # 还原窗口与配置（过渡动画默认关闭）

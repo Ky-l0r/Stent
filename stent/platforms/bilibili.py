@@ -83,12 +83,36 @@ _AV_RE = re.compile(r"av(\d+)", re.IGNORECASE)
 
 #: 分区名 → tid（沿用 Easel bili_upload.py 的 PARTITIONS；B 站改版后有的仍可用）
 PARTITIONS: dict[str, int] = {
-    "动画": 1, "音乐": 3, "游戏": 4, "娱乐": 5, "生活": 160, "日常": 21,
-    "科技": 188, "数码": 95, "知识": 36, "科普": 201, "资讯": 202,
-    "影视": 181, "美食": 211, "时尚": 155, "美妆": 157, "穿搭": 158,
-    "运动": 234, "汽车": 223, "动物": 217, "舞蹈": 129, "鬼畜": 119,
-    "绘画": 162, "手工": 161, "摄影": 282, "职场": 253, "校园": 55,
-    "母婴": 216, "家居": 239, "旅游": 250, "三农": 251,
+    "动画": 1,
+    "音乐": 3,
+    "游戏": 4,
+    "娱乐": 5,
+    "生活": 160,
+    "日常": 21,
+    "科技": 188,
+    "数码": 95,
+    "知识": 36,
+    "科普": 201,
+    "资讯": 202,
+    "影视": 181,
+    "美食": 211,
+    "时尚": 155,
+    "美妆": 157,
+    "穿搭": 158,
+    "运动": 234,
+    "汽车": 223,
+    "动物": 217,
+    "舞蹈": 129,
+    "鬼畜": 119,
+    "绘画": 162,
+    "手工": 161,
+    "摄影": 282,
+    "职场": 253,
+    "校园": 55,
+    "母婴": 216,
+    "家居": 239,
+    "旅游": 250,
+    "三农": 251,
 }
 DEFAULT_PARTITION = "知识"
 
@@ -103,62 +127,99 @@ DEFAULT_PARTITION = "知识"
 #: 拉取实时分区树（见 :func:`resolve_partition`），平台改版也能自动跟上。
 PARTITION_FALLBACK: dict[str, tuple[str, str, int]] = {
     # 生活
-    "生活": ("生活", "日常", 21), "日常": ("生活", "日常", 21),
-    "搞笑": ("生活", "搞笑", 138), "出行": ("生活", "出行", 250),
-    "旅游": ("生活", "出行", 250), "三农": ("生活", "三农", 251),
-    "家居房产": ("生活", "家居房产", 239), "家居": ("生活", "家居房产", 239),
-    "手工": ("生活", "手工", 161), "绘画": ("生活", "绘画", 162),
+    "生活": ("生活", "日常", 21),
+    "日常": ("生活", "日常", 21),
+    "搞笑": ("生活", "搞笑", 138),
+    "出行": ("生活", "出行", 250),
+    "旅游": ("生活", "出行", 250),
+    "三农": ("生活", "三农", 251),
+    "家居房产": ("生活", "家居房产", 239),
+    "家居": ("生活", "家居房产", 239),
+    "手工": ("生活", "手工", 161),
+    "绘画": ("生活", "绘画", 162),
     "亲子": ("生活", "亲子", 254),
     # 知识
-    "知识": ("知识", "科学科普", 201), "科普": ("知识", "科学科普", 201),
+    "知识": ("知识", "科学科普", 201),
+    "科普": ("知识", "科学科普", 201),
     "科学科普": ("知识", "科学科普", 201),
     "社科·法律·心理": ("知识", "社科·法律·心理", 124),
-    "人文历史": ("知识", "人文历史", 228), "财经商业": ("知识", "财经商业", 207),
-    "校园学习": ("知识", "校园学习", 208), "校园": ("知识", "校园学习", 208),
-    "职业职场": ("知识", "职业职场", 209), "职场": ("知识", "职业职场", 209),
-    "设计·创意": ("知识", "设计·创意", 229), "野生技能协会": ("知识", "野生技能协会", 122),
+    "人文历史": ("知识", "人文历史", 228),
+    "财经商业": ("知识", "财经商业", 207),
+    "校园学习": ("知识", "校园学习", 208),
+    "校园": ("知识", "校园学习", 208),
+    "职业职场": ("知识", "职业职场", 209),
+    "职场": ("知识", "职业职场", 209),
+    "设计·创意": ("知识", "设计·创意", 229),
+    "野生技能协会": ("知识", "野生技能协会", 122),
     # 科技
-    "科技": ("科技", "软件应用", 230), "软件应用": ("科技", "软件应用", 230),
-    "数码": ("科技", "数码", 95), "计算机技术": ("科技", "计算机技术", 231),
-    "科工机械": ("科技", "科工机械", 232), "极客DIY": ("科技", "极客DIY", 233),
+    "科技": ("科技", "软件应用", 230),
+    "软件应用": ("科技", "软件应用", 230),
+    "数码": ("科技", "数码", 95),
+    "计算机技术": ("科技", "计算机技术", 231),
+    "科工机械": ("科技", "科工机械", 232),
+    "极客DIY": ("科技", "极客DIY", 233),
     # 游戏
-    "游戏": ("游戏", "单机游戏", 17), "单机游戏": ("游戏", "单机游戏", 17),
-    "网络游戏": ("游戏", "网络游戏", 65), "手机游戏": ("游戏", "手机游戏", 172),
-    "电子竞技": ("游戏", "电子竞技", 171), "桌游棋牌": ("游戏", "桌游棋牌", 173),
+    "游戏": ("游戏", "单机游戏", 17),
+    "单机游戏": ("游戏", "单机游戏", 17),
+    "网络游戏": ("游戏", "网络游戏", 65),
+    "手机游戏": ("游戏", "手机游戏", 172),
+    "电子竞技": ("游戏", "电子竞技", 171),
+    "桌游棋牌": ("游戏", "桌游棋牌", 173),
     # 音乐
-    "音乐": ("音乐", "原创音乐", 28), "原创音乐": ("音乐", "原创音乐", 28),
-    "翻唱": ("音乐", "翻唱", 31), "演奏": ("音乐", "演奏", 59),
+    "音乐": ("音乐", "原创音乐", 28),
+    "原创音乐": ("音乐", "原创音乐", 28),
+    "翻唱": ("音乐", "翻唱", 31),
+    "演奏": ("音乐", "演奏", 59),
     # 娱乐
-    "娱乐": ("娱乐", "娱乐杂谈", 241), "娱乐杂谈": ("娱乐", "娱乐杂谈", 241),
-    "综艺": ("娱乐", "综艺", 71), "明星综合": ("娱乐", "明星综合", 137),
+    "娱乐": ("娱乐", "娱乐杂谈", 241),
+    "娱乐杂谈": ("娱乐", "娱乐杂谈", 241),
+    "综艺": ("娱乐", "综艺", 71),
+    "明星综合": ("娱乐", "明星综合", 137),
     # 影视
-    "影视": ("影视", "影视杂谈", 182), "影视杂谈": ("影视", "影视杂谈", 182),
-    "影视剪辑": ("影视", "影视剪辑", 183), "短片": ("影视", "短片", 256),
+    "影视": ("影视", "影视杂谈", 182),
+    "影视杂谈": ("影视", "影视杂谈", 182),
+    "影视剪辑": ("影视", "影视剪辑", 183),
+    "短片": ("影视", "短片", 256),
     # 动画
-    "动画": ("动画", "综合", 27), "综合": ("动画", "综合", 27),
-    "MAD·AMV": ("动画", "MAD·AMV", 24), "MMD·3D": ("动画", "MMD·3D", 25),
+    "动画": ("动画", "综合", 27),
+    "综合": ("动画", "综合", 27),
+    "MAD·AMV": ("动画", "MAD·AMV", 24),
+    "MMD·3D": ("动画", "MMD·3D", 25),
     # 时尚
-    "时尚": ("时尚", "穿搭", 158), "穿搭": ("时尚", "穿搭", 158),
-    "美妆护肤": ("时尚", "美妆护肤", 157), "美妆": ("时尚", "美妆护肤", 157),
+    "时尚": ("时尚", "穿搭", 158),
+    "穿搭": ("时尚", "穿搭", 158),
+    "美妆护肤": ("时尚", "美妆护肤", 157),
+    "美妆": ("时尚", "美妆护肤", 157),
     # 美食
-    "美食": ("美食", "美食制作", 76), "美食制作": ("美食", "美食制作", 76),
+    "美食": ("美食", "美食制作", 76),
+    "美食制作": ("美食", "美食制作", 76),
     "美食测评": ("美食", "美食测评", 213),
     # 运动
-    "运动": ("运动", "运动综合", 238), "运动综合": ("运动", "运动综合", 238),
-    "健身": ("运动", "健身", 164), "篮球": ("运动", "篮球", 235), "足球": ("运动", "足球", 249),
+    "运动": ("运动", "运动综合", 238),
+    "运动综合": ("运动", "运动综合", 238),
+    "健身": ("运动", "健身", 164),
+    "篮球": ("运动", "篮球", 235),
+    "足球": ("运动", "足球", 249),
     # 汽车
-    "汽车": ("汽车", "汽车生活", 176), "汽车生活": ("汽车", "汽车生活", 176),
+    "汽车": ("汽车", "汽车生活", 176),
+    "汽车生活": ("汽车", "汽车生活", 176),
     "新能源车": ("汽车", "新能源车", 247),
     # 动物圈
-    "动物圈": ("动物圈", "动物综合", 75), "动物": ("动物圈", "动物综合", 75),
-    "喵星人": ("动物圈", "喵星人", 218), "汪星人": ("动物圈", "汪星人", 219),
+    "动物圈": ("动物圈", "动物综合", 75),
+    "动物": ("动物圈", "动物综合", 75),
+    "喵星人": ("动物圈", "喵星人", 218),
+    "汪星人": ("动物圈", "汪星人", 219),
     # 舞蹈
-    "舞蹈": ("舞蹈", "舞蹈综合", 154), "舞蹈综合": ("舞蹈", "舞蹈综合", 154),
-    "宅舞": ("舞蹈", "宅舞", 20), "街舞": ("舞蹈", "街舞", 198),
+    "舞蹈": ("舞蹈", "舞蹈综合", 154),
+    "舞蹈综合": ("舞蹈", "舞蹈综合", 154),
+    "宅舞": ("舞蹈", "宅舞", 20),
+    "街舞": ("舞蹈", "街舞", 198),
     # 鬼畜
-    "鬼畜": ("鬼畜", "鬼畜调教", 22), "鬼畜调教": ("鬼畜", "鬼畜调教", 22),
+    "鬼畜": ("鬼畜", "鬼畜调教", 22),
+    "鬼畜调教": ("鬼畜", "鬼畜调教", 22),
     # 纪录片
-    "纪录片": ("纪录片", "人文·历史", 37), "人文·历史": ("纪录片", "人文·历史", 37),
+    "纪录片": ("纪录片", "人文·历史", 37),
+    "人文·历史": ("纪录片", "人文·历史", 37),
 }
 
 #: 静态表里出现过的一级分区名，用来判断下拉文案里是否写着**别的**一级分区。
@@ -169,7 +230,16 @@ KNOWN_PARENT_NAMES: tuple[str, ...] = tuple(
 
 #: 视频扩展名（发布前粗校验；不做转码）
 VIDEO_SUFFIXES: tuple[str, ...] = (
-    ".mp4", ".mov", ".mkv", ".flv", ".avi", ".wmv", ".webm", ".m4v", ".ts", ".rmvb",
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".flv",
+    ".avi",
+    ".wmv",
+    ".webm",
+    ".m4v",
+    ".ts",
+    ".rmvb",
 )
 
 #: 登录判定（创作中心页头头像/昵称）
@@ -180,13 +250,16 @@ LOGGED_IN_SELECTORS: tuple[str, ...] = (
     '#app [class*="avatar"]',
 )
 LOGGED_OUT_SELECTORS: tuple[str, ...] = (
-    'text=登录',
+    "text=登录",
     'button:has-text("登录")',
     ".login-btn",
     '[class*="login-btn"]',
     ".bili-login-card",
 )
-LOGGED_OUT_URL_KEYWORDS: tuple[str, ...] = ("passport.bilibili.com/login", "passport.bilibili.com/register")
+LOGGED_OUT_URL_KEYWORDS: tuple[str, ...] = (
+    "passport.bilibili.com/login",
+    "passport.bilibili.com/register",
+)
 
 #: 登录二维码
 QR_SELECTORS: tuple[str, ...] = (
@@ -211,7 +284,14 @@ FILE_INPUT_SELECTORS: tuple[str, ...] = (
 )
 
 #: 上传/转码中的信号
-UPLOADING_TEXT_KEYWORDS: tuple[str, ...] = ("上传中", "上传完成", "转码中", "视频处理中", "解析中", "处理中")
+UPLOADING_TEXT_KEYWORDS: tuple[str, ...] = (
+    "上传中",
+    "上传完成",
+    "转码中",
+    "视频处理中",
+    "解析中",
+    "处理中",
+)
 UPLOAD_READY_KEYWORDS: tuple[str, ...] = ("上传完成", "转码完成", "稿件封面", "封面")
 UPLOAD_AREA_SELECTORS: tuple[str, ...] = (
     ".bcc-upload-wrapper",
@@ -348,10 +428,22 @@ TOAST_SELECTORS: tuple[str, ...] = (
 )
 #: 投稿成功后页面会跳到这些地址（人工确认阶段也用它判断「已经发出去了」）
 SUBMIT_SUCCESS_URL_KEYWORDS: tuple[str, ...] = (
-    "upload-manager", "archive-list", "upload/text", "success",
+    "upload-manager",
+    "archive-list",
+    "upload/text",
+    "success",
 )
 FAIL_TEXTS: tuple[str, ...] = (
-    "投稿失败", "提交失败", "上传失败", "失败", "错误", "请先", "请选择", "请上传", "不能为空", "不符合",
+    "投稿失败",
+    "提交失败",
+    "上传失败",
+    "失败",
+    "错误",
+    "请先",
+    "请选择",
+    "请上传",
+    "不能为空",
+    "不符合",
 )
 
 #: 指标抓取（旧版播放页 / 新版播放页两套 DOM 都覆盖）
@@ -370,8 +462,17 @@ METRIC_VALUE_SELECTORS: dict[str, tuple[str, ...]] = {
         '[class*="view"] [class*="num"]',
         ".number[title]",
     ),
-    "likes": (".video-like-info", ".like .info-text", '[class*="like"] [class*="info-text"]', '[class*="like"] .num'),
-    "comments": (".video-comment-info", ".comment .info-text", '[class*="comment"] [class*="info-text"]'),
+    "likes": (
+        ".video-like-info",
+        ".like .info-text",
+        '[class*="like"] [class*="info-text"]',
+        '[class*="like"] .num',
+    ),
+    "comments": (
+        ".video-comment-info",
+        ".comment .info-text",
+        '[class*="comment"] [class*="info-text"]',
+    ),
     "collects": (".video-fav-info", ".collect .info-text", '[class*="fav"] [class*="info-text"]'),
     "shares": (".video-share-info", ".share .info-text", '[class*="share"] [class*="info-text"]'),
 }
@@ -387,6 +488,7 @@ DEBUG_DIR_NAME = "debug"
 # --------------------------------------------------------------------------- #
 # 纯工具函数
 # --------------------------------------------------------------------------- #
+
 
 def resolve_tid(partition: str | None) -> int | None:
     """分区名/数字 → tid。
@@ -563,6 +665,7 @@ def _safe_int(value: Any) -> int:
 # 适配器
 # --------------------------------------------------------------------------- #
 
+
 class BiliBiliAdapter(PlatformAdapter):
     """B 站适配器（视频投稿，member.bilibili.com Web 端）。"""
 
@@ -607,7 +710,10 @@ class BiliBiliAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return False, "浏览器不可用：请先安装 playwright 与 chromium（pip install playwright && playwright install chromium）"
+                    return (
+                        False,
+                        "浏览器不可用：请先安装 playwright 与 chromium（pip install playwright && playwright install chromium）",
+                    )
                 page = sess.page
                 try:
                     page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
@@ -708,12 +814,15 @@ class BiliBiliAdapter(PlatformAdapter):
         if box and box.get("width", 0) > 20:
             pad = 6
             try:
-                page.screenshot(path=out, clip={
-                    "x": max(0, box["x"] - pad),
-                    "y": max(0, box["y"] - pad),
-                    "width": box["width"] + pad * 2,
-                    "height": box["height"] + pad * 2,
-                })
+                page.screenshot(
+                    path=out,
+                    clip={
+                        "x": max(0, box["x"] - pad),
+                        "y": max(0, box["y"] - pad),
+                        "width": box["width"] + pad * 2,
+                        "height": box["height"] + pad * 2,
+                    },
+                )
                 return
             except Exception:
                 pass
@@ -744,7 +853,9 @@ class BiliBiliAdapter(PlatformAdapter):
         if not title:
             return PublishResult(ok=False, message="B 站稿件标题不能为空")
         if len(title) > lim.title_max:
-            return PublishResult(ok=False, message=f"标题过长（{len(title)}/{lim.title_max} 字），请精简后再投稿")
+            return PublishResult(
+                ok=False, message=f"标题过长（{len(title)}/{lim.title_max} 字），请精简后再投稿"
+            )
         if len(body) > lim.body_max:
             return PublishResult(
                 ok=False,
@@ -754,7 +865,9 @@ class BiliBiliAdapter(PlatformAdapter):
                 ),
             )
         if len(tags) > lim.tags_max:
-            return PublishResult(ok=False, message=f"标签过多（{len(tags)}/{lim.tags_max}），请删减后再投稿")
+            return PublishResult(
+                ok=False, message=f"标签过多（{len(tags)}/{lim.tags_max}），请删减后再投稿"
+            )
         media = [p for p in (payload.media or []) if p]
         if not media:
             return PublishResult(ok=False, message="B 站投稿必填视频，请在预览里选择视频文件")
@@ -762,7 +875,10 @@ class BiliBiliAdapter(PlatformAdapter):
         if not video.is_file():
             return PublishResult(ok=False, message=f"视频文件不存在：{video}")
         if not is_video_file(str(video)):
-            return PublishResult(ok=False, message=f"不是支持的视频格式（{video.suffix}）：请选择 mp4/mov/mkv 等视频文件")
+            return PublishResult(
+                ok=False,
+                message=f"不是支持的视频格式（{video.suffix}）：请选择 mp4/mov/mkv 等视频文件",
+            )
 
         partition = str(extra.get("partition") or DEFAULT_PARTITION).strip()
         tid = _safe_int(extra.get("tid")) or resolve_tid(partition)
@@ -774,26 +890,50 @@ class BiliBiliAdapter(PlatformAdapter):
         try:
             with open_browser(self, headless=headless) as sess:
                 if sess is None:
-                    return PublishResult(ok=False, message="浏览器不可用：请先安装 playwright 与 chromium")
+                    return PublishResult(
+                        ok=False, message="浏览器不可用：请先安装 playwright 与 chromium"
+                    )
                 try:
                     return self._publish_flow(
-                        sess.page, title=title, body=body, tags=tags, video=str(video),
-                        partition=partition, tid=tid, cover=cover,
-                        dry_run=dry_run, timeout_sec=timeout_sec, on_progress=on_progress,
-                        cancel=cancel, extra=extra,
+                        sess.page,
+                        title=title,
+                        body=body,
+                        tags=tags,
+                        video=str(video),
+                        partition=partition,
+                        tid=tid,
+                        cover=cover,
+                        dry_run=dry_run,
+                        timeout_sec=timeout_sec,
+                        on_progress=on_progress,
+                        cancel=cancel,
+                        extra=extra,
                     )
                 except Exception as exc:  # noqa: BLE001
                     where = dump_debug(sess.page, self._debug_dir(), "bilibili", "publish-error")
                     note = f"，现场已落盘：{where}" if where else ""
-                    return PublishResult(ok=False, message=f"B 站投稿失败：{type(exc).__name__}: {exc}{note}")
+                    return PublishResult(
+                        ok=False, message=f"B 站投稿失败：{type(exc).__name__}: {exc}{note}"
+                    )
         except Exception as exc:  # noqa: BLE001
             return PublishResult(ok=False, message=f"B 站投稿异常：{type(exc).__name__}: {exc}")
 
     def _publish_flow(
-        self, page: Any, *, title: str, body: str, tags: list[str], video: str,
-        partition: str, tid: int, cover: str,
-        dry_run: bool, timeout_sec: int, on_progress: Any,
-        cancel: Any = None, extra: Any = None,
+        self,
+        page: Any,
+        *,
+        title: str,
+        body: str,
+        tags: list[str],
+        video: str,
+        partition: str,
+        tid: int,
+        cover: str,
+        dry_run: bool,
+        timeout_sec: int,
+        on_progress: Any,
+        cancel: Any = None,
+        extra: Any = None,
     ) -> PublishResult:
         budget = max(120, timeout_sec)
         deadline = time.time() + budget
@@ -802,7 +942,9 @@ class BiliBiliAdapter(PlatformAdapter):
         try:
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
-            return PublishResult(ok=False, message=f"打开 B 站创作中心失败：{type(exc).__name__}（请检查网络）")
+            return PublishResult(
+                ok=False, message=f"打开 B 站创作中心失败：{type(exc).__name__}（请检查网络）"
+            )
         page.wait_for_timeout(1_500)
         if self._probe_login(page, wait_s=8) is LoginState.LOGGED_OUT:
             return PublishResult(ok=False, message="B 站未登录，请先在「账号」页扫码登录后再投稿")
@@ -814,25 +956,35 @@ class BiliBiliAdapter(PlatformAdapter):
             return PublishResult(ok=False, message=f"打开发布页失败：{type(exc).__name__}")
         page.wait_for_timeout(2_500)
         if "passport.bilibili.com" in (page.url or ""):
-            return PublishResult(ok=False, message="B 站登录态已失效（被重定向到登录页），请重新扫码登录")
+            return PublishResult(
+                ok=False, message="B 站登录态已失效（被重定向到登录页），请重新扫码登录"
+            )
 
         self._log(on_progress, "上传视频文件…", 20)
         if not self._upload_video(page, video):
             where = dump_debug(page, self._debug_dir(), "bilibili", "no-file-input")
-            return PublishResult(ok=False, message="未找到视频上传入口（file input）"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="未找到视频上传入口（file input）" + (f"，现场：{where}" if where else ""),
+            )
 
         self._log(on_progress, "等待视频上传与转码…", 35)
         if not self._wait_upload_done(page, deadline=deadline):
             where = dump_debug(page, self._debug_dir(), "bilibili", "upload-timeout")
-            return PublishResult(ok=False, message="视频上传/转码超时，未进入表单填写阶段"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="视频上传/转码超时，未进入表单填写阶段"
+                + (f"，现场：{where}" if where else ""),
+            )
 
         self._log(on_progress, "填写标题…", 50)
         if not self._set_field(page, TITLE_SELECTORS, title):
             where = dump_debug(page, self._debug_dir(), "bilibili", "no-title")
-            return PublishResult(ok=False, message="未找到稿件标题输入框（B 站可能改版）"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="未找到稿件标题输入框（B 站可能改版）"
+                + (f"，现场：{where}" if where else ""),
+            )
 
         # 没能自动填好的项目，收尾时一并告诉用户。
         # 用局部变量而不是挂到 self 上：适配器是单例，实例属性会在并发调用间串味。
@@ -867,16 +1019,26 @@ class BiliBiliAdapter(PlatformAdapter):
 
         if dry_run:
             return self._hold_dry_run(
-                page, on_progress=on_progress, cancel=cancel, extra=extra,
-                video=video, tags=tags, partition=partition, tid=tid, warnings=warnings,
+                page,
+                on_progress=on_progress,
+                cancel=cancel,
+                extra=extra,
+                video=video,
+                tags=tags,
+                partition=partition,
+                tid=tid,
+                warnings=warnings,
             )
 
         self._log(on_progress, "等待「立即投稿」按钮就绪…", 85)
         button = self._wait_submit_button(page, deadline=deadline)
         if button is None:
             where = dump_debug(page, self._debug_dir(), "bilibili", "submit-not-ready")
-            return PublishResult(ok=False, message="「立即投稿」按钮迟迟未就绪（可能仍在转码或校验未通过），已按未投稿处理"
-                                                + (f"，现场：{where}" if where else ""))
+            return PublishResult(
+                ok=False,
+                message="「立即投稿」按钮迟迟未就绪（可能仍在转码或校验未通过），已按未投稿处理"
+                + (f"，现场：{where}" if where else ""),
+            )
 
         self._log(on_progress, "提交投稿…", 92)
         if not click_soft(button):
@@ -888,13 +1050,25 @@ class BiliBiliAdapter(PlatformAdapter):
             self._log(on_progress, "投稿完成", 100)
             return PublishResult(ok=True, url=url, message=message)
         where = dump_debug(page, self._debug_dir(), "bilibili", "submit-unconfirmed")
-        return PublishResult(ok=False, url=url,
-                             message=message + (f"，现场已落盘：{where}" if where else ""),
-                             detail={"unconfirmed": True})
+        return PublishResult(
+            ok=False,
+            url=url,
+            message=message + (f"，现场已落盘：{where}" if where else ""),
+            detail={"unconfirmed": True},
+        )
 
     def _hold_dry_run(
-        self, page: Any, *, on_progress: Any, cancel: Any, extra: Any,
-        video: str, tags: list[str], partition: str, tid: int, warnings: list[str],
+        self,
+        page: Any,
+        *,
+        on_progress: Any,
+        cancel: Any,
+        extra: Any,
+        video: str,
+        tags: list[str],
+        partition: str,
+        tid: int,
+        warnings: list[str],
     ) -> PublishResult:
         """dry-run 收尾：**不关浏览器**，等用户在页面里点「立即投稿」或自己关掉窗口。
 
@@ -920,8 +1094,12 @@ class BiliBiliAdapter(PlatformAdapter):
             url=page.url or UPLOAD_URL,
             message=message,
             detail={
-                "dry_run": True, "video": video, "tags": tags,
-                "partition": partition, "tid": tid, "warnings": notes,
+                "dry_run": True,
+                "video": video,
+                "tags": tags,
+                "partition": partition,
+                "tid": tid,
+                "warnings": notes,
                 "hint": "确认标题/封面/分区无误后，在浏览器窗口内手动点击「立即投稿」",
             },
         )
@@ -937,7 +1115,7 @@ class BiliBiliAdapter(PlatformAdapter):
         except Exception:
             return ""
         if url != UPLOAD_URL and any(key in url for key in SUBMIT_SUCCESS_URL_KEYWORDS):
-            return f"已检测到你完成了投稿（页面已跳转），请回「发布记录」把它标记为已发布"
+            return "已检测到你完成了投稿（页面已跳转），请回「发布记录」把它标记为已发布"
         for selector in TOAST_SELECTORS:
             try:
                 element = page.query_selector(selector)
@@ -973,7 +1151,9 @@ class BiliBiliAdapter(PlatformAdapter):
                     continue
         try:
             with page.expect_file_chooser(timeout=8_000) as fc:
-                trigger = first_visible(page, UPLOAD_AREA_SELECTORS + ('text=上传视频', 'text=点击上传'))
+                trigger = first_visible(
+                    page, UPLOAD_AREA_SELECTORS + ("text=上传视频", "text=点击上传")
+                )
                 if trigger is None:
                     return False
                 click_soft(trigger)
@@ -1009,8 +1189,15 @@ class BiliBiliAdapter(PlatformAdapter):
         except Exception:
             return ""
 
-    def _set_field(self, page: Any, selectors: tuple[str, ...], value: str,
-                   *, multiline: bool = False, required: bool = True) -> bool:
+    def _set_field(
+        self,
+        page: Any,
+        selectors: tuple[str, ...],
+        value: str,
+        *,
+        multiline: bool = False,
+        required: bool = True,
+    ) -> bool:
         if not value:
             return not required
         el = first_visible(page, selectors)
@@ -1099,7 +1286,9 @@ class BiliBiliAdapter(PlatformAdapter):
                 return True
         element = first_visible(page, DESC_EDITOR_SELECTORS)
         if element is not None:
-            if clear_and_type(page, element, text, delay_ms=4) and self._editor_has_text(page, text):
+            if clear_and_type(page, element, text, delay_ms=4) and self._editor_has_text(
+                page, text
+            ):
                 return True
         # 老版 textarea 兜底：填完同样要读回确认。
         legacy = first_visible(page, DESC_SELECTORS)
@@ -1280,7 +1469,9 @@ class BiliBiliAdapter(PlatformAdapter):
             return True
         return not any(name != parent and name in text for name in KNOWN_PARENT_NAMES)
 
-    def _partition_selected(self, page: Any, choice: PartitionChoice, *, timeout_s: float = 0.0) -> bool:
+    def _partition_selected(
+        self, page: Any, choice: PartitionChoice, *, timeout_s: float = 0.0
+    ) -> bool:
         """读回下拉文案，确认这个分区真的选上了（点了没中就不能算成功）。
 
         ``timeout_s=0``（默认）只看当前状态；点完之后给一点宽限，等下拉把文案刷新出来。
@@ -1324,13 +1515,17 @@ class BiliBiliAdapter(PlatformAdapter):
     def _wait_submit_button(self, page: Any, *, deadline: float) -> Any:
         stable = 0
         while time.time() < deadline:
-            btn = first_visible(page, SUBMIT_BUTTON_SELECTORS) or first_visible_text(page, SUBMIT_TEXTS)
+            btn = first_visible(page, SUBMIT_BUTTON_SELECTORS) or first_visible_text(
+                page, SUBMIT_TEXTS
+            )
             ok = False
             if btn is not None:
                 try:
-                    ok = (btn.get_attribute("disabled") is None
-                          and btn.get_attribute("aria-disabled") not in ("true", "1")
-                          and "disabled" not in ((btn.get_attribute("class") or "").lower()))
+                    ok = (
+                        btn.get_attribute("disabled") is None
+                        and btn.get_attribute("aria-disabled") not in ("true", "1")
+                        and "disabled" not in ((btn.get_attribute("class") or "").lower())
+                    )
                 except Exception:
                     ok = False
             stable = stable + 1 if ok else 0
@@ -1366,7 +1561,11 @@ class BiliBiliAdapter(PlatformAdapter):
             except Exception:
                 pass
             page.wait_for_timeout(1_000)
-        return False, "投稿结果未确认（未跳转、无成功提示），请到 B 站创作中心「稿件管理」人工核对是否已提交", page.url or ""
+        return (
+            False,
+            "投稿结果未确认（未跳转、无成功提示），请到 B 站创作中心「稿件管理」人工核对是否已提交",
+            page.url or "",
+        )
 
     # -- 数据 ----------------------------------------------------------
     def fetch_metrics(self, post_url: str, *, headless: bool = True) -> MetricSnapshot | None:
@@ -1420,9 +1619,7 @@ class BiliBiliAdapter(PlatformAdapter):
             },
         )
 
-    def list_account_posts(
-        self, *, headless: bool = True, limit: int = 50
-    ) -> list[AccountPost]:
+    def list_account_posts(self, *, headless: bool = True, limit: int = 50) -> list[AccountPost]:
         """从创作中心「稿件管理」拉取账号下的全部稿件（需要已登录）。
 
         在已登录的页面里直接 ``fetch`` 创作中心接口，登录态由浏览器自动带上，

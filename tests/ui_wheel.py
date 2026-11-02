@@ -55,7 +55,6 @@ def main() -> int:
     app = build_application(["stent-wheel"])
 
     from PySide6.QtCore import Qt
-
     from stent.ui.context import AppContext
     from stent.ui.main_window import MainWindow
 
@@ -105,9 +104,7 @@ def main() -> int:
             app.processEvents()
         after = widget.value() if hasattr(widget, "value") else widget.currentIndex()
         changed = before != after
-        results.append(
-            (label, not changed, f"{before} -> {after}（悬停时 hasFocus={focused}）")
-        )
+        results.append((label, not changed, f"{before} -> {after}（悬停时 hasFocus={focused}）"))
 
     probe(page.provider_combo, "服务商（下拉框）")
     probe(page.timeout_spin, "请求超时（数值框）")
@@ -118,16 +115,16 @@ def main() -> int:
     from stent.ui.wheel_guard import guarded_target
 
     view = page.provider_combo.view()
-    results.append(
-        ("下拉候选列表不被拦截", guarded_target(view) is None, type(view).__name__)
-    )
+    results.append(("下拉候选列表不被拦截", guarded_target(view) is None, type(view).__name__))
     # 输入框上的滚动应转交给页面，而不是被吞掉
     from stent.ui.wheel_guard import find_scroll_area
 
     results.append(
-        ("数值框能找到所在滚动容器",
-         find_scroll_area(page.timeout_spin) is not None,
-         type(find_scroll_area(page.timeout_spin)).__name__)
+        (
+            "数值框能找到所在滚动容器",
+            find_scroll_area(page.timeout_spin) is not None,
+            type(find_scroll_area(page.timeout_spin)).__name__,
+        )
     )
 
     _set_cursor(*original)

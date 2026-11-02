@@ -76,12 +76,13 @@ def main() -> int:
     pump(60)
 
     from PySide6.QtWidgets import QApplication, QFrame, QScrollArea
-
     from stent.ui.components import EditableTagChip
 
     screen = QApplication.primaryScreen()
     log("===== 标签云布局诊断 =====")
-    log(f"屏幕         : {screen.geometry().getRect()}  可用: {screen.availableGeometry().getRect()}")
+    log(
+        f"屏幕         : {screen.geometry().getRect()}  可用: {screen.availableGeometry().getRect()}"
+    )
     log(f"设备像素比   : {screen.devicePixelRatio()}  逻辑 DPI: {screen.logicalDotsPerInch()}")
     log(f"窗口(逻辑)   : {window.width()}x{window.height()}")
     log(f"应用字体     : {QApplication.font().family()} {QApplication.font().pointSize()}pt")
@@ -96,18 +97,24 @@ def main() -> int:
 
     log("")
     log("--- 纵向排布 ---")
-    log(f"view_stack   : geo={vs.geometry().getRect()} minimumSizeHint={vs.minimumSizeHint().toTuple()}")
+    log(
+        f"view_stack   : geo={vs.geometry().getRect()} minimumSizeHint={vs.minimumSizeHint().toTuple()}"
+    )
     log(f"ActionBar    : geo={action.geometry().getRect()}")
     vs_bottom = vs.geometry().y() + vs.geometry().height()
     act_top = action.geometry().y()
-    log(f"重叠         : {'是（异常）' if vs_bottom > act_top else '否'}  重叠像素={max(0, vs_bottom - act_top)}")
+    log(
+        f"重叠         : {'是（异常）' if vs_bottom > act_top else '否'}  重叠像素={max(0, vs_bottom - act_top)}"
+    )
 
     if editor is not None:
         inner = editor.widget()
         vp = editor.viewport().height()
         log("")
         log("--- 编辑滚动区 ---")
-        log(f"viewport={vp}  inner高度={inner.height()}  inner.sizeHint={inner.sizeHint().height()}")
+        log(
+            f"viewport={vp}  inner高度={inner.height()}  inner.sizeHint={inner.sizeHint().height()}"
+        )
         log(f"需要滚动={inner.height() > vp + 1}")
         overflow = []
         for child in (page.body_edit, page.titles_list, page.summary_edit, tc):
@@ -120,20 +127,28 @@ def main() -> int:
 
     log("")
     log("--- 各字段高度 ---")
-    log(f"正文={page.body_edit.height()}  标题={page.titles_list.height()}  "
-        f"简介={page.summary_edit.height()}  标签云={tc.height()}")
+    log(
+        f"正文={page.body_edit.height()}  标题={page.titles_list.height()}  "
+        f"简介={page.summary_edit.height()}  标签云={tc.height()}"
+    )
 
     log("")
     log("--- 标签云内部 ---")
-    log(f"tag_cloud geo={tc.geometry().getRect()}  sizeHint={tc.sizeHint().toTuple()}  "
-        f"minimumHeight={tc.minimumHeight()}")
+    log(
+        f"tag_cloud geo={tc.geometry().getRect()}  sizeHint={tc.sizeHint().toTuple()}  "
+        f"minimumHeight={tc.minimumHeight()}"
+    )
     log(f"flow geo={tc.flow.geometry().getRect()}")
     chips = tc.findChildren(EditableTagChip)
     log(f"标签数量={len(chips)}")
     for chip in chips:
         g = chip.geometry()
-        inside = (g.x() >= 0 and g.y() >= 0
-                  and g.x() + g.width() <= tc.width() and g.y() + g.height() <= tc.height())
+        inside = (
+            g.x() >= 0
+            and g.y() >= 0
+            and g.x() + g.width() <= tc.width()
+            and g.y() + g.height() <= tc.height()
+        )
         log(f"  {chip.toolTip()!r} geo={g.getRect()} 完整在框内={inside}")
     pill = tc.add_pill
     log(f"  add_pill geo={pill.geometry().getRect()} visible={pill.isVisible()}")

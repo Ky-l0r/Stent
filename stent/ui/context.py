@@ -10,7 +10,8 @@ import logging
 
 from PySide6.QtCore import QObject, Signal
 
-from ..config import ConfigManager, config_manager as default_config
+from ..config import ConfigManager
+from ..config import config_manager as default_config
 from ..core.db import db
 from ..core.llm import LLMClient as _LLMClient
 

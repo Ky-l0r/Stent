@@ -42,8 +42,16 @@ def section(title: str) -> None:
 
 def main() -> int:
     from stent import paths
-    from stent.config import AppConfig, LLMConfig, PROVIDER_PRESETS, SecretStore, preset_for, secrets
-    from stent.core.db import Database, now as db_now
+    from stent.config import (
+        PROVIDER_PRESETS,
+        AppConfig,
+        LLMConfig,
+        SecretStore,
+        preset_for,
+        secrets,
+    )
+    from stent.core.db import Database
+    from stent.core.db import now as db_now
     from stent.core.llm import LLMClient
 
     section("路径与配置")
@@ -51,7 +59,9 @@ def main() -> int:
 
     global_db.init()  # 全局单例（创作/画像服务默认使用它）
     check("数据目录被环境变量接管", str(paths.data_dir()) == _TMP, str(paths.data_dir()))
-    cfg = AppConfig.from_dict({"theme": "dark", "llm": {"base_url": "x", "model": "m"}, "hotlist_platforms": ["weibo"]})
+    cfg = AppConfig.from_dict(
+        {"theme": "dark", "llm": {"base_url": "x", "model": "m"}, "hotlist_platforms": ["weibo"]}
+    )
     check("配置反序列化 theme", cfg.theme == "dark")
     check("配置反序列化嵌套 llm", cfg.llm.base_url == "x" and cfg.llm.model == "m")
     check("配置反序列化列表", cfg.hotlist_platforms == ["weibo"])
@@ -75,13 +85,18 @@ def main() -> int:
         sys.frozen = True
         os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
         resolved = paths.ensure_playwright_browsers_path()
-        check("冻结态自动钉住系统内核目录",
-              os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == resolved, resolved)
+        check(
+            "冻结态自动钉住系统内核目录",
+            os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == resolved,
+            resolved,
+        )
         check("冻结态不指向包内 .local-browsers", ".local-browsers" not in resolved, resolved)
 
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = r"D:\custom-browsers"
-        check("尊重用户显式配置的内核目录",
-              paths.ensure_playwright_browsers_path() == r"D:\custom-browsers")
+        check(
+            "尊重用户显式配置的内核目录",
+            paths.ensure_playwright_browsers_path() == r"D:\custom-browsers",
+        )
     finally:
         if _saved_path is None:
             os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
@@ -102,11 +117,16 @@ def main() -> int:
         _has_playwright = False
     _revision = _publisher.expected_chromium_revision()
     check("随包驱动声明了 Chromium 版本号", (not _has_playwright) or bool(_revision), _revision)
-    check("版本号对不上时判定为未就绪",
-          not _publisher._has_chromium(_publisher._chromium_root(), "0000"))
+    check(
+        "版本号对不上时判定为未就绪",
+        not _publisher._has_chromium(_publisher._chromium_root(), "0000"),
+    )
     _install_cmd = _publisher.chromium_install_command()
-    check("安装命令形如 … install chromium",
-          len(_install_cmd) >= 3 and _install_cmd[-2:] == ["install", "chromium"], str(_install_cmd))
+    check(
+        "安装命令形如 … install chromium",
+        len(_install_cmd) >= 3 and _install_cmd[-2:] == ["install", "chromium"],
+        str(_install_cmd),
+    )
 
     section("密钥存储")
     # 必须用独立命名空间：keyring 是全局的，不随 STENT_DATA_DIR 隔离，
@@ -128,9 +148,16 @@ def main() -> int:
     db = Database(str(Path(_TMP) / "test.db"))
     db.init()
     cid = db.create_content(
-        topic="通勤穿搭", platform="xiaohongshu", title="3 个显瘦技巧",
-        titles=["a", "b"], body="正文内容" * 30, summary="简介", tags=["通勤", "穿搭"],
-        status="ready", source="hot", source_ref="weibo:1:x",
+        topic="通勤穿搭",
+        platform="xiaohongshu",
+        title="3 个显瘦技巧",
+        titles=["a", "b"],
+        body="正文内容" * 30,
+        summary="简介",
+        tags=["通勤", "穿搭"],
+        status="ready",
+        source="hot",
+        source_ref="weibo:1:x",
     )
     check("内容可创建", cid > 0)
     content = db.get_content(cid)
@@ -145,12 +172,17 @@ def main() -> int:
     # 草稿要连「创作输入」一起存：补充要求与快捷参数是从草稿箱载回来后
     # 继续用同一组设定重新生成的上下文，丢了就等于让用户从零重来。
     draft_id = db.create_content(
-        topic="副业避坑", platform="bilibili", title="t", body="b",
+        topic="副业避坑",
+        platform="bilibili",
+        title="t",
+        body="b",
         extra="必须提到三个具体品牌；不要出现价格",
         params={"goal": "直接带货", "tone": "犀利点评", "audience": ""},
     )
     draft = db.get_content(draft_id)
-    check("草稿保存补充要求", draft["extra"].startswith("必须提到三个具体品牌"), repr(draft["extra"]))
+    check(
+        "草稿保存补充要求", draft["extra"].startswith("必须提到三个具体品牌"), repr(draft["extra"])
+    )
     check("草稿保存快捷参数", draft["params"]["goal"] == "直接带货", str(draft["params"]))
     check("快捷参数保留空值项", "audience" in draft["params"], str(draft["params"]))
     db.update_content(draft_id, extra="改过了", params={"goal": "建立专业形象"})
@@ -180,15 +212,32 @@ def main() -> int:
     check("老库自动补 extra 列", "extra" in legacy_columns, str(sorted(legacy_columns)))
     check("老库自动补 params_json 列", "params_json" in legacy_columns)
     check("老数据读得出来", legacy_db.list_contents()[0]["topic"] == "老草稿")
-    check("老数据字段有默认值",
-          legacy_db.list_contents()[0]["params"] == {} and legacy_db.list_contents()[0]["extra"] == "")
+    check(
+        "老数据字段有默认值",
+        legacy_db.list_contents()[0]["params"] == {}
+        and legacy_db.list_contents()[0]["extra"] == "",
+    )
     legacy_db.close()
 
-
-    pid = db.create_post(content_id=cid, platform="xiaohongshu", title="t", body="b", status="published", published_at=db_now())
+    pid = db.create_post(
+        content_id=cid,
+        platform="xiaohongshu",
+        title="t",
+        body="b",
+        status="published",
+        published_at=db_now(),
+    )
     check("发布记录可创建", pid > 0)
-    db.add_metric(pid, {"views": 1200, "likes": 88, "comments": 6, "collects": 30, "shares": 2}, captured_at="2026-10-01 09:00:00")
-    db.add_metric(pid, {"views": 1500, "likes": 99, "comments": 7, "collects": 33, "shares": 3}, captured_at="2026-10-02 09:00:00")
+    db.add_metric(
+        pid,
+        {"views": 1200, "likes": 88, "comments": 6, "collects": 30, "shares": 2},
+        captured_at="2026-10-01 09:00:00",
+    )
+    db.add_metric(
+        pid,
+        {"views": 1500, "likes": 99, "comments": 7, "collects": 33, "shares": 3},
+        captured_at="2026-10-02 09:00:00",
+    )
     latest = db.latest_metric(pid)
     check("指标取最新", latest["views"] == 1500)
     check("指标序列长度", len(db.metric_series(pid)) == 2)
@@ -196,8 +245,14 @@ def main() -> int:
     db.update_post(pid, last_synced="2000-01-01 00:00:00")
     check("待同步查询", any(p["id"] == pid for p in db.posts_needing_sync()))
 
-    db.save_profile(positioning="平价通勤穿搭", style="口语", audience="25-35 女性",
-                    platforms=["小红书"], preferences="数字标题", memory=[])
+    db.save_profile(
+        positioning="平价通勤穿搭",
+        style="口语",
+        audience="25-35 女性",
+        platforms=["小红书"],
+        preferences="数字标题",
+        memory=[],
+    )
     profile = db.get_profile()
     check("画像定位往返", profile["positioning"] == "平价通勤穿搭")
     check("画像平台往返", profile["platforms"] == ["小红书"])
@@ -215,16 +270,31 @@ def main() -> int:
 
     section("热榜解析（离线，用真实响应样本）")
     from stent.services.hotsearch import (
-        HotSearchService, _parse_douyin_xx, _parse_sixty, _parse_strlist, _parse_xxapi, _unwrap, classify,
+        HotSearchService,
+        _parse_douyin_xx,
+        _parse_sixty,
+        _parse_strlist,
+        _parse_xxapi,
+        _unwrap,
+        classify,
     )
+
     sixty = _parse_sixty([{"title": "标题A", "hot_value": 1304727, "link": "L"}], "weibo")
     check("60s 解析", sixty[0]["title"] == "标题A" and sixty[0]["heat"] == "130.5万", str(sixty[0]))
     xx = _parse_xxapi([{"index": 2, "title": "标题B", "url": "U", "hot": "114万"}], "weibo")
-    check("xxapi 解析", xx[0]["rank"] == 2 and xx[0]["hot" if False else "heat"] == "114万", str(xx[0]))
+    check(
+        "xxapi 解析",
+        xx[0]["rank"] == 2 and xx[0]["hot" if False else "heat"] == "114万",
+        str(xx[0]),
+    )
     dy = _parse_douyin_xx([{"position": 1, "word": "抖音标题", "hot_value": 11246129}], "douyin")
     check("抖音解析", dy[0]["title"] == "抖音标题" and dy[0]["heat"] == "1124.6万", str(dy[0]))
     sl = _parse_strlist(["B站标题"], "bilibili")
-    check("字符串列表解析", sl[0]["title"] == "B站标题" and sl[0]["url"].startswith("https://"), str(sl[0]))
+    check(
+        "字符串列表解析",
+        sl[0]["title"] == "B站标题" and sl[0]["url"].startswith("https://"),
+        str(sl[0]),
+    )
     check("嵌套解包", _unwrap({"code": 200, "data": {"data": [1, 2]}}) == [1, 2])
     check("垂类分类-体育", classify("亚运会闭幕夺冠") == "体育")
     check("垂类分类-科技", classify("国产 AI 芯片发布") == "科技")
@@ -235,14 +305,20 @@ def main() -> int:
 
     section("内容创作（假 LLM）")
     from stent.services.creator import (
-        PLATFORM_STYLES, CreationRequest, CreatorService, SectionStreamParser, parse_tags, parse_titles,
+        PLATFORM_STYLES,
+        CreationRequest,
+        CreatorService,
+        SectionStreamParser,
+        parse_tags,
+        parse_titles,
     )
+
     check("平台体例 >= 5 个", len(PLATFORM_STYLES) >= 5)
     check("小红书标题上限 20", PLATFORM_STYLES["xiaohongshu"].title_max == 20)
     parser = SectionStreamParser()
     events = []
     sample = "【正文】\n第一段\n第二段\n【标题】\n1. 标题一\n2. 标题二\n【简介】\n这是简介\n【标签】\n#通勤 #穿搭\n"
-    for chunk in [sample[i:i + 7] for i in range(0, len(sample), 7)]:
+    for chunk in [sample[i : i + 7] for i in range(0, len(sample), 7)]:
         events.extend(parser.feed(chunk))
     events.extend(parser.finish())
     result = parser.to_result("xiaohongshu")
@@ -263,7 +339,7 @@ def main() -> int:
 
         def stream_chat(self, messages, **kwargs):  # noqa: ANN001
             for i in range(0, len(self.text), 5):
-                yield self.text[i:i + 5]
+                yield self.text[i : i + 5]
 
     creator = CreatorService()
     req = CreationRequest(topic="通勤穿搭", platform="xiaohongshu")
@@ -275,7 +351,11 @@ def main() -> int:
     streamed = creator.create_stream(req, FakeLLM(sample))
     check("流式创作正文", "第一段" in streamed.body)
     check("流式创作标题数", len(streamed.titles) == 2)
-    check("字数提示生成", "平台建议" in streamed.usage_hint or "建议" in streamed.usage_hint, streamed.usage_hint)
+    check(
+        "字数提示生成",
+        "平台建议" in streamed.usage_hint or "建议" in streamed.usage_hint,
+        streamed.usage_hint,
+    )
     parsed = creator.parse("随便一段没有标记的文字", "zhihu")
     check("无标记时退化为正文", parsed.body.startswith("随便一段"))
     multi = creator.create_multi(req, ["xiaohongshu", "douyin"], FakeLLM(sample))
@@ -283,11 +363,18 @@ def main() -> int:
 
     section("账号画像")
     from stent.services.profile import DIMENSIONS, ProfileService
+
     profile_db = Database(str(Path(_TMP) / "test.db"))
     profile_db.init()
     ps = ProfileService(database=profile_db)
     check("六维定义完整", len(DIMENSIONS) == 6, str(len(DIMENSIONS)))
-    ps.save(positioning="平价穿搭博主", style="闺蜜口语", audience="上班族", platforms=["小红书"], preferences="")
+    ps.save(
+        positioning="平价穿搭博主",
+        style="闺蜜口语",
+        audience="上班族",
+        platforms=["小红书"],
+        preferences="",
+    )
     check("画像已配置判定", ps.is_configured())
     check("完整度计算", 0 < ps.completeness() <= 100, str(ps.completeness()))
     prompt = ps.to_prompt(platform="小红书")
@@ -302,8 +389,9 @@ def main() -> int:
 
     section("发布前检查")
     from stent.platforms import platform_limits
-    from stent.platforms.base import PublishPayload
+    from stent.platforms.base import PublishPayload, PublishResult
     from stent.services.precheck import PrecheckService
+
     pre = PrecheckService()
     limits = platform_limits("xiaohongshu")
     check("小红书 limits 合理", limits.title_max == 20 and limits.requires_media, str(limits))
@@ -339,7 +427,13 @@ def main() -> int:
     check("空内容不崩溃", pre.check(PublishPayload(), limits, platform="xiaohongshu") is not None)
 
     section("平台注册表")
-    from stent.platforms import available_platforms, get_adapter, platform_label, registered_platforms
+    from stent.platforms import (
+        available_platforms,
+        get_adapter,
+        platform_label,
+        registered_platforms,
+    )
+
     check("登记 4 个平台", len(registered_platforms()) == 4, str(registered_platforms()))
     check("标签正确", platform_label("xiaohongshu") == "小红书")
     check("未知平台返回 None", get_adapter("not-exist") is None)
@@ -359,52 +453,79 @@ def main() -> int:
 
     # 简介字段：B 站只有这一个长文本字段，创作页的「简介」+「正文」都要带上，
     # 否则用户在创作页单独改过的简介会被静默丢掉。
-    check("简介=简介+正文", bili.compose_description("我的简介", "我的正文") == "我的简介\n\n我的正文")
+    check(
+        "简介=简介+正文", bili.compose_description("我的简介", "我的正文") == "我的简介\n\n我的正文"
+    )
     check("简介为空时只用正文", bili.compose_description("", "正文") == "正文")
     check("正文为空时只用简介", bili.compose_description("简介", "") == "简介")
     check("正文已包含简介时不重复", bili.compose_description("正文", "正文") == "正文")
-    check("简介已包含正文时不重复", bili.compose_description("简介里带了正文", "正文") == "简介里带了正文")
+    check(
+        "简介已包含正文时不重复",
+        bili.compose_description("简介里带了正文", "正文") == "简介里带了正文",
+    )
 
     # 简介编辑器：新版是 Quill 富文本（.ql-editor），老版的 textarea 选择器一个都命中不了
-    check("简介选择器覆盖 Quill 编辑器",
-          any("ql-editor" in sel for sel in bili.DESC_EDITOR_SELECTORS),
-          str(bili.DESC_EDITOR_SELECTORS[:2]))
-    check("简介选择器不再只依赖 textarea",
-          bili.DESC_EDITOR_SELECTORS[0] != bili.DESC_SELECTORS[0])
-    check("写入富文本时声明 user 源（否则 Vue 模型收不到）",
-          "'user'" in bili.QUILL_SET_TEXT_JS, bili.QUILL_SET_TEXT_JS[:60])
+    check(
+        "简介选择器覆盖 Quill 编辑器",
+        any("ql-editor" in sel for sel in bili.DESC_EDITOR_SELECTORS),
+        str(bili.DESC_EDITOR_SELECTORS[:2]),
+    )
+    check("简介选择器不再只依赖 textarea", bili.DESC_EDITOR_SELECTORS[0] != bili.DESC_SELECTORS[0])
+    check(
+        "写入富文本时声明 user 源（否则 Vue 模型收不到）",
+        "'user'" in bili.QUILL_SET_TEXT_JS,
+        bili.QUILL_SET_TEXT_JS[:60],
+    )
     check("支持读回校验", "getText" in bili.QUILL_READ_JS)
 
     # 分区：老表混了父分区 id，而投稿页只收叶子分区
-    check("默认分区解析到叶子分区",
-          bili.resolve_tid("知识") == 201, str(bili.resolve_tid("知识")))
+    check("默认分区解析到叶子分区", bili.resolve_tid("知识") == 201, str(bili.resolve_tid("知识")))
     check("数字 tid 原样返回", bili.resolve_tid("201") == 201)
-    check("未知分区名退回默认", bili.resolve_tid("不存在的分区") == bili.resolve_tid(bili.DEFAULT_PARTITION))
+    check(
+        "未知分区名退回默认",
+        bili.resolve_tid("不存在的分区") == bili.resolve_tid(bili.DEFAULT_PARTITION),
+    )
 
     _typelist = [
-        {"name": "生活", "id": 160, "children": [
-            {"name": "日常", "id": 21}, {"name": "搞笑", "id": 138}]},
-        {"name": "知识", "id": 36, "children": [
-            {"name": "科学科普", "id": 201}, {"name": "财经商业", "id": 207}]},
+        {
+            "name": "生活",
+            "id": 160,
+            "children": [{"name": "日常", "id": 21}, {"name": "搞笑", "id": 138}],
+        },
+        {
+            "name": "知识",
+            "id": 36,
+            "children": [{"name": "科学科普", "id": 201}, {"name": "财经商业", "id": 207}],
+        },
     ]
     _flat = bili.flatten_typelist(_typelist)
     check("分区树可摊平", len(_flat) == 4, str([c.label() for c in _flat]))
     _choice = bili.resolve_partition("知识", typelist=_typelist)
-    check("实时分区树优先：二级名命中",
-          _choice is not None and (_choice.parent, _choice.child, _choice.tid) == ("知识", "科学科普", 201),
-          str(_choice))
+    check(
+        "实时分区树优先：二级名命中",
+        _choice is not None
+        and (_choice.parent, _choice.child, _choice.tid) == ("知识", "科学科普", 201),
+        str(_choice),
+    )
     _by_child = bili.resolve_partition("财经商业", typelist=_typelist)
-    check("按二级分区名命中",
-          _by_child is not None and _by_child.tid == 207, str(_by_child))
+    check("按二级分区名命中", _by_child is not None and _by_child.tid == 207, str(_by_child))
     _by_parent = bili.resolve_partition("生活", typelist=_typelist)
-    check("按一级分区名命中该级首个二级",
-          _by_parent is not None and _by_parent.parent == "生活", str(_by_parent))
+    check(
+        "按一级分区名命中该级首个二级",
+        _by_parent is not None and _by_parent.parent == "生活",
+        str(_by_parent),
+    )
     _by_tid = bili.resolve_partition("", tid=138, typelist=_typelist)
-    check("按 tid 命中并带回父分区",
-          _by_tid is not None and (_by_tid.parent, _by_tid.child) == ("生活", "搞笑"), str(_by_tid))
-    check("分区下拉是两级结构",
-          any("drop-f-item" in sel for sel in bili.PARTITION_PARENT_SELECTORS)
-          and any("drop-t-item" in sel for sel in bili.PARTITION_CHILD_SELECTORS))
+    check(
+        "按 tid 命中并带回父分区",
+        _by_tid is not None and (_by_tid.parent, _by_tid.child) == ("生活", "搞笑"),
+        str(_by_tid),
+    )
+    check(
+        "分区下拉是两级结构",
+        any("drop-f-item" in sel for sel in bili.PARTITION_PARENT_SELECTORS)
+        and any("drop-t-item" in sel for sel in bili.PARTITION_CHILD_SELECTORS),
+    )
     check("分区接口指向实时分区树", bili.PARTITION_API.endswith("/archive/pre"), bili.PARTITION_API)
 
     # 「分区已选」必须由下拉文案读回确认，不能只看「点了没报错」：
@@ -412,17 +533,30 @@ def main() -> int:
     # 但都不是目标分区。判错会让用户在浏览器里才发现分区是空的。
     _lp = bili.BiliBiliAdapter._label_matches_partition
     check("下拉空着不算选中", not _lp("请选择分区", bili.PartitionChoice("知识", "科学科普", 201)))
-    check("文案含两级名算选中", _lp("知识 → 科学科普", bili.PartitionChoice("知识", "科学科普", 201)))
+    check(
+        "文案含两级名算选中", _lp("知识 → 科学科普", bili.PartitionChoice("知识", "科学科普", 201))
+    )
     check("文案只写二级也算选中", _lp("科学科普", bili.PartitionChoice("知识", "科学科普", 201)))
-    check("一级对、二级错不算选中", not _lp("知识 → 财经商业", bili.PartitionChoice("知识", "科学科普", 201)))
-    check("二级同名但一级不同不算选中",
-          not _lp("生活 → 日常", bili.PartitionChoice("知识", "日常", 21)))
-    check("二级同名且一级相同才算选中", _lp("知识 → 日常", bili.PartitionChoice("知识", "日常", 21)))
+    check(
+        "一级对、二级错不算选中",
+        not _lp("知识 → 财经商业", bili.PartitionChoice("知识", "科学科普", 201)),
+    )
+    check(
+        "二级同名但一级不同不算选中",
+        not _lp("生活 → 日常", bili.PartitionChoice("知识", "日常", 21)),
+    )
+    check(
+        "二级同名且一级相同才算选中", _lp("知识 → 日常", bili.PartitionChoice("知识", "日常", 21))
+    )
     # 二级名里本身含别的一级名（「汽车生活」含「生活」），不能因此误判失败
-    check("二级名含其它一级名时不误判",
-          _lp("汽车 → 汽车生活", bili.PartitionChoice("汽车", "汽车生活", 176)))
-    check("一级名进了文案但二级不符，仍不算选中",
-          not _lp("生活 → 生活", bili.PartitionChoice("生活", "日常", 21)))
+    check(
+        "二级名含其它一级名时不误判",
+        _lp("汽车 → 汽车生活", bili.PartitionChoice("汽车", "汽车生活", 176)),
+    )
+    check(
+        "一级名进了文案但二级不符，仍不算选中",
+        not _lp("生活 → 生活", bili.PartitionChoice("生活", "日常", 21)),
+    )
 
     # 多行字段的粘贴路径只被富文本编辑器认账；原生 textarea 上
     # ``dispatchEvent`` 一定「成功」但 value 没变，必须读回确认才能算填写成功。
@@ -433,14 +567,23 @@ def main() -> int:
         def input_value(self):
             return self._value
 
-    check("读回确认：写进去了算成功",
-          bili.BiliBiliAdapter._element_has_text(_StubInput("一段简介内容"), "一段简介内容") is True)
-    check("读回确认：没写进去必须报失败",
-          bili.BiliBiliAdapter._element_has_text(_StubInput(""), "一段简介内容") is False)
-    check("读回确认：内容不符也报失败",
-          bili.BiliBiliAdapter._element_has_text(_StubInput("完全不同的内容"), "一段简介内容") is False)
-    check("读回确认：读不出来时不妄下结论",
-          bili.BiliBiliAdapter._element_has_text(object(), "一段简介内容") is None)
+    check(
+        "读回确认：写进去了算成功",
+        bili.BiliBiliAdapter._element_has_text(_StubInput("一段简介内容"), "一段简介内容") is True,
+    )
+    check(
+        "读回确认：没写进去必须报失败",
+        bili.BiliBiliAdapter._element_has_text(_StubInput(""), "一段简介内容") is False,
+    )
+    check(
+        "读回确认：内容不符也报失败",
+        bili.BiliBiliAdapter._element_has_text(_StubInput("完全不同的内容"), "一段简介内容")
+        is False,
+    )
+    check(
+        "读回确认：读不出来时不妄下结论",
+        bili.BiliBiliAdapter._element_has_text(object(), "一段简介内容") is None,
+    )
 
     # dry-run 收尾：以前 publish() 一返回就 close()，浏览器自己关掉，
     # 用户既没时间核对也来不及点发布，填的东西自然「什么都不会保存」。
@@ -468,14 +611,21 @@ def main() -> int:
             return bool(self.after) and self.calls >= self.after
 
     check("默认保持时间足够人工确认", DEFAULT_HOLD_SEC >= 300, str(DEFAULT_HOLD_SEC))
-    check("hold_sec 有上下限", resolve_hold_sec({"hold_sec": 1}) >= 30 and resolve_hold_sec({"hold_sec": 999999}) <= 3600)
+    check(
+        "hold_sec 有上下限",
+        resolve_hold_sec({"hold_sec": 1}) >= 30 and resolve_hold_sec({"hold_sec": 999999}) <= 3600,
+    )
 
     _page = _FakePage(closed_after=3)
     _msg = hold_for_review(_page, extra={}, on_progress=None)
-    check("用户关掉浏览器即结束", "关闭" in _msg and _page.ticks >= 3, f"{_msg} ticks={_page.ticks}")
+    check(
+        "用户关掉浏览器即结束", "关闭" in _msg and _page.ticks >= 3, f"{_msg} ticks={_page.ticks}"
+    )
 
     _page2 = _FakePage()
-    _msg2 = hold_for_review(_page2, extra={}, on_progress=None, probe=lambda: "已检测到你完成了投稿")
+    _msg2 = hold_for_review(
+        _page2, extra={}, on_progress=None, probe=lambda: "已检测到你完成了投稿"
+    )
     check("检测到用户已发布即结束", "已检测到" in _msg2, _msg2)
 
     _page3 = _FakePage()
@@ -487,9 +637,14 @@ def main() -> int:
     check("到上限才结束（并如实说明未提交）", "超时" in _msg4, _msg4)
 
     _progress: list[str] = []
-    hold_for_review(_FakePage(closed_after=1), extra={}, on_progress=lambda m, p: _progress.append(m))
-    check("收尾时给用户一句可读的说明",
-          bool(_progress) and "浏览器" in _progress[0], str(_progress[:1]))
+    hold_for_review(
+        _FakePage(closed_after=1), extra={}, on_progress=lambda m, p: _progress.append(m)
+    )
+    check(
+        "收尾时给用户一句可读的说明",
+        bool(_progress) and "浏览器" in _progress[0],
+        str(_progress[:1]),
+    )
 
     # 四个平台都要有这一步：以前只有小红书保持窗口，其余三个填完就关
     from stent.services.publisher import PublishService as _PS
@@ -517,21 +672,36 @@ def main() -> int:
             _signature_note = f"{_key} 正常提前返回（{type(exc).__name__}）"
     check("取消信号可传入四个适配器（签名一致）", _signature_ok, _signature_note)
 
-    check("B 站适配器声明简介是独立字段",
-          getattr(get_adapter("bilibili"), "uses_summary", False) is True)
-    check("预览会单独列出 B 站简介",
-          "【简介】我的简介" in _PS.preview_text(
-              PublishPayload(title="t", body="b", summary="我的简介"), "bilibili"))
-    check("其它平台预览不额外加简介行",
-          "【简介】" not in _PS.preview_text(
-              PublishPayload(title="t", body="b", summary="我的简介"), "xiaohongshu"))
+    check(
+        "B 站适配器声明简介是独立字段",
+        getattr(get_adapter("bilibili"), "uses_summary", False) is True,
+    )
+    check(
+        "预览会单独列出 B 站简介",
+        "【简介】我的简介"
+        in _PS.preview_text(PublishPayload(title="t", body="b", summary="我的简介"), "bilibili"),
+    )
+    check(
+        "其它平台预览不额外加简介行",
+        "【简介】"
+        not in _PS.preview_text(
+            PublishPayload(title="t", body="b", summary="我的简介"), "xiaohongshu"
+        ),
+    )
 
     section("发布编排（风控断言）")
     from stent.services.publisher import PublishDenied, PublishPreparation, PublishService
+
     pub = PublishService(database=db)
     prep = PublishPreparation(
-        platform="xiaohongshu", label="小红书", content_id=cid,
-        payload=clean, preview="预览", report=report, limits=limits, supported=True,
+        platform="xiaohongshu",
+        label="小红书",
+        content_id=cid,
+        payload=clean,
+        preview="预览",
+        report=report,
+        limits=limits,
+        supported=True,
     )
     raised = False
     try:
@@ -544,19 +714,35 @@ def main() -> int:
 
     failed_report = type(report)() if False else bad_report
     prep_bad = PublishPreparation(
-        platform="xiaohongshu", label="小红书", content_id=cid,
-        payload=dirty, preview="预览", report=failed_report, limits=limits, supported=True,
+        platform="xiaohongshu",
+        label="小红书",
+        content_id=cid,
+        payload=dirty,
+        preview="预览",
+        report=failed_report,
+        limits=limits,
+        supported=True,
     )
     outcome = pub.publish(prep_bad, confirmed=True, dry_run=True)
     check("检查未通过时拒绝执行", not outcome.ok, outcome.message)
 
     prep_unsupported = PublishPreparation(
-        platform="zhihu", label="知乎", content_id=cid,
-        payload=clean, preview="预览", report=report, limits=limits, supported=False,
+        platform="zhihu",
+        label="知乎",
+        content_id=cid,
+        payload=clean,
+        preview="预览",
+        report=report,
+        limits=limits,
+        supported=False,
         support_note="适配器不可用",
     )
     outcome2 = pub.publish(prep_unsupported, confirmed=True, dry_run=True)
-    check("适配器不可用时给出引导而非异常", (not outcome2.ok) and "适配器" in outcome2.message, outcome2.message)
+    check(
+        "适配器不可用时给出引导而非异常",
+        (not outcome2.ok) and "适配器" in outcome2.message,
+        outcome2.message,
+    )
 
     check("预览文本包含正文", "通勤" in PublishService.preview_text(clean, "xiaohongshu"))
     check("平台列表非空", len(PublishService.platforms()) == 4)
@@ -568,14 +754,22 @@ def main() -> int:
     check("prepare 生成预览", "标题" in real_prep.preview)
     check("prepare 带检查报告", real_prep.report is not None)
     check("prepare 记录适配说明", isinstance(real_prep.adapted_notes, list))
-    check("导出可粘贴文案", "通勤" in pub.export_text(real_prep) or len(pub.export_text(real_prep)) > 0)
+    check(
+        "导出可粘贴文案",
+        "通勤" in pub.export_text(real_prep) or len(pub.export_text(real_prep)) > 0,
+    )
 
     section("数据分析")
     from stent.services.analytics import AnalyticsService
+
     adb = Database(str(Path(_TMP) / "test.db"))
     analytics = AnalyticsService(db=adb)
     overview = analytics.overview(days=30)
-    check("overview 有总量", "totals" in overview and overview["totals"]["views"] >= 1500, str(overview.get("totals")))
+    check(
+        "overview 有总量",
+        "totals" in overview and overview["totals"]["views"] >= 1500,
+        str(overview.get("totals")),
+    )
     check("overview 有篇数", overview["post_count"] >= 1, str(overview.get("post_count")))
     check("overview 有基准", "benchmark" in overview)
     trend = analytics.trend(days=30, metric="views")
@@ -587,11 +781,19 @@ def main() -> int:
     hours = analytics.best_publish_hours(days=90)
     check("最佳时段返回列表", isinstance(hours, list))
     attr = analytics.attribute(days=30, use_llm=False, persist=False)
-    check("归因未配置 LLM 时友好返回", isinstance(attr, dict) and "ok" in attr, str(attr.get("message", ""))[:60])
+    check(
+        "归因未配置 LLM 时友好返回",
+        isinstance(attr, dict) and "ok" in attr,
+        str(attr.get("message", ""))[:60],
+    )
     check("归因不抛异常", True)
     check("归因结果含中文结论字段", "summary" in attr and "next_actions" in attr)
     from stent.services.analytics import _localize_terms, _platform_zh
-    check("平台 key 映射为中文", _platform_zh("douyin") == "抖音" and _platform_zh("bilibili") == "B 站")
+
+    check(
+        "平台 key 映射为中文",
+        _platform_zh("douyin") == "抖音" and _platform_zh("bilibili") == "B 站",
+    )
     localized = _localize_terms("douyin 高播放，aggregate_engagement_rate 33.85%，consistency 10.0")
     check(
         "归因术语兜底中文化",
@@ -605,7 +807,13 @@ def main() -> int:
         "归因 prompt 无英文指标键",
         not any(
             word in zh_prompt
-            for word in ("bilibili", "douyin", "engagement_rate", "aggregate_engagement_rate", "consistency")
+            for word in (
+                "bilibili",
+                "douyin",
+                "engagement_rate",
+                "aggregate_engagement_rate",
+                "consistency",
+            )
         ),
     )
     check("归因 prompt 有中文硬性约束", "硬性要求" in zh_prompt)
@@ -616,10 +824,15 @@ def main() -> int:
     check("空库 rank 不崩", empty_svc.rank_contents(days=7) == [])
 
     section("LLM 层（无网络断言）")
-    client = LLMClient(LLMConfig(base_url="http://127.0.0.1:9/v1", model="none", timeout=2, retries=0), "k")
+    client = LLMClient(
+        LLMConfig(base_url="http://127.0.0.1:9/v1", model="none", timeout=2, retries=0), "k"
+    )
     ok, message = client.test_connection(timeout=2)
     check("连接失败返回中文原因", (not ok) and len(message) > 4, message[:60])
-    check("未配置 base_url 时报错", LLMClient(LLMConfig(base_url="", model="m"), "k").test_connection()[0] is False)
+    check(
+        "未配置 base_url 时报错",
+        LLMClient(LLMConfig(base_url="", model="m"), "k").test_connection()[0] is False,
+    )
 
     print(f"\n===== 自检结果：{PASS} 通过 / {FAIL} 失败 =====")
     if FAILURES:
@@ -637,4 +850,5 @@ if __name__ == "__main__":
         raise
     except Exception:  # noqa: BLE001
         traceback.print_exc()
-        raise SystemExit(2)
+        # traceback 已经打出来了，不再让 SystemExit 挂上原始异常链
+        raise SystemExit(2) from None

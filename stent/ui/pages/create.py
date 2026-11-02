@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from typing import ClassVar
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -38,7 +39,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core.db import db, now as db_now
+from ...core.db import db
+from ...core.db import now as db_now
 from ...services.creator import (
     CreationRequest,
     creator_service,
@@ -47,6 +49,7 @@ from ...services.creator import (
     style_for,
 )
 from ...services.profile import profile_service
+from .. import icons
 from ..components import (
     AdviceBar,
     AutoGrowTextEdit,
@@ -65,7 +68,6 @@ from ..components import (
     field_label,
     make_button,
 )
-from .. import icons
 from ..theme import palette
 from .base import BasePage
 
@@ -108,7 +110,7 @@ class CreatePage(BasePage):
     icon = "pen-line"
 
     #: 流式分段 → 步骤提示文案（让等待中的用户知道模型在做什么）
-    STEP_TEXT: dict[str, str] = {
+    STEP_TEXT: ClassVar[dict[str, str]] = {
         "正文": "正在撰写正文…",
         "标题": "正在构思标题…",
         "简介": "正在打磨简介…",
@@ -142,7 +144,9 @@ class CreatePage(BasePage):
             "输入主题即可产出正文、标题候选、简介与标签；生成过程可随时中断（Ctrl+Enter 快捷生成）",
         )
         header.add_action(self.status_light)
-        self.generate_button = make_button("开始生成", icon="sparkles", theme=self.ctx.theme, primary=True)
+        self.generate_button = make_button(
+            "开始生成", icon="sparkles", theme=self.ctx.theme, primary=True
+        )
         self.generate_button.clicked.connect(self.generate)
         header.add_action(self.generate_button)
         # 中断按钮弱化处理：平时安静地待在主按钮旁边，悬停才亮红（停止=危险操作）
@@ -206,9 +210,7 @@ class CreatePage(BasePage):
 
         # 补充要求：给足但不过量的高度，长 prompt 够写又不挤占下面的快捷参数
         self.extra_edit = QTextEdit()
-        self.extra_edit.setPlaceholderText(
-            "例如：必须提到三个具体品牌；不要出现价格；结尾引导评论"
-        )
+        self.extra_edit.setPlaceholderText("例如：必须提到三个具体品牌；不要出现价格；结尾引导评论")
         self.extra_edit.setMinimumHeight(86)
         card.add(field_label("补充要求", "越具体越贴近预期"))
         card.add(self.extra_edit)
@@ -290,7 +292,9 @@ class CreatePage(BasePage):
         self.stale_label.setObjectName("StaleText")
         self.stale_label.setWordWrap(True)
         layout.addWidget(self.stale_label, 1)
-        self.stale_button = make_button("重新自检", icon="sparkles", theme=self.ctx.theme, ghost=True)
+        self.stale_button = make_button(
+            "重新自检", icon="sparkles", theme=self.ctx.theme, ghost=True
+        )
         self.stale_button.setToolTip("内容已改动，重新自检才会消耗一次模型调用")
         self.stale_button.clicked.connect(lambda: self.quality_check(True))
         layout.addWidget(self.stale_button)
@@ -310,7 +314,9 @@ class CreatePage(BasePage):
         self.view_tabs.changed.connect(self._on_view_changed)
         layout.addWidget(self.view_tabs)
         layout.addStretch(1)
-        self.regen_button = make_button("重新生成标题", icon="refresh", theme=self.ctx.theme, ghost=True)
+        self.regen_button = make_button(
+            "重新生成标题", icon="refresh", theme=self.ctx.theme, ghost=True
+        )
         self.regen_button.clicked.connect(self.regenerate_titles)
         self.regen_button.setEnabled(False)
         layout.addWidget(self.regen_button)
@@ -399,7 +405,9 @@ class CreatePage(BasePage):
         layout.addStretch(1)
 
         # 质量自检：平时是安静的入口，出分后变成状态徽章，紧挨主操作
-        self.quality_button = make_button("质量自检", icon="sparkles", theme=self.ctx.theme, ghost=True)
+        self.quality_button = make_button(
+            "质量自检", icon="sparkles", theme=self.ctx.theme, ghost=True
+        )
         self.quality_button.clicked.connect(self._on_quality_clicked)
         layout.addWidget(self.quality_button)
 
@@ -417,7 +425,9 @@ class CreatePage(BasePage):
         self.save_button = make_button("存为草稿", icon="save", theme=self.ctx.theme)
         self.save_button.clicked.connect(lambda: self.save_draft(to_publish=False))
         layout.addWidget(self.save_button)
-        self.publish_button = make_button("送入发布中心", icon="send", theme=self.ctx.theme, primary=True)
+        self.publish_button = make_button(
+            "送入发布中心", icon="send", theme=self.ctx.theme, primary=True
+        )
         self.publish_button.clicked.connect(lambda: self.save_draft(to_publish=True))
         layout.addWidget(self.publish_button)
         return bar
@@ -585,7 +595,9 @@ class CreatePage(BasePage):
                 "\n".join(
                     part
                     for part in (
-                        f"来源：{seed.get('source_platform', '')} 热榜第 {seed.get('rank', '')} 名" if seed.get("source_platform") else "",
+                        f"来源：{seed.get('source_platform', '')} 热榜第 {seed.get('rank', '')} 名"
+                        if seed.get("source_platform")
+                        else "",
                         f"热度：{seed.get('heat', '')}" if seed.get("heat") else "",
                         str(seed.get("topic", "")),
                     )
@@ -650,7 +662,9 @@ class CreatePage(BasePage):
         self._set_generating(True)
         self.step_bar.start("正在连接模型…")
         self.view_tabs.set_current("editor")
-        self.banner.show_message(f"正在为「{style_for(req.platform).label}」生成内容…", "info", closable=False)
+        self.banner.show_message(
+            f"正在为「{style_for(req.platform).label}」生成内容…", "info", closable=False
+        )
 
         def job(worker):
             return creator_service.create_stream(
@@ -909,7 +923,9 @@ class CreatePage(BasePage):
         self.banner.show_message("正在重新生成标题…", "info", closable=False)
 
         self._worker = self.run_task(
-            lambda worker: creator_service.regenerate_titles(req, body, llm, cancel=worker.cancel_event),
+            lambda worker: creator_service.regenerate_titles(
+                req, body, llm, cancel=worker.cancel_event
+            ),
             on_result=self._on_titles,
             on_error=lambda msg: self.banner.show_message(f"标题生成失败：{msg}", "error"),
             on_done=self._on_regen_done,
@@ -1062,7 +1078,9 @@ class CreatePage(BasePage):
                 window.open_page_with("publish", content_id=content_id)  # type: ignore[attr-defined]
         else:
             self.toast(f"已存为草稿（#{content_id}）", "success")
-            self.banner.show_message(f"草稿已保存（编号 {content_id}），可在「草稿箱」中再次载入", "success")
+            self.banner.show_message(
+                f"草稿已保存（编号 {content_id}），可在「草稿箱」中再次载入", "success"
+            )
 
     # ------------------------------------------------------------------
     def open_drafts(self) -> None:

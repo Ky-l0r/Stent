@@ -39,7 +39,6 @@ def main() -> int:
 
     from PySide6.QtCore import QEvent, QObject, QTimer
     from PySide6.QtWidgets import QDialog, QMainWindow, QWidget
-
     from stent.ui.context import AppContext
     from stent.ui.main_window import MainWindow
 
@@ -122,7 +121,6 @@ def main() -> int:
 
         # 无边框窗口的关键不变量
         from PySide6.QtCore import Qt as _Qt
-
         from stent.ui.frameless import HTMAXBUTTON, hwnd_of
 
         checks: list[tuple[str, bool, str]] = []
@@ -148,28 +146,40 @@ def main() -> int:
 
         geo = window.geometry()
         lp = lambda x, y: ((y & 0xFFFF) << 16) | (x & 0xFFFF)  # noqa: E731
-        checks.append(("边缘命中:左", window._hit_test(lp(geo.left() + 2, geo.center().y())) == 10, ""))
-        checks.append(("边缘命中:右下", window._hit_test(lp(geo.right() - 2, geo.bottom() - 2)) == 17, ""))
+        checks.append(
+            ("边缘命中:左", window._hit_test(lp(geo.left() + 2, geo.center().y())) == 10, "")
+        )
+        checks.append(
+            ("边缘命中:右下", window._hit_test(lp(geo.right() - 2, geo.bottom() - 2)) == 17, "")
+        )
         checks.append(
             ("边缘命中:客户区", window._hit_test(lp(geo.center().x(), geo.center().y())) == 1, "")
         )
         if controls is not None:
             center = controls.maximize_button.mapToGlobal(controls.maximize_button.rect().center())
             checks.append(
-                ("最大化按钮是 Snap 热区",
-                 window._hit_test(lp(center.x(), center.y())) == HTMAXBUTTON, "")
+                (
+                    "最大化按钮是 Snap 热区",
+                    window._hit_test(lp(center.x(), center.y())) == HTMAXBUTTON,
+                    "",
+                )
             )
 
         window.showMaximized()
         app.processEvents()
         screen = window.screen().availableGeometry()
-        checks.append(("最大化贴合工作区", window.geometry() == screen, f"{window.geometry().getRect()} vs {screen.getRect()}"))
+        checks.append(
+            (
+                "最大化贴合工作区",
+                window.geometry() == screen,
+                f"{window.geometry().getRect()} vs {screen.getRect()}",
+            )
+        )
         window.showNormal()
         app.processEvents()
 
         # 滚轮守卫：悬停滚动不应误改数值，聚焦后才允许
         from PySide6.QtCore import QPoint, QPointF
-
         from PySide6.QtGui import QWheelEvent
 
         def send_wheel(target) -> None:
@@ -195,19 +205,26 @@ def main() -> int:
             before = spin.value()
             send_wheel(spin)
             app.processEvents()
-            checks.append(("滚轮守卫：未聚焦不改值", spin.value() == before, f"{before} -> {spin.value()}"))
+            checks.append(
+                ("滚轮守卫：未聚焦不改值", spin.value() == before, f"{before} -> {spin.value()}")
+            )
             spin.setFocus()
             app.processEvents()
             baseline = spin.value()
             send_wheel(spin)
             app.processEvents()
             # 完全禁用滚轮改值（聚焦后仍应保持不变），键盘与手动输入不受影响
-            checks.append(("滚轮守卫：聚焦也不改值", spin.value() == baseline, f"{baseline} -> {spin.value()}"))
+            checks.append(
+                (
+                    "滚轮守卫：聚焦也不改值",
+                    spin.value() == baseline,
+                    f"{baseline} -> {spin.value()}",
+                )
+            )
             spin.clearFocus()
 
         # 标签背景应与卡片一致（曾经因 QWidget 底色产生过暗色块）
         from PySide6.QtWidgets import QLabel as _QLabel
-
         from stent.ui.theme import current_theme as _current_theme
         from stent.ui.theme import palette as _palette
 
@@ -241,7 +258,7 @@ def main() -> int:
                     else:
                         opaque[(color.red(), color.green(), color.blue())] += 1
             card_bg = _palette(_current_theme()).card
-            card_rgb = tuple(int(card_bg.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+            card_rgb = tuple(int(card_bg.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
             if total == 0 or len(opaque) < 2:
                 checks.append(("表单标签背景不遮挡卡片", True, "跳过（控件未渲染出内容）"))
             elif transparent > total * 0.4:
@@ -252,9 +269,11 @@ def main() -> int:
             else:
                 background = opaque.most_common(1)[0][0]
                 checks.append(
-                    ("表单标签背景不遮挡卡片",
-                     background == card_rgb,
-                     f"#{background[0]:02x}{background[1]:02x}{background[2]:02x} vs {card_bg}")
+                    (
+                        "表单标签背景不遮挡卡片",
+                        background == card_rgb,
+                        f"#{background[0]:02x}{background[1]:02x}{background[2]:02x} vs {card_bg}",
+                    )
                 )
         else:
             checks.append(("表单标签背景不遮挡卡片", True, "跳过（未找到标签）"))
@@ -288,9 +307,7 @@ def main() -> int:
                         f"{type(child).__name__}#{child.objectName()} "
                         f"geo={g.getRect()} 超出 {cloud.width()}x{cloud.height()}"
                     )
-            checks.append(
-                ("标签云内控件不越界（无杂散底/边框）", not stray, "；".join(stray))
-            )
+            checks.append(("标签云内控件不越界（无杂散底/边框）", not stray, "；".join(stray)))
         else:
             checks.append(("标签云内控件不越界（无杂散底/边框）", True, "跳过（未找到标签云）"))
 

@@ -137,10 +137,12 @@ DROPDOWN_HTML = """
 
 
 #: 简介编辑区彻底找不到时的页面（模拟平台再次改版，选择器全部失效）
-NO_EDITOR_HTML = "<!doctype html><html><body><div class=\"desc-container\"></div></body></html>"
+NO_EDITOR_HTML = '<!doctype html><html><body><div class="desc-container"></div></body></html>'
 
 #: 老版投稿页：简介是普通 textarea
-LEGACY_TEXTAREA_HTML = '<!doctype html><html><body><textarea placeholder="简介"></textarea></body></html>'
+LEGACY_TEXTAREA_HTML = (
+    '<!doctype html><html><body><textarea placeholder="简介"></textarea></body></html>'
+)
 
 
 #: 分区触发器在、点开却没有任何选项（模拟下拉没渲染出来）
@@ -192,8 +194,10 @@ def check_absent_editor(adapter) -> None:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         page.set_content(NO_EDITOR_HTML)
-        check("没有编辑器时 _fill_description 返回 False",
-              adapter._fill_description(page, "一段简介") is False)
+        check(
+            "没有编辑器时 _fill_description 返回 False",
+            adapter._fill_description(page, "一段简介") is False,
+        )
         browser.close()
 
 
@@ -214,14 +218,17 @@ def check_legacy_textarea(adapter) -> None:
         text = "老版投稿页的简介正文"
         ok = adapter._fill_description(page, text)
         check("老版 textarea 填写成功", ok is True, repr(ok))
-        check("内容确实写进了 textarea",
-              page.input_value("textarea") == text, repr(page.input_value("textarea")))
+        check(
+            "内容确实写进了 textarea",
+            page.input_value("textarea") == text,
+            repr(page.input_value("textarea")),
+        )
         browser.close()
+
 
 def check_dropdown() -> None:
     """验证分区下拉的两级点选（老实现找的是根本不存在的搜索框，从没成功过）。"""
     from playwright.sync_api import sync_playwright
-
     from stent.platforms import bilibili as bili
 
     print("\n=== 分区下拉：一级 → 二级 ===")
@@ -243,29 +250,36 @@ def check_dropdown() -> None:
         page.evaluate("() => { window.picked = {parent: null, child: null}; }")
         again = adapter._select_partition(page, "知识", 0)
         picked2 = page.evaluate("() => window.picked")
-        check("已是目标分区时不重复点选", again is not None and picked2["parent"] is None, str(picked2))
+        check(
+            "已是目标分区时不重复点选",
+            again is not None and picked2["parent"] is None,
+            str(picked2),
+        )
 
         # 点不中就不能算成功：以前这里无条件返回解析结果，于是「下拉里一个选项都没有」
         # 「一级点得到但二级始终为空」这两种失败也会被回报成「分区已选」，
         # 调用方那条「分区未自动选择，请手动确认」的提醒永远不会出现。
         empty = browser.new_page()
         empty.set_content(EMPTY_DROPDOWN_HTML)
-        check("下拉里没有任何选项时返回 None",
-              adapter._select_partition(empty, "知识", 0) is None,
-              repr(adapter._partition_label(empty)))
+        check(
+            "下拉里没有任何选项时返回 None",
+            adapter._select_partition(empty, "知识", 0) is None,
+            repr(adapter._partition_label(empty)),
+        )
 
         half = browser.new_page()
         half.set_content(HALF_DROPDOWN_HTML)
-        check("一级点得到、二级始终为空时返回 None",
-              adapter._select_partition(half, "知识", 0) is None,
-              repr(adapter._partition_label(half)))
+        check(
+            "一级点得到、二级始终为空时返回 None",
+            adapter._select_partition(half, "知识", 0) is None,
+            repr(adapter._partition_label(half)),
+        )
 
         browser.close()
 
 
 def main() -> int:
     from playwright.sync_api import sync_playwright
-
     from stent.platforms import bilibili as bili
 
     sample = "第一行简介\n\n第二行正文，带标点。"
@@ -290,9 +304,14 @@ def main() -> int:
         check("以 user 源写入（Vue 模型才收得到）", source == "user", repr(source))
 
         # 适配器自己的校验逻辑也要认这份内容
-        check("适配器的读回校验通过", bili.BiliBiliAdapter._editor_has_text(page, sample, selector=selector))
-        check("内容不符时校验必须失败",
-              not bili.BiliBiliAdapter._editor_has_text(page, "完全不同的内容", selector=selector))
+        check(
+            "适配器的读回校验通过",
+            bili.BiliBiliAdapter._editor_has_text(page, sample, selector=selector),
+        )
+        check(
+            "内容不符时校验必须失败",
+            not bili.BiliBiliAdapter._editor_has_text(page, "完全不同的内容", selector=selector),
+        )
 
         # 选择器全部尝试一遍：第一个命中即返回，不会把内容写丢
         adapter = bili.BiliBiliAdapter()

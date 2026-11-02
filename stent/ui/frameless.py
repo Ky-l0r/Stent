@@ -218,7 +218,12 @@ def enable_native_frame(hwnd: int, enable: bool = True) -> bool:
             return True
         user32.SetWindowLongW(handle, GWL_STYLE, new_style)
         user32.SetWindowPos(
-            handle, None, 0, 0, 0, 0,
+            handle,
+            None,
+            0,
+            0,
+            0,
+            0,
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
         )
         return True
@@ -395,7 +400,7 @@ class TitleBar(QFrame):
     add_right = insert_before_controls
 
     # -- 拖拽 -------------------------------------------------------------
-    def _frameless_window(self) -> "FramelessWindow | None":
+    def _frameless_window(self) -> FramelessWindow | None:
         window = self.window()
         return window if isinstance(window, FramelessWindow) else None
 
@@ -408,7 +413,9 @@ class TitleBar(QFrame):
                 return
             # 非 Windows 或原生调用失败时自己搬窗口
             self._manual_drag = True
-            self._drag_offset = event.globalPosition().toPoint() - self.window().frameGeometry().topLeft()
+            self._drag_offset = (
+                event.globalPosition().toPoint() - self.window().frameGeometry().topLeft()
+            )
             event.accept()
             return
         super().mousePressEvent(event)
@@ -549,7 +556,9 @@ class FramelessWindow(QMainWindow):
         height = max(60, int(geo.height() * 0.12))
         return QRect(anchor.x() - width // 2, anchor.y() - height // 2, width, height)
 
-    def _start_transition(self, target: QRect, state: str, *, duration: int, fade: bool = False) -> None:
+    def _start_transition(
+        self, target: QRect, state: str, *, duration: int, fade: bool = False
+    ) -> None:
         self._animating = True
         self._pending_state = state
 
@@ -925,7 +934,8 @@ class FramelessWindow(QMainWindow):
             info = ctypes.cast(lparam, ctypes.POINTER(MINMAXINFO)).contents
             hwnd = hwnd_of(self)
             monitor = ctypes.windll.user32.MonitorFromWindow(
-                wintypes.HWND(hwnd), 2  # MONITOR_DEFAULTTONEAREST
+                wintypes.HWND(hwnd),
+                2,  # MONITOR_DEFAULTTONEAREST
             )
             monitor_info = MONITORINFO()
             monitor_info.cbSize = ctypes.sizeof(MONITORINFO)

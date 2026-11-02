@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -133,16 +133,22 @@ class MainWindow(FramelessWindow, WorkerHost):
         brand_box.addWidget(sub)
         bar.add_left(brand)
 
-        self.profile_button = make_button("账号画像未设置", icon="user", theme=self.ctx.theme, ghost=True)
+        self.profile_button = make_button(
+            "账号画像未设置", icon="user", theme=self.ctx.theme, ghost=True
+        )
         self.profile_button.clicked.connect(lambda: self.navigate("profile"))
         bar.add_right(self.profile_button)
 
         # 主题切换：图标 + 文字，和「设置」保持同样的视觉重量（纯图标按钮语义不清）
-        self.theme_button = make_button("深色", icon="moon", theme=self.ctx.theme, ghost=True, tooltip="切换深浅色")
+        self.theme_button = make_button(
+            "深色", icon="moon", theme=self.ctx.theme, ghost=True, tooltip="切换深浅色"
+        )
         self.theme_button.clicked.connect(self.ctx.toggle_theme)
         bar.add_right(self.theme_button)
 
-        self.settings_button = make_button("设置", icon="settings", theme=self.ctx.theme, ghost=True)
+        self.settings_button = make_button(
+            "设置", icon="settings", theme=self.ctx.theme, ghost=True
+        )
         self.settings_button.clicked.connect(self.open_settings)
         bar.add_right(self.settings_button)
 
@@ -186,7 +192,9 @@ class MainWindow(FramelessWindow, WorkerHost):
 
         self.version_label = QLabel(f"v{__version__}")
         self.version_label.setObjectName("Faint")
-        footer_layout.addWidget(self.version_label, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        footer_layout.addWidget(
+            self.version_label, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
+        )
         footer_layout.addStretch(0)
 
         layout.addWidget(footer)
@@ -223,7 +231,7 @@ class MainWindow(FramelessWindow, WorkerHost):
         if key == "settings":
             self.open_settings()
             return
-        if key not in dict((i[0], i) for i in NAV_ITEMS):
+        if key not in {item[0]: item for item in NAV_ITEMS}:
             return
         page = self._page_for(key)
         if page is None:
@@ -345,7 +353,9 @@ class MainWindow(FramelessWindow, WorkerHost):
             from ..services.profile import profile_service
 
             percent = profile_service.completeness()
-            self.profile_button.setText("账号画像已就绪" if percent >= 60 else f"账号画像 {percent}%")
+            self.profile_button.setText(
+                "账号画像已就绪" if percent >= 60 else f"账号画像 {percent}%"
+            )
             self.profile_button.setToolTip(profile_service.to_prompt() or "尚未填写账号画像")
         except Exception:  # noqa: BLE001
             self.profile_button.setText("账号画像")
