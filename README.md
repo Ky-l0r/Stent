@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="#许可证与致谢"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/Ky-l0r/Stent/actions/workflows/ci.yml"><img src="https://github.com/Ky-l0r/Stent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/Ky-l0r/Stent/releases/latest"><img src="https://img.shields.io/github/v/release/Ky-l0r/Stent?label=release&color=green" alt="Latest release"></a>
   <a href="#快速开始"><img src="https://img.shields.io/badge/python-3.10%2B-informational" alt="Python 3.10+"></a>
   <a href="#快速开始"><img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey" alt="Platform: Windows"></a>
@@ -289,6 +290,9 @@ Stent/
 ├── main.py                     入口脚本
 ├── build.ps1                   一键打包
 ├── Stent.spec                  PyInstaller 配置（onedir）
+├── pyproject.toml              项目元数据、依赖与 ruff / pytest 配置（唯一真源）
+├── .editorconfig / .gitattributes / .pre-commit-config.yaml
+├── .github/workflows/ci.yml    静态检查 + 服务层自检 + 界面冒烟
 ├── stent/
 │   ├── app.py                  应用启动、日志、冒烟自检
 │   ├── paths.py                路径管理（数据/配置/缓存/浏览器目录）
@@ -325,7 +329,7 @@ Stent/
 │       ├── dialogs.py          版本更新日志等对话框
 │       ├── workers.py          后台任务线程封装
 │       └── pages/              七个页面（含引导页）
-├── tests/                      自检与回归脚本（见 docs/development.md）
+├── tests/                      自检与回归脚本 + 工程一致性校验（见 docs/development.md）
 ├── docs/                       开发文档与截图
 ├── CHANGELOG.md                更新日志（应用内「版本更新日志」入口读取）
 ├── CONTRIBUTING.md             贡献指南
@@ -342,12 +346,15 @@ Stent/
 一句话版：
 
 ```powershell
-pwsh -File build.ps1 -Clean          # 一键打包，产物 dist\Stent\Stent.exe
-python tests/selftest_all.py         # 服务层端到端自检（当前 171 项）
+ruff check . && ruff format --check .   # 静态检查（规则见 pyproject.toml）
+python tests/check_project.py           # 版本号 / CHANGELOG / 依赖口径一致
+python tests/selftest_all.py            # 服务层端到端自检（当前 171 项）
 $env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面层冒烟
+pwsh -File build.ps1 -Clean             # 一键打包，产物 dist\Stent\Stent.exe
 ```
 
 改 UI 时建议用 `python main.py` 直接跑源码验证，不必每次都重新打包（`build.ps1` 一次约 2 分半）。
+提交前建议 `pre-commit install` 装一次钩子，上面前两条会自动跑。
 
 ## 已知限制
 

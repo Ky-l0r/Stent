@@ -38,8 +38,8 @@ python main.py
 pwsh -File build.ps1 -Clean
 ```
 
-脚本依次执行：检查 Python → 安装依赖 → 服务层自检 → 界面自检 → PyInstaller 打包。
-产物位于 `dist\Stent\Stent.exe`，一次约 2 分半。
+脚本依次执行：检查 Python → 安装依赖 → 静态检查（ruff lint / format）→ 服务层自检 →
+界面自检 → PyInstaller 打包。产物位于 `dist\Stent\Stent.exe`，一次约 2 分半。
 
 | 参数 | 作用 |
 |---|---|
@@ -73,21 +73,58 @@ v1.1 实测 232.7MB → 约 190MB。`excludes` 只能挡住 Python 侧的模块�
 
 ---
 
+## 静态检查与格式化
+
+规则集中在 `pyproject.toml` 的 `[tool.ruff]`，pre-commit 与 CI 读同一份配置。
+
+```powershell
+ruff check .              # lint
+ruff format .             # 格式化（行宽 100，双引号，LF）
+ruff check --fix .        # 自动修可安全修复的部分
+```
+
+| 配置 | 值 | 为什么 |
+|---|---|---|
+| `line-length` | 100 | 与 [CONTRIBUTING](../CONTRIBUTING.md#代码约定) 的约定一致 |
+| `target-version` | py310 | 最低支持版本，pyupgrade 不会建议 3.11+ 写法 |
+| `ignore` | `E501` `RUF001~003` `RUF100` `C408` `RUF005` | 中文按视觉宽度换行；`，。「」` 会被当成歧义字符；`noqa` 标注的是刻意行为；`dict(...)` 构造 kwargs 更贴近调用签名；短序列用 `+` 拼接更自然 |
+
+被忽略的规则都在 `pyproject.toml` 里写了理由。**不要为了过检查去改全局配置**——
+真有正当理由，就在那一行写 `# noqa: 规则码 - 原因`。
+
+### CI
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 三个作业：
+
+| 作业 | 环境 | 跑什么 |
+|---|---|---|
+| 静态检查 | ubuntu / py3.12 | `ruff check .`、`ruff format --check .`、`tests/check_project.py` |
+| 服务层自检 | windows / py3.10 + py3.13 | `selftest_all.py`、`selftest_attribution_zh.py` |
+| 界面冒烟 | windows / py3.12 | 装 `requirements.txt` 后 `QT_QPA_PLATFORM=offscreen python main.py --selftest` |
+
+服务层自检作业**故意不装任何第三方依赖**：`core/` 与 `services/` 一旦偷偷 import
+PySide6 或 playwright，这一步就会挂——这是 CI 在替我们守住分层。
+
+---
+
 ## 发版前自检清单
 
 按顺序跑，任何一步失败都不要继续打包。
 
 ```powershell
-# 1. 服务层端到端（配置 / 数据库 / 热榜解析 / 创作 / 检查 / 发布 / 分析）
+# 1. 静态检查（lint + 格式 + 版本号/依赖口径）
+ruff check . ; ruff format --check . ; python tests/check_project.py
+
+# 2. 服务层端到端（配置 / 数据库 / 热榜解析 / 创作 / 检查 / 发布 / 分析）
 python tests/selftest_all.py                       # 当前 171 项通过 / 0 失败
 
-# 2. 归因链路中文化（假 LLM 返回中英混排 JSON）
+# 3. 归因链路中文化（假 LLM 返回中英混排 JSON）
 python tests/selftest_attribution_zh.py
 
-# 3. 界面层：无头构建全部页面
+# 4. 界面层：无头构建全部页面
 $env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest
 
-# 4. 真实窗口冒烟（双主题 + 无边框检查）
+# 5. 真实窗口冒烟（双主题 + 无边框检查）
 python tests/ui_smoke.py
 ```
 

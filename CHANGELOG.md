@@ -84,6 +84,25 @@
 - **关掉主程序能立刻收尾**：dry-run 会保持浏览器打开等人工确认，取消信号
   从发布页一路传到适配器，退出时不会把浏览器窗口留在桌面上
 
+### 工程规范
+
+- **静态检查落地**：`pyproject.toml` 的 `[tool.ruff]` 成为 lint 与 format 的唯一配置来源，
+  pre-commit 与 CI 读同一份规则；全库按行宽 100 格式化了 40 个文件（纯排版，171 项自检全部通过）
+- **CI**：新增 `.github/workflows/ci.yml`——静态检查（ruff lint / format / 元数据一致性）、
+  服务层自检（Python 3.10 + 3.13，刻意不装第三方依赖以守住分层）、界面无头冒烟
+- **版本号单一来源**：`pyproject.toml` 改为 `dynamic` 读取 `stent.__version__`；
+  新增 `tests/check_project.py` 同时校验版本号、CHANGELOG 顶部版本与依赖口径三处一致
+- **依赖口径对齐**：去掉 `pyproject.toml` 里没人直接 import 的 `httpx`（只由 openai 传递引入），
+  `requirements-dev.txt` 补上 `ruff` / `pre-commit`，与 `[project.optional-dependencies].dev` 一致
+- **顺手修掉静态检查暴露的隐患**：`analytics.py` 的 `__all__` 导出了一个并不存在的
+  `PROGRESS_METRIC_KEYS`（`from ... import *` 会直接 ImportError）；`components.py` 里
+  `heightForWidth` 定义了两遍，前一份是死代码；`tests/selftest_all.py` 用了未导入的
+  `PublishResult`，「适配器返回类型校验」实际被 `NameError` 吞掉从未生效；
+  知乎文章发布路径里有一个算完就没用的 `deadline`；另有若干未使用导入与变量
+- **仓库卫生**：删掉根目录误建的 `%SystemDrive%` 目录（路径里的环境变量没被展开），
+  `.gitignore` 补上防护与工具缓存；新增 `.editorconfig` / `.gitattributes`（统一 LF）；
+  `build.ps1` 在打包前先跑静态检查
+
 ### 其他
 
 - 新增三组回归测试：`tests/ui_publish_layout.py`（检查栏不被裁切 / 不压扁、

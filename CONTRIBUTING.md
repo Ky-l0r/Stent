@@ -20,12 +20,16 @@ python -m pip install -r requirements-dev.txt
 # 3. 要测发布功能才需要浏览器内核
 python -m playwright install chromium
 
-# 4. 跑源码
+# 4. 装提交前钩子：提交时自动跑 ruff lint 与格式检查（与 CI 同一份配置）
+pre-commit install
+
+# 5. 跑源码
 python main.py
 ```
 
 首次运行会创建数据目录（开发态在 `_data/`）并弹出引导页。
 `_data/` 与 `build/`、`dist/` 都已在 `.gitignore` 里，**不要提交本机产物**。
+`pre-commit install` 每克隆一次装一次即可；不想装也能提交，只是 CI 仍会拦住不合规的代码。
 
 ---
 
@@ -70,11 +74,34 @@ stent/
 
 ---
 
+## 代码质量工具
+
+规则只有一处真源：`pyproject.toml` 里的 `[tool.ruff]`，pre-commit 与 CI 都读它，
+**不要另建 `ruff.toml` 或在命令行里改规则**。
+
+```powershell
+ruff check .            # lint（CI 同样跑这条，必须零告警）
+ruff format .           # 格式化（行宽 100）
+ruff check --fix .      # 自动修可安全修复的部分
+```
+
+- 装了 pre-commit 的话，以上会在 `git commit` 时自动执行；
+- 想临时跳过用 `git commit --no-verify`，但 CI 仍会拦住——别养成习惯；
+- 有正当理由不遵守某条规则时，**在那行写 `# noqa: 规则码 - 为什么`**，
+  不要改全局配置。仓库里已有的 `BLE001`（浏览器写入兜底要吞异常）、
+  `N802`（Qt 虚函数名必须驼峰）、`PLC0415`（重依赖懒加载）都是这么来的。
+
+被忽略的规则与理由都写在 `pyproject.toml` 的 `ignore` 注释里，改之前先读一遍。
+
+---
+
 ## 提交前必须跑的自检
 
 ```powershell
-python tests/selftest_all.py                       # 服务层端到端（当前 171 项）
-python tests/selftest_attribution_zh.py            # 归因链路中文化
+ruff check . && ruff format --check .                # 静态检查
+python tests/check_project.py                        # 版本号 / CHANGELOG / 依赖口径一致
+python tests/selftest_all.py                         # 服务层端到端（当前 171 项）
+python tests/selftest_attribution_zh.py              # 归因链路中文化
 $env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面层冒烟
 ```
 
@@ -116,6 +143,10 @@ $env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面层冒烟
 - 涉及平台适配器的，说明验证时的平台页面版本——选择器会随平台改版失效，
   日后的人需要知道这条验证的时间点；
 - 若 PR 关闭某个 Issue，在描述里写 `Closes #编号`。
+
+每个 PR 都会跑 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)：
+静态检查（ruff lint + format + 元数据一致性）、服务层自检（Python 3.10 / 3.13）、
+界面无头冒烟。红了请先按上面的命令在本机复现，不要靠反复推提交试出来。
 
 ### 分支
 
