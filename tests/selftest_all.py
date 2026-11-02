@@ -21,6 +21,14 @@ _TMP = tempfile.mkdtemp(prefix="stent-selftest-")
 os.environ["STENT_DATA_DIR"] = _TMP
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# 输出全是中文：英文版 Windows 的控制台编码是 cp1252，直接 print 会
+# UnicodeEncodeError 把自检打断。CI 的 windows-latest 正是这种环境。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # 被重定向成非文本流时跳过
+        pass
+
 PASS = 0
 FAIL = 0
 FAILURES: list[str] = []

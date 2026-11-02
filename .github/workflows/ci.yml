@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# windows-latest 是英文环境，Python 控制台默认 cp1252：脚本里的中文输出会
+# UnicodeEncodeError。脚本自身已经 reconfigure 到 UTF-8，这里再兜一层——
+# 顺便让文件读写默认按 UTF-8 处理。
+env:
+  PYTHONUTF8: "1"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

@@ -21,6 +21,20 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 # 日志
 # --------------------------------------------------------------------------
+def ensure_utf8_console() -> None:
+    """把标准输出 / 错误流切到 UTF-8。
+
+    日志与 ``--selftest`` 的输出都是中文。英文版 Windows（控制台编码 cp1252 /
+    cp437）上直接 print 会 UnicodeEncodeError，整个启动流程当场断掉。
+    这不是「用户环境特殊」：CI 的 windows-latest 就是英文环境。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):  # 被重定向成非文本流时跳过
+            continue
+
+
 def setup_logging(level: int = logging.INFO) -> None:
     paths.data_dir()
     root = logging.getLogger()
@@ -80,6 +94,7 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     args, qt_args = parse_args(argv)
+    ensure_utf8_console()
     setup_logging(logging.DEBUG if args.debug else logging.INFO)
 
     # 必须早于任何 Playwright 调用：冻结态下 Playwright 会把内核目录默认指向
