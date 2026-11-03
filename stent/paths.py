@@ -40,6 +40,22 @@ def skills_dir() -> Path:
     return resource_dir() / "skills"
 
 
+def web_dir() -> Path:
+    """Web 前端静态资源目录（index.html 与 assets/）。
+
+    冻结态下资源可能落在 ``_internal/stent/web``（取决于 PyInstaller 的 datas 目标），
+    也可能被平铺到 ``_internal/web``；这里按「先看打包布局、再退回源码布局」探测，
+    避免打包后才出现 404 而源码运行一切正常。
+    """
+    bundled = resource_dir() / "stent" / "web"
+    if bundled.is_dir():
+        return bundled
+    flat = resource_dir() / "web"
+    if flat.is_dir():
+        return flat
+    return Path(__file__).resolve().parent / "web"
+
+
 def data_dir() -> Path:
     """可写数据根目录。
 

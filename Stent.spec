@@ -26,6 +26,8 @@ APP_NAME = "Stent"
 datas = [
     (str(ROOT / "stent" / "resources"), "stent/resources"),
     (str(ROOT / "stent" / "skills"), "stent/skills"),
+    # Web 前端静态资源：漏掉这一条，打包后窗口会白屏（源码运行却正常）
+    (str(ROOT / "stent" / "web"), "stent/web"),
     (str(ROOT / "README.md"), "."),
     (str(ROOT / "CHANGELOG.md"), "."),
     (str(ROOT / "NOTICE"), "."),
@@ -57,6 +59,13 @@ hiddenimports = [
     "stent.platforms.douyin",
     "stent.platforms.zhihu",
     "stent.platforms.bilibili",
+    # Web 前端（`main.py --web`）：接口层按需导入，窗口壳按需导入
+    "stent.api",
+    "stent.api.server",
+    "stent.api.handlers",
+    "stent.webapp",
+    "webview",
+    "webview.platforms.edgechromium",
 ]
 
 #: 不打包的 Qt 共享库（按文件名匹配，小写比较）

@@ -38,11 +38,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Web 前端壳：pywebview 在 Windows 上走系统自带的 WebView2 运行时，
+# 不额外打包浏览器内核（Electron 那一套要 100MB+，这里只要几 MB）。
+web = ["pywebview>=5.0"]
 dev = [
     "pyinstaller>=6.6",
     "pytest>=8.0",
     "ruff>=0.9",
     "pre-commit>=3.7",
+    "pywebview>=5.0",
 ]
 
 [project.urls]
@@ -54,18 +58,29 @@ Releases = "https://github.com/Ky-l0r/Stent/releases"
 
 [project.scripts]
 stent = "stent.app:main"
+stent-web = "stent.webapp:main"
 
 [project.gui-scripts]
 stent-gui = "stent.app:main"
+stent-webgui = "stent.webapp:main"
 
 [tool.setuptools]
-packages = ["stent", "stent.core", "stent.services", "stent.platforms", "stent.ui", "stent.ui.pages"]
+packages = [
+    "stent",
+    "stent.api",
+    "stent.core",
+    "stent.services",
+    "stent.platforms",
+    "stent.ui",
+    "stent.ui.pages",
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "stent.__version__" }
 
 [tool.setuptools.package-data]
-stent = ["resources/*", "skills/*", "skills/**/*"]
+# web/ 是前端静态资源，必须随包分发，否则打包后窗口白屏
+stent = ["resources/*", "skills/*", "skills/**/*", "web/*", "web/**/*"]
 
 # ---------------------------------------------------------------------------
 # Ruff：lint + format 的唯一配置来源（pre-commit 与 CI 都读这里）

@@ -62,6 +62,9 @@ jobs:
       - name: 服务层端到端自检
         run: python tests/selftest_all.py
 
+      - name: 本机接口自检（起真服务打端点）
+        run: python tests/selftest_api.py
+
       - name: 归因链路中文化
         run: python tests/selftest_attribution_zh.py
 

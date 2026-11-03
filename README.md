@@ -148,6 +148,20 @@ python main.py
 
 首次运行会自动创建数据目录与 SQLite 数据库（开发态在 `_data\`），并弹出首次启动引导。
 
+### 方式三：Web 前端（v1.2 实验特性）
+
+界面正在从 PySide6 迁到 Web：同一个业务层，两套壳。Web 版是**独立窗口**（WebView2），
+不是浏览器标签页——浏览器模式只用于调试。
+
+```powershell
+python -m pip install pywebview         # 只装一次，Windows 上复用系统自带的 WebView2
+python main.py --web                    # 独立窗口
+python main.py --web --browser          # 只起服务，用浏览器调前端
+```
+
+当前 Web 版可用：热点发现、内容创作、账号画像、设置；发布中心只做「检查 + 预览」，不提交。
+架构与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。旧的 `python main.py` 仍可用。
+
 ### 命令行参数
 
 | 参数 | 作用 |
@@ -297,6 +311,9 @@ Stent/
 │   ├── app.py                  应用启动、日志、冒烟自检
 │   ├── paths.py                路径管理（数据/配置/缓存/浏览器目录）
 │   ├── config.py               配置中心 + keyring/DPAPI 密钥存储
+│   ├── api/                    本机 HTTP 接口层（server 路由/SSE、handlers 端点）
+│   ├── webapp.py               Web 前端桌面壳（WebView2 窗口）
+│   ├── web/                    前端静态资源（index.html + assets，原生 ES Module）
 │   ├── core/
 │   │   ├── db.py               SQLite 存储层（内容/发布/指标/画像/热榜/日志）
 │   │   └── llm.py              OpenAI 兼容客户端（流式、重试、可中断）
@@ -342,7 +359,8 @@ Stent/
 
 打包、自检清单、平台改版取证流程、性能指标与实现取舍，集中在
 [docs/development.md](docs/development.md)；无边框窗口的 Win32 实现细节在
-[docs/ui-internals.md](docs/ui-internals.md)。
+[docs/ui-internals.md](docs/ui-internals.md)；Web 前端的架构、职责划分与迁移要点在
+[docs/web-architecture.md](docs/web-architecture.md)。
 
 一句话版：
 

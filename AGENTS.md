@@ -199,11 +199,14 @@ Git 默认后端因此在握手阶段直接失败：
 | 层 | 路径 | 职责 | 禁止 |
 | --- | --- | --- | --- |
 | 界面层 | `stent/ui/` | PySide6 页面、控件、主题、图标 | 写业务规则、直接访问平台适配器内部选择器 |
-| 服务层 | `stent/services/` | 热榜 / 创作 / 检查 / 发布编排 / 分析 / 画像 | import `ui/`；启动浏览器做界面该做的事 |
+| 接口层 | `stent/api/` | 本机 HTTP 路由、鉴权、SSE、参数校验 | 写业务规则、绕过 services 直接查库 |
+| 前端 | `stent/web/` | HTML/CSS/原生 ES Module，渲染与交互 | 拼 prompt、算平台限制、判断能否发布 |
+| 服务层 | `stent/services/` | 热榜 / 创作 / 检查 / 发布编排 / 分析 / 画像 | import `ui/` 或 `api/`；启动浏览器做界面该做的事 |
 | 平台层 | `stent/platforms/` | 每个平台一个适配器，实现 `base.py` 接口 | 承载业务决策、被 service 绕过接口直接调用 |
 | 核心层 | `stent/core/` | SQLite 存储、LLM 客户端 | import 上面任何一层 |
 
 - `core/` 里出现 `from ..ui` 或 `from ..services` 就是错误。
+- `services/` 里出现 `from ..api` 或 HTTP 相关代码就是错误（接口层才做协议转换）。
 - 平台选择器只能待在 `platforms/`；`services/` 里出现 `"#id"`、`[class*=]` 这类 CSS 选择器就是错误。
 
 ### 5.4 具体规则（都是踩过坑写下来的）
@@ -257,6 +260,8 @@ Git 默认后端因此在握手阶段直接失败：
 | --- | --- |
 | `stent/ui/` | 主窗口、无边框窗口、主题、图标、共享控件、后台任务线程 |
 | `stent/ui/pages/` | 七个页面：`hotsearch` `create` `publish` `analytics` `profile` `settings` `onboarding` |
+| `stent/api/` | 本机 HTTP 接口：`server.py` 路由与 SSE、`handlers.py` 端点实现 |
+| `stent/web/` | 前端静态资源：`index.html` + `assets/*.js`（原生 ES Module，无构建步骤） |
 | `stent/services/` | 热榜聚合、创作、画像、检查、发布编排、抖音抓取、分析 |
 | `stent/platforms/` | `base.py` 接口 + 每平台一个适配器 + `_browser.py` 共用工具 |
 | `stent/core/` | `db.py`（SQLite）、`llm.py`（OpenAI 兼容客户端） |
@@ -314,6 +319,8 @@ Git 默认后端因此在握手阶段直接失败：
 | 任意 `.py` | `ruff check .` + `ruff format --check .` |
 | `core/`、`services/` | 上项 + `python tests/selftest_all.py`（当前 171 项） |
 | 归因、画像记忆、中文文案 | 上项 + `python tests/selftest_attribution_zh.py` |
+| `api/`（接口层） | 上项 + `python tests/selftest_api.py` |
+| `web/`（前端资源） | `node --check` 抽查语法 + `python tests/selftest_api.py`（静态资源与 token 注入）；界面改动要开窗口看一眼 |
 | `ui/`（含 `pages/`） | 上项 + `$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest`（7 个页面全构建）+ 对应 `ui_*.py` 回归 |
 | `platforms/` | 上项 + selftest 里的平台断言；涉及真实页面的改动**标注"需真机验证"** |
 | `pyproject.toml`、依赖、CI、构建脚本 | 全部门禁 + `python tests/check_project.py`；改依赖后本地 `pip install -r requirements.txt` 跑一次源码 |
@@ -325,6 +332,7 @@ Git 默认后端因此在握手阶段直接失败：
 ruff check .                                  # lint（CI 同款，必须零告警）
 ruff format --check .                         # 格式校验
 python tests/check_project.py                 # 版本号 / CHANGELOG / 依赖口径一致
+python tests/selftest_api.py                  # 本机接口自检（起真服务，43 项，不联网）
 python tests/selftest_all.py                  # 服务层端到端 171 项
 python tests/selftest_attribution_zh.py       # 归因链路中文化
 $env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面无头构建
@@ -351,6 +359,7 @@ pwsh -File build.ps1 -Clean                   # 打包
 | 能力或已知限制变化 | `README.md`（含「已知限制」「路线图」表） |
 | 构建流程、自检清单、平台改版取证 | `docs/development.md` |
 | 无边框窗口 / Win32 / 主题实现 | `docs/ui-internals.md` |
+| Web 前端的架构、职责边界、迁移进度 | `docs/web-architecture.md` |
 | 分层、代码约定、提交规范 | `CONTRIBUTING.md` |
 | 新增或调整回归脚本 | `docs/development.md` 的回归表 |
 | 本文件与 CONTRIBUTING 冲突 | 先改本文件，再同步 CONTRIBUTING |
