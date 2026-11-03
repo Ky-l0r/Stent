@@ -1,8 +1,9 @@
 # Stent 运行依赖
-PySide6>=6.6,<7
+PySide6>=6.6,<7       # 旧界面（python main.py --qt）与窗口/托盘能力，暂未摘除
 openai>=1.30          # LLM 调用；其自身依赖 httpx
 keyring>=25.0         # API Key 写入 Windows 凭据管理器
 playwright>=1.44      # 发布中心的浏览器自动化
+pywebview>=5.0        # Web 前端的独立窗口壳（复用系统 WebView2，不打包浏览器内核）
 
 # 说明：热点发现的 HTTP 请求刻意使用标准库 urllib，
 # 因为 httpx 0.28 在 Windows 上每次构造 Client 需要约 3 秒，会拖慢热榜拉取。

@@ -229,6 +229,11 @@ Git 默认后端因此在握手阶段直接失败：
 - **异常处理**：允许在平台适配器里吞异常以换取"单个平台失败不影响整体"，但必须
   （a）`log.warning` 留下可诊断信息；（b）返回给用户的中文说明不能是"未知错误"。
   禁止把异常吞成 `None` 继续执行到下一屏。
+- **入口默认是 Web，别再按「默认 Qt」写文档或脚本**：`python main.py` 起 WebView2 窗口，
+  `--qt` 才是旧界面；`--selftest` / `--reset-onboarding` 会被路由回 Qt（无头构建页面是 Qt 侧能力）。
+  改 `main.py` 的参数路由时，CI 的 `ui-smoke`（`python main.py --qt --selftest`）不能挂。
+- **pywebview 的 `js_api` 对象不要暴露公开属性**：它建 JS 桥时会反射公开成员，
+  碰到 `Window` 就会在非 UI 线程读原生属性，刷出一串 COM 异常。窗口引用一律用 `_window`。
 - **版本号只有一处真源**：`stent/__init__.py` 的 `__version__`；`pyproject.toml` 用
   `dynamic = ["version"]` 读它。不要在任何地方再写死版本号。
 

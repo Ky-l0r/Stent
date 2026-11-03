@@ -6,6 +6,10 @@
 
 ### 新增：Web 前端
 
+- **默认入口换成 Web**：`python main.py` 现在打开 WebView2 独立窗口；
+  旧界面用 `python main.py --qt`（功能完整，保留作回退与视觉对照）。
+  `--selftest` 仍走 PySide6——Web 前端没有「无头构建页面」这回事，
+  它的等价检查是 `tests/ui_web_smoke.py`。
 - **新的前端形态**：`python main.py --web` 打开 WebView2 独立窗口（不是浏览器标签页），
   HTML/CSS/JS 负责渲染，Python 保留全部业务能力。旧的 `python main.py` 仍可用，是回退路径。
 - **本机接口层** `stent/api/`：标准库 `http.server` + 16 条路由，只监听 `127.0.0.1`、
@@ -24,7 +28,11 @@
 
 - 打包配置补上 `stent/web` 静态资源与 `stent.api` / `stent.webapp` / `pywebview` 的收集项，
   漏掉会出现「源码正常、打包白屏」。
-- 新增可选依赖 `web = ["pywebview>=5.0"]`；不装也能用浏览器模式调试前端。
+- `pywebview` 提升为运行依赖（默认入口需要它）；WebView2 运行时 Win10/11 通常已自带。
+- 修：`ShellApi` 把窗口引用挂在公开属性 `window` 上，pywebview 建 JS 桥时会反射读它，
+  在非 UI 线程访问原生属性，启动时刷出一串 `CoreWebView2Controller ... UI thread` 的
+  COM 异常。改成私有 `_window` 后清零，并补一条「窗口页面已加载」日志，
+  用于区分「窗口开了」与「页面真的渲染了」。
 - 架构、职责划分与迁移要点见 [`docs/web-architecture.md`](docs/web-architecture.md)。
 
 ## v1.1.2 · 未发布

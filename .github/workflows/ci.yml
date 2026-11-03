@@ -81,8 +81,9 @@ jobs:
       - name: 安装运行依赖
         run: python -m pip install --upgrade pip -r requirements.txt
 
-      # 只构建界面、跑一遍页面级自检；发布功能需要的 Chromium 内核这里不装
+      # 只构建界面、跑一遍页面级自检；发布功能需要的 Chromium 内核这里不装。
+      # 显式加 --qt：默认入口已切到 Web 前端，而 --selftest 是无头构建 Qt 页面。
       - name: 无头冒烟
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python main.py --selftest
+        run: python main.py --qt --selftest

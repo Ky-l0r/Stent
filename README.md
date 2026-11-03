@@ -146,28 +146,29 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-首次运行会自动创建数据目录与 SQLite 数据库（开发态在 `_data\`），并弹出首次启动引导。
+首次运行会自动创建数据目录与 SQLite 数据库（开发态在 `_data\`）。
 
-### 方式三：Web 前端（v1.2 实验特性）
-
-界面正在从 PySide6 迁到 Web：同一个业务层，两套壳。Web 版是**独立窗口**（WebView2），
-不是浏览器标签页——浏览器模式只用于调试。
+界面在 v1.2 换成了 Web 前端：`python main.py` 打开的是 **WebView2 独立窗口**（复用系统
+自带运行时，不打包浏览器内核），不是浏览器标签页。旧的 PySide6 界面仍保留：
 
 ```powershell
-python -m pip install pywebview         # 只装一次，Windows 上复用系统自带的 WebView2
-python main.py --web                    # 独立窗口
-python main.py --web --browser          # 只起服务，用浏览器调前端
+python main.py                # Web 前端（默认）
+python main.py --qt           # 旧界面（回退 / 对照）
+python main.py --browser      # 只起本机服务，用浏览器调前端
 ```
 
 当前 Web 版可用：热点发现、内容创作、账号画像、设置；发布中心只做「检查 + 预览」，不提交。
-架构与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。旧的 `python main.py` 仍可用。
+架构、职责划分与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。
 
 ### 命令行参数
 
 | 参数 | 作用 |
 |---|---|
-| `--selftest` | 在无界面环境下构建全部页面做冒烟验证后退出 |
-| `--reset-onboarding` | 强制重新显示首次启动引导 |
+| `--qt` | 启动旧的 PySide6 界面（默认是 Web 前端） |
+| `--browser` | Web 前端不弹窗，改用系统浏览器打开本机服务（调试用） |
+| `--port 8765` | 指定接口端口（默认由系统分配，只监听 127.0.0.1） |
+| `--selftest` | **走 PySide6**：无界面构建全部页面做冒烟后退出（CI 用） |
+| `--reset-onboarding` | 强制重新显示首次启动引导（旧界面） |
 | `--debug` | 输出调试日志 |
 
 日志与数据位置由 `stent/paths.py` 统一管理，可用环境变量 `STENT_DATA_DIR` 覆盖数据目录（自动化测试与绿色部署用）。

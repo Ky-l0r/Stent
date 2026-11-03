@@ -51,35 +51,37 @@ class ShellApi:
     """
 
     def __init__(self) -> None:
-        self.window: Any = None
+        # 私有命名很重要：pywebview 会反射 js_api 的公开属性来建 JS 桥，
+        # 碰到 Window 对象就会去读 webview 的原生属性（在非 UI 线程上 → 一串 COM 异常）。
+        self._window: Any = None
 
     # -- 窗口 ------------------------------------------------------------
     def minimize(self) -> None:
-        if self.window is not None:
-            self.window.minimize()
+        if self._window is not None:
+            self._window.minimize()
 
     def toggle_maximize(self) -> None:
-        if self.window is None:
+        if self._window is None:
             return
         # pywebview 各平台能力不完全一致，按可用方法退让
         try:
-            if getattr(self.window, "maximized", False) and hasattr(self.window, "restore"):
-                self.window.restore()
-            elif hasattr(self.window, "maximize"):
-                self.window.maximize()
+            if getattr(self._window, "maximized", False) and hasattr(self._window, "restore"):
+                self._window.restore()
+            elif hasattr(self._window, "maximize"):
+                self._window.maximize()
         except Exception:  # pragma: no cover - 窗口已销毁
             log.debug("窗口最大化切换失败", exc_info=True)
 
     def close(self) -> None:
-        if self.window is not None:
-            self.window.destroy()
+        if self._window is not None:
+            self._window.destroy()
 
     def move_window(self, dx: int, dy: int) -> None:
         """自绘标题栏拖动：按屏幕坐标位移（WebView 里拿不到窗口原生拖拽）。"""
-        if self.window is None:
+        if self._window is None:
             return
         try:
-            self.window.move(int(self.window.x + dx), int(self.window.y + dy))
+            self._window.move(int(self._window.x + dx), int(self._window.y + dy))
         except Exception:  # pragma: no cover
             log.debug("窗口移动失败", exc_info=True)
 
@@ -98,7 +100,7 @@ class ShellApi:
         浏览器做不到这件事（``<input type=file>`` 拿到的是不可读的伪路径），
         所以媒体选择必须由壳层代劳。
         """
-        if self.window is None:
+        if self._window is None:
             return []
         try:
             import webview  # noqa: PLC0415
@@ -113,7 +115,7 @@ class ShellApi:
                 "所有文件 (*.*)",
             )
         try:
-            picked = self.window.create_file_dialog(
+            picked = self._window.create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=True, file_types=file_types
             )
         except Exception:  # pragma: no cover - 对话框被取消或不可用
@@ -180,7 +182,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         background_color=BACKGROUND,
         js_api=shell,
     )
-    shell.window = window
+    shell._window = window  # noqa: SLF001 - 同一模块内注入窗口引用
+    # 有这条日志才能区分「窗口开了」和「页面真的渲染了」——白屏时看日志即可定位
+    window.events.loaded += lambda *_: log.info("窗口页面已加载：%s", url)
     try:
         webview.start(debug=args.debug)
     finally:

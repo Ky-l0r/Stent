@@ -263,17 +263,25 @@ P2 之前 **不要删 `stent/ui/`**：它是回退路径，也是行为参照。
 ## 八、如何运行与验证
 
 ```powershell
-# 源码运行（需要先装依赖：pip install pywebview）
-python -m stent.webapp
+# 默认入口就是 Web 前端（v1.2 起）：打开 WebView2 独立窗口
+python main.py
 
-# 只起服务，用浏览器调试前端（不需要 WebView2）
-python -m stent.webapp --browser
+# 旧的 PySide6 界面，回退 / 做视觉对照用
+python main.py --qt
+
+# 只起服务，用浏览器调试前端（不需要窗口）
+python main.py --browser
+
+# 指定端口，方便前端热调
+python main.py --browser --port 8765
 
 # 接口自检（不需要窗口，CI 可跑）
 python tests/selftest_api.py
 
-# 指定端口，方便前端热调
-python -m stent.webapp --browser --port 8765
+# 界面渲染自检（真浏览器，缺内核时自动退到系统 Edge）
+python tests/ui_web_smoke.py
 ```
 
 `--browser` 模式下所有页面功能可用，只有「选择媒体文件」不可用（浏览器拿不到真实路径）。
+`python main.py --selftest` 仍走 PySide6 做无头页面构建——Web 前端的等价检查是
+`tests/ui_web_smoke.py`。

@@ -35,18 +35,15 @@ dependencies = [
     "openai>=1.30",
     "keyring>=25.0",
     "playwright>=1.44",
+    "pywebview>=5.0",
 ]
 
 [project.optional-dependencies]
-# Web 前端壳：pywebview 在 Windows 上走系统自带的 WebView2 运行时，
-# 不额外打包浏览器内核（Electron 那一套要 100MB+，这里只要几 MB）。
-web = ["pywebview>=5.0"]
 dev = [
     "pyinstaller>=6.6",
     "pytest>=8.0",
     "ruff>=0.9",
     "pre-commit>=3.7",
-    "pywebview>=5.0",
 ]
 
 [project.urls]
