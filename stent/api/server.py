@@ -335,7 +335,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # 窗口刷新 / 切换页面时浏览器会主动掐断旧连接，这不是错误
+            log.debug("静态资源写回时客户端断开：%s", path)
 
     def _send_json(self, status: int, body: Any, headers: dict[str, str] | None = None) -> None:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -348,7 +352,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(payload)
-        except (BrokenPipeError, ConnectionResetError):
+        # ConnectionAbortedError（WinError 10053）在窗口关闭时必现：
+        # 浏览器已断开，socketserver 会把它当未处理异常打一整段栈到 stderr。
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             log.debug("客户端在写回 JSON 时断开")
 
     def _send_stream(self, response: StreamResponse) -> None:

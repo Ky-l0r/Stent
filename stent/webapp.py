@@ -134,14 +134,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def run(argv: Sequence[str] | None = None) -> int:
-    from .app import ensure_utf8_console  # 复用同一套控制台编码处理
+    # 复用 Qt 版同一套日志：写 data_dir/logs/stent.log + stderr。
+    # 打包后 console=False 没有控制台，只靠 basicConfig 的话日志等于丢失，
+    # 用户报「白屏」时我们手上什么都没有。
+    from .app import ensure_utf8_console, setup_logging
 
     ensure_utf8_console()
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    setup_logging(logging.DEBUG if args.debug else logging.INFO)
 
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         print("出于安全考虑，只允许监听回环地址（127.0.0.1）", file=sys.stderr)

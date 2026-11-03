@@ -5,6 +5,9 @@ _reference/
 # 打包产物
 build/
 dist/
+# 打包试验用的独立输出目录（避免覆盖现有 dist 时触发批量删除）
+build-web*/
+dist-web*/
 *.spec.bak
 # 误建目录防护：路径中的环境变量未被展开时会在仓库根目录造出这个目录
 %SystemDrive%/
