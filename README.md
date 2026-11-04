@@ -160,6 +160,23 @@ python main.py --browser      # 只起本机服务，用浏览器调前端
 当前 Web 版可用：热点发现、内容创作、账号画像、设置；发布中心只做「检查 + 预览」，不提交。
 架构、职责划分与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。
 
+### 方式三：Electron 客户端（webapp/，需要 Node 22）
+
+第三套壳，和上面共用同一个 Python 后端与接口：
+
+```powershell
+cd webapp
+npm install
+npm run dev           # 开发：编译 + 起窗口，后端由主进程自动拉起
+
+# 打包（先把后端打进 dist\Stent）
+pwsh -File ../build.ps1
+npm run package:dir   # 产物：webapp\release\win-unpacked\Stent.exe，免安装
+```
+
+三套界面各自验证过、都能跑：PySide6（`--qt`）、pywebview（默认）、Electron（本目录）。
+打包体积：pywebview 版 208MB，Electron 版 484MB（多一个 Chromium 运行时）。
+
 ### 命令行参数
 
 | 参数 | 作用 |

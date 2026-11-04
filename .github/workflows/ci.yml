@@ -68,6 +68,32 @@ jobs:
       - name: 归因链路中文化
         run: python tests/selftest_attribution_zh.py
 
+  frontend:
+    name: 前端类型检查与构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      # --ignore-scripts 跳过 electron 的二进制下载：CI 只做类型检查与打包前端，
+      # 不需要真的开窗口（真要跑窗口会在 linux 上额外折腾 Xvfb，不值当）
+      - name: 安装依赖
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: TypeScript 类型检查
+        run: npm run check
+
+      - name: 构建主进程与渲染进程
+        run: npm run build
+
   ui-smoke:
     name: 界面冒烟（无头构建全部页面）
     runs-on: windows-latest

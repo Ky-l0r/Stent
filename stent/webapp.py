@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 import webbrowser
@@ -127,8 +128,18 @@ class ShellApi:
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="stent-webapp", description="Stent Web 前端桌面壳")
     parser.add_argument("--browser", action="store_true", help="不起窗口，用系统浏览器打开")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="只跑接口服务，不开窗口也不开浏览器（Electron 壳用）",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（只允许回环）")
     parser.add_argument("--port", type=int, default=0, help="端口，0 表示由系统分配")
+    parser.add_argument(
+        "--token",
+        default="",
+        help="指定访问令牌；不传则随机生成。Electron 壳用它把令牌与渲染进程对齐",
+    )
     parser.add_argument("--debug", action="store_true", help="打开 WebView 调试工具与调试日志")
     return parser.parse_args(list(argv))
 
@@ -148,10 +159,24 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 2
 
     paths.data_dir()
-    app = build_app(host=args.host, port=args.port)
+    # 令牌可以由壳层传入（Electron 自己生成再 spawn 本进程），也可从环境变量取
+    token = args.token or os.environ.get("STENT_API_TOKEN") or None
+    app = build_app(host=args.host, port=args.port, token=token)
     url = app.start()
     print(f"Stent 接口服务：{url}")
     print(f"数据目录：{paths.data_dir()}")
+
+    if args.headless:
+        # 机器可读的一行：壳层用它拿到真实端口与令牌（端口传 0 时是系统分配的）
+        print(f"STENT_READY {url} {app.token}", flush=True)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            app.stop()
+        return 0
 
     ok, reason = _has_webview()
     if args.browser or not ok:

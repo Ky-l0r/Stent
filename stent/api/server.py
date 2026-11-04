@@ -112,11 +112,13 @@ Handler = Callable[[Request], Response | StreamResponse]
 class ApiServer:
     """本机 API 服务：注册路由、启动/停止、生成访问 URL。"""
 
-    def __init__(self, *, host: str = "127.0.0.1", port: int = 0) -> None:
+    def __init__(self, *, host: str = "127.0.0.1", port: int = 0, token: str | None = None) -> None:
         self.host = host
         self.port = port
         #: 启动时生成，注入页面；本机其它进程拿不到，也就读不到接口。
-        self.token = secrets.token_urlsafe(32)
+        #: ``token`` 可由外部传入：Electron 壳自己生成令牌并 spawn 后端，
+        #: 这样渲染进程无需读页面就能拿到同一份令牌。
+        self.token = token or secrets.token_urlsafe(32)
         self._routes: dict[tuple[str, str], Handler] = {}
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -201,6 +203,38 @@ def _is_loopback(host: str) -> bool:
     return host in {"127.0.0.1", "::1", "localhost"}
 
 
+#: 允许跨域的前缀：Vite dev server 与本地回环页面。
+_DEV_ORIGIN_PREFIXES = (
+    "http://localhost:",
+    "http://127.0.0.1:",
+    "https://localhost:",
+    "https://127.0.0.1:",
+)
+
+
+def _cors_headers(origin: str) -> dict[str, str]:
+    """给 Electron / Vite 页面用的 CORS 头。
+
+    这两类页面的源都不等于本服务的源：``file://`` 页面发来的 Origin 是字面量
+    ``null``，dev 时是 ``http://localhost:5173``。不放行的话浏览器会在预检阶段
+    直接拒掉带自定义头（``X-Stent-Token``）的请求。
+
+    只放行这两种来源；其它来源不返回 CORS 头，浏览器自然拦截。
+    安全边界仍是「只绑回环 + 每次请求校验令牌」。
+    """
+    if not origin:
+        return {}
+    if origin != "null" and not origin.startswith(_DEV_ORIGIN_PREFIXES):
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Stent-Token",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
 class _RequestHandler(BaseHTTPRequestHandler):
     """单请求处理：鉴权 → 取路由 → 调处理器 → 写回。"""
 
@@ -229,9 +263,15 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._handle("DELETE")
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        # 预检请求不带令牌（浏览器也不允许带），所以这里不能走鉴权
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Allow", "GET, POST, PUT, DELETE, OPTIONS")
+        for key, value in self._cors().items():
+            self.send_header(key, value)
         self.end_headers()
+
+    def _cors(self) -> dict[str, str]:
+        return _cors_headers(self.headers.get("Origin") or "")
 
     # -- 主流程 ----------------------------------------------------------
     def _handle(self, method: str) -> None:
@@ -334,6 +374,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in self._cors().items():
+            self.send_header(key, value)
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -348,6 +390,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        for key, value in self._cors().items():
             self.send_header(key, value)
         self.end_headers()
         try:
@@ -364,6 +408,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.send_header("X-Accel-Buffering", "no")
         for key, value in response.headers.items():
+            self.send_header(key, value)
+        for key, value in self._cors().items():
             self.send_header(key, value)
         self.end_headers()
 

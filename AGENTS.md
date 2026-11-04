@@ -200,7 +200,8 @@ Git 默认后端因此在握手阶段直接失败：
 | --- | --- | --- | --- |
 | 界面层 | `stent/ui/` | PySide6 页面、控件、主题、图标 | 写业务规则、直接访问平台适配器内部选择器 |
 | 接口层 | `stent/api/` | 本机 HTTP 路由、鉴权、SSE、参数校验 | 写业务规则、绕过 services 直接查库 |
-| 前端 | `stent/web/` | HTML/CSS/原生 ES Module，渲染与交互 | 拼 prompt、算平台限制、判断能否发布 |
+| 前端(轻) | `stent/web/` | HTML/CSS/原生 ES Module，渲染与交互 | 拼 prompt、算平台限制、判断能否发布 |
+| 前端(重) | `webapp/` | Electron + React + TS + Vite，同一组接口 | 直接读写文件、绕过 preload 拿 Node 能力 |
 | 服务层 | `stent/services/` | 热榜 / 创作 / 检查 / 发布编排 / 分析 / 画像 | import `ui/` 或 `api/`；启动浏览器做界面该做的事 |
 | 平台层 | `stent/platforms/` | 每个平台一个适配器，实现 `base.py` 接口 | 承载业务决策、被 service 绕过接口直接调用 |
 | 核心层 | `stent/core/` | SQLite 存储、LLM 客户端 | import 上面任何一层 |
@@ -234,6 +235,12 @@ Git 默认后端因此在握手阶段直接失败：
   改 `main.py` 的参数路由时，CI 的 `ui-smoke`（`python main.py --qt --selftest`）不能挂。
 - **pywebview 的 `js_api` 对象不要暴露公开属性**：它建 JS 桥时会反射公开成员，
   碰到 `Window` 就会在非 UI 线程读原生属性，刷出一串 COM 异常。窗口引用一律用 `_window`。
+- **Electron 前端有两处环境坑**：① 本机 shell 若带 `ELECTRON_RUN_AS_NODE=1`，
+  `electron .` 会以 Node 模式跑，报 `app.isPackaged of undefined`——用 `env -u ELECTRON_RUN_AS_NODE` 启动；
+  ② `electron-builder` 默认要去 GitHub 下 115MB 运行时，改用配置里的 `electronDist`
+  直接复用 `node_modules/electron/dist`，别再让 CI/本机去下载。
+- **打包目录要换新的**：覆盖 `dist/`、`release*/`、`webapp/release` 时会被批量删除保护拦下，
+  迭代时用 `--distpath` / `--config.directories.output` 指到新目录，或先 `mv` 旧目录而不是删。
 - **版本号只有一处真源**：`stent/__init__.py` 的 `__version__`；`pyproject.toml` 用
   `dynamic = ["version"]` 读它。不要在任何地方再写死版本号。
 
@@ -266,7 +273,8 @@ Git 默认后端因此在握手阶段直接失败：
 | `stent/ui/` | 主窗口、无边框窗口、主题、图标、共享控件、后台任务线程 |
 | `stent/ui/pages/` | 七个页面：`hotsearch` `create` `publish` `analytics` `profile` `settings` `onboarding` |
 | `stent/api/` | 本机 HTTP 接口：`server.py` 路由与 SSE、`handlers.py` 端点实现 |
-| `stent/web/` | 前端静态资源：`index.html` + `assets/*.js`（原生 ES Module，无构建步骤） |
+| `stent/web/` | pywebview 版前端：`index.html` + `assets/*.js`（原生 ES Module，无构建步骤） |
+| `webapp/` | Electron 版前端：`electron/`（主进程 + 预加载）、`src/`（React 页面） |
 | `stent/services/` | 热榜聚合、创作、画像、检查、发布编排、抖音抓取、分析 |
 | `stent/platforms/` | `base.py` 接口 + 每平台一个适配器 + `_browser.py` 共用工具 |
 | `stent/core/` | `db.py`（SQLite）、`llm.py`（OpenAI 兼容客户端） |
@@ -325,6 +333,7 @@ Git 默认后端因此在握手阶段直接失败：
 | `core/`、`services/` | 上项 + `python tests/selftest_all.py`（当前 171 项） |
 | 归因、画像记忆、中文文案 | 上项 + `python tests/selftest_attribution_zh.py` |
 | `api/`（接口层） | 上项 + `python tests/selftest_api.py` |
+| `webapp/`（Electron 前端） | `cd webapp && npm run check && npm run build`；动打包配置再加 `npm run package:dir` |
 | `web/`（前端资源） | `node --check` 抽查语法 + `python tests/selftest_api.py`（静态资源与 token 注入）；界面改动要开窗口看一眼 |
 | `ui/`（含 `pages/`） | 上项 + `$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest`（7 个页面全构建）+ 对应 `ui_*.py` 回归 |
 | `platforms/` | 上项 + selftest 里的平台断言；涉及真实页面的改动**标注"需真机验证"** |
@@ -338,6 +347,7 @@ ruff check .                                  # lint（CI 同款，必须零告�
 ruff format --check .                         # 格式校验
 python tests/check_project.py                 # 版本号 / CHANGELOG / 依赖口径一致
 python tests/selftest_api.py                  # 本机接口自检（起真服务，43 项，不联网）
+cd webapp && npm run check && npm run build    # Electron 前端类型检查 + 构建
 python tests/selftest_all.py                  # 服务层端到端 171 项
 python tests/selftest_attribution_zh.py       # 归因链路中文化
 $env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面无头构建

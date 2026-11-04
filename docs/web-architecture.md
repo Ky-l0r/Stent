@@ -285,3 +285,45 @@ python tests/ui_web_smoke.py
 `--browser` 模式下所有页面功能可用，只有「选择媒体文件」不可用（浏览器拿不到真实路径）。
 `python main.py --selftest` 仍走 PySide6 做无头页面构建——Web 前端的等价检查是
 `tests/ui_web_smoke.py`。
+
+---
+
+## 九、三种壳，一个后端
+
+同一套 `stent/api` + `stent/services`，外面换了三层皮：
+
+| 壳 | 入口 | 前端技术 | 体积 | 什么时候用 |
+| --- | --- | --- | --- | --- |
+| PySide6 | `python main.py --qt` | Qt Widgets | 208MB | 回退、做视觉对照 |
+| pywebview | `python main.py` | 原生 HTML/ES Module | 208MB | 轻量、不装 Node 的默认路径 |
+| Electron | `webapp/` | React 19 + TS + Vite | 484MB | 要 DevTools、渲染一致性、自动更新空间 |
+
+### Electron 壳多做了三件事
+
+1. **托管后端生命周期**：选空闲端口 → 生成令牌 → `spawn` → 轮询 `/api/health` →
+   退出时 `taskkill /T`。pywebview 版是后端自己起、自己开窗，进程模型更简单，
+   但没法把「后端崩了」这件事报给界面。
+2. **令牌走 IPC 而不是注入 HTML**：主进程生成 → 命令行给后端 → 预加载脚本
+   `contextBridge` 暴露给渲染进程。页面源码里搜不到令牌，也不会出现在 URL 上。
+3. **拖拽用 `-webkit-app-region: drag`**：不再需要 JS 逐帧上报位移（pywebview 版的做法，
+   拖动时有一次 IPC 往返，快速拖动会滞后）。
+
+### 因此多出来的两处后端改动
+
+- `--headless`：只跑接口服务，不开窗口也不开浏览器。壳层要的是「一个服务」，不是「一个窗口」。
+- `CORS`：渲染进程的源是 `file://`（Origin 为 `null`）或 `http://localhost:5173`，
+  与接口不同源，带 `X-Stent-Token` 的请求必然触发预检。只放行这两类来源，
+  安全边界仍是「只绑回环 + 每次校验令牌」。
+
+### 打包形态
+
+```
+webapp/release/win-unpacked/
+├── Stent.exe                 Electron 主进程（本工程的 dist/main）
+├── resources/app.asar        渲染进程产物（React 打包后的 html/js/css）
+└── resources/backend/        PyInstaller 打出来的 Python 后端（Stent.exe + _internal）
+```
+
+两步走：先 `pwsh -File build.ps1` 产出 `dist/Stent`，再 `npm run package:dir`。
+前端不打包 Python 解释器——它只负责把已有的后端当资源塞进去。
+

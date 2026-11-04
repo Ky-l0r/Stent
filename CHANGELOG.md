@@ -24,6 +24,23 @@
 - `tests/selftest_api.py`：起真服务打 43 项断言（鉴权、静态资源、配置、画像、检查、边界），
   不需要窗口、不联网。
 
+### 新增：Electron 客户端（webapp/）
+
+第三套壳，与 pywebview 版共用同一个 Python 后端与同一组接口：
+
+- **独立工程** `webapp/`：Electron 33 + React 19 + TypeScript + Vite 6 + electron-builder，
+  渲染进程五个页面（热点 / 创作 / 发布 / 画像 / 设置）从原生 JS 重写为 React 组件。
+- **主进程托管后端**：自动挑空闲端口、生成随机令牌、`spawn` 后端、轮询 `/api/health`
+  等就绪、退出时用 `taskkill /T` 杀进程树（PyInstaller 的引导器会留下子进程）。
+- **令牌不再注入 HTML**：主进程生成 → 命令行传给后端 → 预加载脚本经 IPC 交给渲染进程。
+- **后端配合改造**：新增 `--headless`（只跑服务）与 `--token`（外部指定令牌）；
+  接口层补 CORS，放行 `file://` 与 Vite dev 源，否则带自定义头的请求会被预检拦下。
+- **打包**：`electronDist` 复用 node_modules 里的 Electron（不联网下载），
+  `extraResources` 把 `dist/Stent` 塞进 `resources/backend/`；产物为免安装目录版，
+  实测 484MB（Electron 运行时 + Python 后端 + 依赖）。
+- 关掉 `signAndEditExecutable`：本机没有签名证书，开着会去解压 winCodeSign，
+  在无符号链接权限的机器上直接失败。
+
 ### 其他
 
 - 打包配置补上 `stent/web` 静态资源与 `stent.api` / `stent.webapp` / `pywebview` 的收集项，

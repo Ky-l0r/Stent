@@ -486,7 +486,7 @@ def publish_prepare(request: Request) -> Response:
 # --------------------------------------------------------------------------
 # 路由注册
 # --------------------------------------------------------------------------
-def build_app(*, host: str = "127.0.0.1", port: int = 0) -> ApiServer:
+def build_app(*, host: str = "127.0.0.1", port: int = 0, token: str | None = None) -> ApiServer:
     """构造并注册全部路由。
 
     ``db.init()`` 在这里调一次：Qt 版是在 ``app.main()`` 里初始化的，
@@ -494,7 +494,7 @@ def build_app(*, host: str = "127.0.0.1", port: int = 0) -> ApiServer:
     该方法是幂等的（建表用 IF NOT EXISTS + 显式迁移）。
     """
     db.init()
-    app = ApiServer(host=host, port=port)
+    app = ApiServer(host=host, port=port, token=token)
 
     app.route("GET", "/api/health")(health)
     app.route("GET", "/api/meta")(meta)

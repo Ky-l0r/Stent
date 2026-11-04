@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.stent.app",
+  "productName": "Stent",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "package.json",
+    "dist/main/**/*",
+    "dist/preload/**/*",
+    "dist/renderer/**/*"
+  ],
+  "asar": true,
+  "compression": "store",
+  "electronDist": "node_modules/electron/dist",
+  "extraResources": [
+    {
+      "from": "../dist/Stent",
+      "to": "backend",
+      "filter": [
+        "**/*"
+      ]
+    }
+  ],
+  "win": {
+    "target": [
+      "dir"
+    ],
+    "signAndEditExecutable": false
+  }
+}
