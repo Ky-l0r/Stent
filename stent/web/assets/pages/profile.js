@@ -1,7 +1,7 @@
 // 账号画像：六维表单 + 完整度 + 记忆回流。
 
 import { api } from "../api.js";
-import { esc, setStatus, toast } from "../ui.js";
+import { confirmDialog, esc, setBusy, setStatus, toast } from "../ui.js";
 
 let data = null;
 
@@ -36,7 +36,7 @@ function render(root, ctx) {
 
     <div class="card">
       <progress id="bar" max="100" value="${data.completeness}" style="width:100%;height:6px"></progress>
-      <p class="card__hint" style="margin-top:8px">${data.missing.length ? `还缺：${data.missing.join("、")}` : "六个维度都填好了"}</p>
+      <p class="card__hint" style="margin-top:8px">${(data.missing || []).length ? `还缺：${esc((data.missing || []).join("、"))}` : "六个维度都填好了"}</p>
     </div>
 
     <div class="card">
@@ -86,13 +86,14 @@ function render(root, ctx) {
     </div>
   `;
 
-  root.querySelector("#save").addEventListener("click", async () => {
+  root.querySelector("#save").addEventListener("click", async (event) => {
     const payload = {};
     root.querySelectorAll("[data-dim]").forEach((box) => {
       const key = box.dataset.dim;
       const raw = box.value.trim();
       payload[key] = key === "platforms" ? raw.split(/[、,，\n]+/).map((s) => s.trim()).filter(Boolean) : raw;
     });
+    setBusy(event.target, true, "保存中…");
     try {
       data = await api.put("/api/profile", payload);
       setStatus("画像已保存", "ok");
@@ -100,49 +101,73 @@ function render(root, ctx) {
       render(root, ctx);
     } catch (err) {
       toast(err.message, "error", 5000);
+    } finally {
+      setBusy(event.target, false);
     }
   });
 
   root.querySelector("#draft").addEventListener("click", async (event) => {
     const text = root.querySelector("#intro").value.trim();
     if (!text) return toast("先粘贴一段自我介绍", "warn");
-    event.target.disabled = true;
-    event.target.textContent = "生成中…";
+    setBusy(event.target, true, "生成中…");
     try {
       const res = await api.post("/api/profile/draft", { text });
+      let filled = 0;
       Object.entries(res.draft || {}).forEach(([key, value]) => {
         const box = root.querySelector(`[data-dim="${key}"]`);
-        if (box) box.value = value;
+        if (!box) return;
+        box.value = Array.isArray(value) ? value.join("、") : value;
+        filled += 1;
       });
-      toast("草稿已填入表单，确认后点保存", "ok", 2600);
+      toast(
+        filled ? `已填入 ${filled} 个维度，确认后点保存` : "模型没有给出可用的画像字段，换个说法再试",
+        filled ? "ok" : "warn",
+        3000
+      );
     } catch (err) {
       toast(err.message, "error", 6000);
     } finally {
-      event.target.disabled = false;
-      event.target.textContent = "生成草稿";
+      setBusy(event.target, false);
     }
   });
 
-  root.querySelector("#memory-add").addEventListener("click", async () => {
+  const addMemory = async (event) => {
     const input = root.querySelector("#memory-input");
     const text = input.value.trim();
-    if (!text) return;
+    if (!text) return input.focus();
+    setBusy(event.target, true, "追加中…");
     try {
       data = await api.post("/api/profile/memory", { text });
       render(root, ctx);
       toast("已追加", "ok", 1500);
     } catch (err) {
       toast(err.message, "error", 5000);
+    } finally {
+      setBusy(event.target, false);
     }
+  };
+  root.querySelector("#memory-add").addEventListener("click", addMemory);
+  root.querySelector("#memory-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addMemory(event);
   });
 
-  root.querySelector("#memory-clear").addEventListener("click", async () => {
+  root.querySelector("#memory-clear").addEventListener("click", async (event) => {
+    const ok = await confirmDialog({
+      title: "清空记忆",
+      message: "记忆会作为创作时的高优先级上下文，清空后无法恢复。确定要清空吗？",
+      confirmText: "清空",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(event.target, true, "清空中…");
     try {
       data = await api.del("/api/profile/memory");
       render(root, ctx);
       toast("记忆已清空", "ok", 1500);
     } catch (err) {
       toast(err.message, "error", 5000);
+    } finally {
+      setBusy(event.target, false);
     }
   });
 }

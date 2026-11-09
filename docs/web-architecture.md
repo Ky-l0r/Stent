@@ -1,6 +1,6 @@
 # Web 前端重构架构
 
-> 状态：**P0 骨架已落地，P1 四模块可用，P2/P3 待实施**（见第七章）
+> 状态：**P0 骨架、P1 四模块、P2 发布 / 数据 / 草稿已落地；P3 壳层打磨待实施**（见第七章）
 > 本文回答三件事：整体架构长什么样、前后端各自负责什么、从 PySide6 迁过来哪些地方最容易翻车。
 
 ---
@@ -135,8 +135,33 @@ pywebview 自带 `js_api` 可以把 Python 函数直接暴露给 JS，省掉一�
 | POST | `/api/create/stream` | 流式创作（**SSE**） |
 | POST | `/api/create/titles` | 基于正文重生标题 |
 | POST | `/api/create/quality` | 质量自检打分 |
+| GET | `/api/drafts` | 草稿列表（`?query=&platform=&limit=`） |
+| GET | `/api/drafts/get` | 读取单篇草稿（`?id=`） |
+| POST | `/api/drafts` | 新建 / 更新草稿（带 `id` 即更新） |
+| DELETE | `/api/drafts` | 删除草稿（`?id=`） |
 | GET | `/api/publish/platforms` | 发布平台与限制 |
 | POST | `/api/publish/prepare` | 格式适配 + 发布前检查 + 预览 |
+| GET | `/api/publish/env` | 浏览器内核 / 各平台适配器可用性 |
+| POST | `/api/publish/install` | 一键安装发布环境（**任务**） |
+| POST | `/api/publish/login` | 检测登录 / 打开登录窗口（**任务**） |
+| POST | `/api/publish/start` | 填写表单或直接发布（**任务**，必须 `confirmed=true`） |
+| GET | `/api/publish/history` | 发布记录 |
+| POST | `/api/publish/mark` | 人工回填：已发布 / 失败 / 取消 |
+| GET | `/api/publish/logs` | 发布审计日志 |
+| GET | `/api/analytics/overview` | 汇总 + 平台分布 + 可登记平台 |
+| GET | `/api/analytics/trend` | 按天趋势（`?metric=&cumulative=`） |
+| GET | `/api/analytics/rank` | 内容排行（`?by=&limit=`） |
+| GET | `/api/analytics/posts` | 作品记录（含指标快照） |
+| POST | `/api/analytics/posts` | 登记平台上已有的作品（返回同步**任务**） |
+| DELETE | `/api/analytics/posts` | 删除作品记录及其指标（`?id=`） |
+| POST | `/api/analytics/sync` | 增量同步指标（**任务**） |
+| POST | `/api/analytics/attribute` | 归因回流，写入画像记忆（**任务**） |
+| GET | `/api/jobs` | 查询任务状态（`?id=`） |
+| POST | `/api/jobs/cancel` | 请求取消任务 |
+
+「**任务**」= 接口立刻返回 `{"job": {...}}`，前端按 1 秒一次轮询 `/api/jobs?id=`。
+路由表是静态的（不做路径参数），带 id 的操作用查询参数或请求体传，
+这样路由解析保持一张显式的表，排查时一眼能看到全部端点。
 
 ### SSE 事件格式
 
@@ -166,20 +191,27 @@ data: {"message":"模型返回了空内容"}
 
 | 原 Qt 页面 | Web 页面 | 说明 |
 | --- | --- | --- |
-| `pages/hotsearch.py` | `#/hot` | 保留平台筛选 + 垂类 + 双击送创作 |
-| `pages/create.py` | `#/create` | 三栏简化为「输入 / 生成中 / 结果」单列 + 侧栏，去掉多平台批量 |
-| `pages/publish.py` | `#/publish` | P0 只做「适配 + 检查 + 预览」，真正提交留到 P2 |
-| `pages/analytics.py` | `#/analytics` | P2 |
+| `pages/hotsearch.py` | `#/hot` | 保留平台筛选 + 垂类 + 双击送创作，补上失败重试与逐平台错误 |
+| `pages/create.py` | `#/create` | 三栏简化为「输入 / 生成中 / 结果」单列 + 侧栏，去掉多平台批量；补存草稿、草稿恢复、平台上限提示 |
+| —（Qt 无独立页面） | `#/drafts` | 草稿箱：检索、载入创作、送发布、删除；侧栏显示篇数角标 |
+| `pages/publish.py` | `#/publish` | 登录检测 → 检查预览 → 人工确认 → 填写 / 直接发布；发布记录可回填状态 |
+| `pages/analytics.py` | `#/analytics` | 概览、趋势、平台分布、排行、作品登记 / 删除、指标同步、归因回流 |
 | `pages/profile.py` | `#/profile` | 六维表单 + 完整度 |
-| `pages/settings.py` | `#/settings` | LLM 三件套 + 主题 |
-| `pages/onboarding.py` | 首启遮罩 | 未配置 LLM 时在创作页顶部提示 |
+| `pages/settings.py` | `#/settings` | LLM 三件套 + 主题 + 清除密钥 |
+| `pages/onboarding.py` | 首启提示 | 未配置 LLM 时在创作页顶部提示 |
 
 **刻意精简的地方**（用户已确认"适当精简优化"）：
 
 - 创作页不再一次出多平台版本，保留单平台；多平台是低频操作，且会让页面复杂度翻倍。
-- 发布页去掉四步向导条，改成左「检查清单」右「预览」两栏（原版在 720p 下就压叠过）。
+- 发布页去掉四步向导条，改成左「内容」右「检查 / 预览 / 记录」两栏（原版在 720p 下就压叠过）。
 - 状态指示灯从每页常驻改为顶栏一个全局指示器：页面切换时不再各自维护状态。
 - 热点页去掉右键菜单，改为行尾图标（复制 / 打开原链接）。
+
+**发布页的红线没有变**，只是把 Qt 的弹窗换成了网页里的确认：
+
+1. 必须勾选「我已核对」+ 接口校验 `confirmed=true`，两道都在，缺一不发；
+2. 默认按钮是 `dry_run`：只填表、浏览器保持打开，最后由用户在页面里点发布；
+3. 「直接发布」收在二次确认弹窗里，需要额外勾选风险知情，没有批量、没有定时、没有全自动。
 
 ---
 
@@ -244,6 +276,20 @@ Qt 版大量 `self.ctx.toast(...)`。Web 侧统一 `toast(message, level)`，
 前端不要再包装成"请求失败，请重试"——那会把"API Base URL 少写了 /v1"这类
 关键提示吞掉。
 
+### 6.9 长任务与状态反馈
+
+发布、同步指标、归因、安装内核都可能跑几分钟，因此拆成「接口立即返回 + 任务轮询」：
+
+- `stent/api/jobs.py` 是进程内的任务表：工作线程跑 `fn(job)`，任务状态
+  `running / done / error / cancelled` 由它维护，最多保留 48 条、终态两小时回收。
+- 页面用 `watchJob(id)` 轮询（`stent/web/assets/api.js`），返回的 Promise 额外带
+  `cancel()`（请求服务端停手）与 `stop()`（只停轮询）。
+  **切页只能 `stop()`，不能 `cancel()`**——发布可能正停在浏览器里等用户确认。
+- 每条异步链路都要有四种反馈：加载中（按钮忙碌态 / 骨架）、成功（toast + 结论）、
+  失败（服务端原文 + 可重试入口）、空状态（说明为什么空、下一步去哪）。
+- 页面模块用 `ctx.onLeave(fn)` 注册清理：停轮询、中断流式生成、把 `active` 置 false，
+  避免几秒后才回来的响应去改全局状态灯或往已卸载的 DOM 里写东西。
+
 ---
 
 ## 七、实施阶段
@@ -252,10 +298,10 @@ Qt 版大量 `self.ctx.toast(...)`。Web 侧统一 `toast(message, level)`，
 | --- | --- | --- |
 | P0 | API 骨架（Token、路由、SSE）、壳层、主题变量、四个页面只读 | 已落地 |
 | P1 | 热点 / 创作 / 画像 / 设置 四模块读写打通；SSE 中断 | 已落地 |
-| P2 | 发布中心（含 Playwright 提交）、数据分析、草稿箱 | 待实施 |
+| P2 | 发布中心（登录 + 填写 + 确认提交 + 记录）、数据分析、草稿箱、后台任务轮询 | 已落地 |
 | P3 | 壳层打磨：单实例、托盘、Snap、自动更新；摘除 PySide6 | 待实施 |
 
-P2 之前 **不要删 `stent/ui/`**：它是回退路径，也是行为参照。
+P3 之前 **不要删 `stent/ui/`**：它是回退路径，也是行为参照。
 两边都跑得起来，才能逐页对照视觉与交互差异。
 
 ---
@@ -314,6 +360,12 @@ python tests/ui_web_smoke.py
 - `CORS`：渲染进程的源是 `file://`（Origin 为 `null`）或 `http://localhost:5173`，
   与接口不同源，带 `X-Stent-Token` 的请求必然触发预检。只放行这两类来源，
   安全边界仍是「只绑回环 + 每次校验令牌」。
+
+### React 壳的功能对齐进度
+
+`webapp/src` 目前仍是原先的五个页面（热点 / 创作 / 发布 / 画像 / 设置），
+P2 新增的**草稿箱**与**数据分析**还没有移植过去。接口是共用的，
+补齐时只需要在 `src/pages/` 加两个页面并把 `Route` 联合类型扩两项，后端不用改。
 
 ### 打包形态
 

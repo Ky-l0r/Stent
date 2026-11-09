@@ -108,7 +108,42 @@ def main() -> int:
             )
             page.fill("#topic", "冒烟测试主题")
             check("输入可写入", page.input_value("#topic") == "冒烟测试主题")
+            page.fill("#body", "这是一段用于冒烟测试的正文，先存成草稿，再从草稿箱送发布。")
+            page.click("#save-draft")
+            page.wait_for_timeout(600)
+            check(
+                "草稿保存后按钮变成更新",
+                "更新" in page.inner_text("#save-draft"),
+                page.inner_text("#save-draft"),
+            )
             page.screenshot(path=str(shots / "web-create.png"))
+
+            print("\n=== 草稿箱 ===")
+            page.click('[data-route="drafts"]')
+            page.wait_for_selector("#list-card", timeout=15000)
+            try:
+                page.wait_for_selector(".draft-row", timeout=8000)
+            except Exception:  # noqa: BLE001 - 没渲染出来交给下面的断言报告
+                pass
+            count = page.eval_on_selector_all(".draft-row", "els => els.length")
+            check("草稿出现在列表", count >= 1, str(count))
+            check("草稿行可操作", page.is_visible('[data-act="edit"]'))
+            page.screenshot(path=str(shots / "web-drafts.png"))
+
+            page.click('.draft-row [data-act="edit"]')
+            page.wait_for_selector("#topic", timeout=15000)
+            check("载入草稿恢复主题", page.input_value("#topic") == "冒烟测试主题")
+            check(
+                "载入草稿恢复正文",
+                "冒烟测试" in page.input_value("#body"),
+                page.input_value("#body")[:30],
+            )
+
+            page.click('[data-route="drafts"]')
+            page.wait_for_selector(".draft-row", timeout=15000)
+            page.click('.draft-row [data-act="publish"]')
+            page.wait_for_selector("#body", timeout=15000)
+            check("草稿送发布带过正文", "冒烟测试" in page.input_value("#body"))
 
             print("\n=== 账号画像 ===")
             page.click('[data-route="profile"]')
@@ -132,10 +167,22 @@ def main() -> int:
             page.click('[data-route="publish"]')
             page.wait_for_selector("#body", timeout=15000)
             page.fill("#body", "这是一段用于检查的正文，长度足够触发字数检查以外的规则。")
-            page.click("#check")
-            page.wait_for_selector(".score", timeout=20000)
-            check("检查结果渲染", page.is_visible(".score"))
+            page.click("#prepare")
+            page.wait_for_selector("#result-card .score", timeout=20000)
+            check("检查结果渲染", page.is_visible("#result-card .score"))
+            check(
+                "预览文本可见", page.eval_on_selector(".preview", "el => el.innerText.length") > 10
+            )
+            check("发布记录区域存在", page.is_visible("#history"))
             page.screenshot(path=str(shots / "web-publish.png"))
+
+            print("\n=== 数据分析 ===")
+            page.click('[data-route="analytics"]')
+            page.wait_for_selector(".kpi", timeout=20000)
+            check("指标卡渲染", page.eval_on_selector_all(".kpi", "els => els.length") == 5)
+            check("趋势区域存在", page.is_visible("#chart"))
+            check("作品记录区域存在", page.is_visible("#posts"))
+            page.screenshot(path=str(shots / "web-analytics.png"))
 
             print("\n=== 控制台 ===")
             real = [p for p in problems if "favicon" not in p.lower()]

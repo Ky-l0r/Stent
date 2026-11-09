@@ -18,11 +18,12 @@ from ..config import PROVIDER_PRESETS, config_manager
 from ..config import secrets as secret_store
 from ..core.db import db
 from ..core.llm import LLMClient, LLMError, Message
-from ..platforms import platform_limits
+from ..platforms import platform_label, platform_limits
 from ..services.creator import PLATFORM_STYLES, CreationRequest, CreationResult, creator_service
 from ..services.hotsearch import ALL_PLATFORMS, PLATFORM_LABELS, hotsearch_service
 from ..services.profile import DIMENSIONS, profile_service
-from ..services.publisher import PublishService
+from ..services.publisher import POST_STATUS_LABELS, PublishService, environment_status
+from .jobs import jobs
 from .server import ApiError, ApiServer, Request, Response, StreamResponse
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,20 @@ def _report_dict(report: Any) -> dict[str, Any]:
         "items": items,
         "text": text,
     }
+
+
+def _str_list(value: Any) -> list[str]:
+    """把标签 / 媒体 / 标题候选这类字段收成字符串列表。
+
+    前端应该传数组，但外部调用（curl、脚本）传成字符串时不能按字符拆开——
+    那会把 "小红书" 变成三个标签，排查起来非常费劲。
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
 
 
 def _settings_payload() -> dict[str, Any]:
@@ -446,13 +461,13 @@ def publish_prepare(request: Request) -> Response:
     content = {
         "platform": platform,
         "title": str(data.get("title") or ""),
-        "titles": [str(t) for t in (data.get("titles") or []) if str(t).strip()],
+        "titles": _str_list(data.get("titles")),
         "body": body,
-        "tags": [str(t) for t in (data.get("tags") or []) if str(t).strip()],
+        "tags": _str_list(data.get("tags")),
         "summary": str(data.get("summary") or ""),
         "topic": str(data.get("topic") or ""),
     }
-    media = [str(p) for p in (data.get("media") or []) if str(p).strip()]
+    media = _str_list(data.get("media"))
 
     service = PublishService()
     payload, notes = service.build_payload(content, media=media)
@@ -467,7 +482,7 @@ def publish_prepare(request: Request) -> Response:
     return Response(
         {
             "platform": platform,
-            "label": PLATFORM_LABELS.get(platform, platform),
+            "label": platform_label(platform),
             "preview": service.preview_text(payload, platform),
             "notes": notes,
             "checks": _report_dict(report),
@@ -475,12 +490,617 @@ def publish_prepare(request: Request) -> Response:
             "support_note": (
                 ""
                 if adapter is not None
-                else f"{PLATFORM_LABELS.get(platform, platform)}的自动化适配器暂不可用，"
-                "可复制文案后人工发布"
+                else f"{platform_label(platform)}的自动化适配器暂不可用，可复制文案后人工发布"
             ),
             "limits": _dict(limits),
         }
     )
+
+
+def _int_arg(request: Request, name: str, default: int, low: int, high: int) -> int:
+    """读取整数查询参数；非法值直接给中文 400，而不是静默用默认值。"""
+    raw = request.q(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ApiError(f"{name} 必须是整数") from None
+    return max(low, min(high, value))
+
+
+# --------------------------------------------------------------------------
+# 草稿箱（contents 表里 status='draft' 的记录）
+# --------------------------------------------------------------------------
+#: 草稿可写字段。``status`` 不在这里：由接口根据动作决定，前端不能把草稿改成已发布。
+_DRAFT_TEXT_FIELDS = ("topic", "platform", "title", "body", "summary", "extra")
+
+
+def _content_row(row: dict[str, Any]) -> dict[str, Any]:
+    """contents 行 → 前端用的草稿结构。"""
+    body = str(row.get("body") or "")
+    return {
+        "id": int(row.get("id") or 0),
+        "topic": row.get("topic") or "",
+        "platform": row.get("platform") or "",
+        "platform_label": platform_label(row.get("platform") or ""),
+        "title": row.get("title") or "",
+        "titles": list(row.get("titles") or []),
+        "body": body,
+        "excerpt": body.strip().replace("\n", " ")[:80],
+        "summary": row.get("summary") or "",
+        "tags": list(row.get("tags") or []),
+        "media": list(row.get("media") or []),
+        "extra": row.get("extra") or "",
+        "params": row.get("params") or {},
+        "status": row.get("status") or "draft",
+        "source": row.get("source") or "manual",
+        "created_at": row.get("created_at") or "",
+        "updated_at": row.get("updated_at") or "",
+        "chars": len(body),
+    }
+
+
+def _draft_fields(data: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key in _DRAFT_TEXT_FIELDS:
+        if key in data:
+            fields[key] = str(data.get(key) or "")
+    for key in ("titles", "tags", "media"):
+        if key in data:
+            fields[key] = _str_list(data.get(key))
+    if "params" in data and isinstance(data.get("params"), dict):
+        fields["params"] = data["params"]
+    return fields
+
+
+def drafts_list(request: Request) -> Response:
+    """草稿列表。``?status=draft`` 只看草稿；默认也是草稿，避免把已发布的混进来。"""
+    status = request.q("status") or "draft"
+    limit = _int_arg(request, "limit", 200, 1, 500)
+    rows = [_content_row(r) for r in db.list_contents(status=status, limit=500)]
+    keyword = request.q("query").strip().lower()
+    platform = request.q("platform").strip()
+    if platform:
+        rows = [r for r in rows if r["platform"] == platform]
+    if keyword:
+        rows = [
+            r
+            for r in rows
+            if keyword in f"{r['topic']} {r['title']} {r['excerpt']} {' '.join(r['tags'])}".lower()
+        ]
+    return Response({"items": rows[:limit], "total": len(rows), "status": status})
+
+
+def drafts_get(request: Request) -> Response:
+    content_id = _int_arg(request, "id", 0, 0, 1 << 30)
+    if not content_id:
+        raise ApiError("缺少草稿 id")
+    row = db.get_content(content_id)
+    if row is None:
+        raise ApiError("草稿不存在，可能已被删除", status=404, code="not_found")
+    return Response({"draft": _content_row(row)})
+
+
+def drafts_save(request: Request) -> Response:
+    """新建或更新草稿。带 ``id`` 即更新，否则新建。"""
+    data = request.json()
+    fields = _draft_fields(data)
+    if not fields.get("body", "").strip() and not fields.get("topic", "").strip():
+        raise ApiError("草稿至少要有主题或正文，否则存下来也没法用")
+
+    content_id = 0
+    try:
+        content_id = int(data.get("id") or 0)
+    except (TypeError, ValueError):
+        raise ApiError("id 必须是整数") from None
+
+    if content_id:
+        existing = db.get_content(content_id)
+        if existing is None:
+            raise ApiError("草稿不存在，可能已被删除；请另存为新草稿", status=404, code="not_found")
+        db.update_content(content_id, **fields)
+    else:
+        payload = {**fields}
+        payload.setdefault("status", "draft")
+        payload["status"] = "draft"
+        payload.setdefault("source", "manual")
+        content_id = db.create_content(**payload)
+
+    row = db.get_content(content_id)
+    if row is None:  # pragma: no cover - 写后读不回来属于存储异常
+        raise ApiError("草稿保存后读不回来，请检查数据目录权限", status=500)
+    return Response({"draft": _content_row(row), "created": not bool(data.get("id"))})
+
+
+def drafts_delete(request: Request) -> Response:
+    content_id = _int_arg(request, "id", 0, 0, 1 << 30)
+    if not content_id:
+        raise ApiError("缺少草稿 id")
+    if db.get_content(content_id) is None:
+        raise ApiError("草稿不存在，可能已被删除", status=404, code="not_found")
+    db.delete_content(content_id)
+    return Response({"ok": True, "id": content_id})
+
+
+# --------------------------------------------------------------------------
+# 数据分析
+# --------------------------------------------------------------------------
+def _analytics():
+    """惰性构造：analytics 模块体积不小，冷启动路径上不必提前加载。"""
+    from ..services.analytics import AnalyticsService  # noqa: PLC0415
+
+    return AnalyticsService()
+
+
+def _metric_summary(row: dict[str, Any]) -> dict[str, Any]:
+    latest = db.latest_metric(int(row.get("id") or 0)) or {}
+    return {
+        "views": int(latest.get("views") or 0),
+        "likes": int(latest.get("likes") or 0),
+        "comments": int(latest.get("comments") or 0),
+        "collects": int(latest.get("collects") or 0),
+        "shares": int(latest.get("shares") or 0),
+        "captured_at": latest.get("captured_at") or "",
+    }
+
+
+def analytics_overview(request: Request) -> Response:
+    days = _int_arg(request, "days", 30, 1, 3650)
+    platform = request.q("platform").strip() or None
+    service = _analytics()
+    return Response(
+        {
+            "days": days,
+            "platform": platform,
+            "overview": _dict(service.overview(days=days, platform=platform)),
+            "breakdown": _dict(service.platform_breakdown(days=days)),
+            "importable_platforms": [
+                {"key": key, "label": platform_label(key)} for key in service.importable_platforms()
+            ],
+            "llm_ready": config_manager.ready(),
+        }
+    )
+
+
+def analytics_trend(request: Request) -> Response:
+    days = _int_arg(request, "days", 30, 1, 3650)
+    platform = request.q("platform").strip() or None
+    metric = request.q("metric") or "views"
+    cumulative = request.q("cumulative", "1").lower() not in {"0", "false", "no"}
+    try:
+        series = _analytics().trend(
+            days=days, platform=platform, metric=metric, cumulative=cumulative
+        )
+    except ValueError as exc:
+        raise ApiError(str(exc)) from None
+    return Response({"series": series, "days": days, "metric": metric, "cumulative": cumulative})
+
+
+def analytics_rank(request: Request) -> Response:
+    days = _int_arg(request, "days", 30, 1, 3650)
+    limit = _int_arg(request, "limit", 20, 1, 200)
+    by = request.q("by") or "engagement"
+    try:
+        items = _analytics().rank_contents(days=days, by=by, limit=limit)
+    except ValueError as exc:
+        raise ApiError(str(exc)) from None
+    rows = _dict(items)
+    for row in rows:
+        row["platform_label"] = platform_label(row.get("platform") or "")
+    return Response({"items": rows, "days": days, "by": by})
+
+
+def analytics_posts(request: Request) -> Response:
+    """作品记录（含未同步到指标的），供数据分析页管理与登记。"""
+    limit = _int_arg(request, "limit", 100, 1, 500)
+    platform = request.q("platform").strip() or None
+    status = request.q("status").strip() or None
+    rows = db.list_posts(status=status, platform=platform, limit=limit)
+    items = []
+    for row in rows:
+        status_key = str(row.get("status") or "")
+        items.append(
+            {
+                "id": int(row.get("id") or 0),
+                "platform": row.get("platform") or "",
+                "platform_label": platform_label(row.get("platform") or ""),
+                "title": row.get("title") or "",
+                "url": row.get("url") or "",
+                "status": status_key,
+                "status_label": POST_STATUS_LABELS.get(status_key, status_key or "未知"),
+                "error": row.get("error") or "",
+                "published_at": row.get("published_at") or "",
+                "created_at": row.get("created_at") or "",
+                "last_synced": row.get("last_synced") or "",
+                "metrics": _metric_summary(row),
+            }
+        )
+    return Response({"items": items, "total": len(items)})
+
+
+def analytics_register(request: Request) -> Response:
+    """登记一条平台上已有的作品，并顺手拉一次指标（后台任务）。"""
+    data = request.json()
+    url = str(data.get("url") or "").strip()
+    if not url:
+        raise ApiError("请填写作品链接")
+    service = _analytics()
+    result = service.register_post(
+        url,
+        platform=str(data.get("platform") or "").strip(),
+        title=str(data.get("title") or "").strip(),
+    )
+    if not result.get("ok"):
+        raise ApiError(str(result.get("message") or "登记失败"))
+
+    post_id = int(result.get("post_id") or 0)
+    job_payload = None
+    if post_id:
+        job = jobs.start(
+            "analytics",
+            "拉取作品指标",
+            lambda current: service.sync_one(post_id),
+            message="正在打开平台页面读取指标…",
+        )
+        job_payload = job.snapshot(with_result=False)
+    return Response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "message": result.get("message") or "已登记",
+            "duplicated": bool(result.get("duplicated")),
+            "job": job_payload,
+        }
+    )
+
+
+def analytics_delete_post(request: Request) -> Response:
+    post_id = _int_arg(request, "id", 0, 0, 1 << 30)
+    if not post_id:
+        raise ApiError("缺少记录 id")
+    result = _analytics().delete_post(post_id)
+    if not result.get("ok"):
+        raise ApiError(str(result.get("message") or "删除失败"))
+    return Response({"ok": True, "id": post_id})
+
+
+def analytics_sync(request: Request) -> Response:
+    """增量同步指标。开浏览器逐条访问，必须放后台任务。"""
+    data = request.json()
+    force = bool(data.get("force"))
+    platforms = _str_list(data.get("platforms")) or None
+    service = _analytics()
+
+    def work(job) -> dict[str, Any]:
+        def on_progress(message: str, percent: int = -1) -> None:
+            job.progress(message, percent)
+
+        result = service.sync_metrics(platforms=platforms, force=force, on_progress=on_progress)
+        synced = int(result.get("synced") or 0)
+        failed = int(result.get("failed") or 0)
+        skipped = int(result.get("skipped") or 0)
+        job.message = f"同步完成：成功 {synced} 条，失败 {failed} 条，跳过 {skipped} 条"
+        return result
+
+    job = jobs.start("analytics", "同步指标", work, message="正在准备同步…")
+    return Response({"job": job.snapshot(with_result=False)})
+
+
+def analytics_attribute(request: Request) -> Response:
+    """归因回流：分析 Top / Bottom 内容并写入画像记忆（LLM 可能较慢，走任务）。"""
+    data = request.json()
+    try:
+        days = max(1, min(int(data.get("days") or 30), 3650))
+    except (TypeError, ValueError):
+        raise ApiError("days 必须是整数") from None
+    persist = data.get("persist", True) is not False
+    service = _analytics()
+
+    def work(job) -> dict[str, Any]:
+        result = service.attribute(
+            days=days,
+            persist=persist,
+            on_progress=lambda message, percent=-1: job.progress(message, percent),
+        )
+        job.message = str(
+            result.get("message") or ("归因完成" if result.get("ok") else "归因未完成")
+        )
+        return result
+
+    job = jobs.start("analytics", "归因回流", work, message="正在分析表现最好与最差的内容…")
+    return Response({"job": job.snapshot(with_result=False)})
+
+
+# --------------------------------------------------------------------------
+# 发布中心（P2：登录、填写、确认发布、发布记录）
+# --------------------------------------------------------------------------
+def _publish_service() -> PublishService:
+    return PublishService()
+
+
+def _env_payload() -> dict[str, Any]:
+    status = environment_status()
+    rows = []
+    for entry in PublishService.platforms():
+        rows.append(
+            {
+                "key": entry.get("key", ""),
+                "label": entry.get("label", ""),
+                "available": bool(entry.get("available")),
+                "needs_media": bool(entry.get("needs_media")),
+            }
+        )
+    return {
+        "ready": bool(status.ready),
+        "code": status.code,
+        "title": status.title,
+        "detail": status.detail,
+        "size_hint": status.size_hint,
+        "platforms": rows,
+    }
+
+
+def publish_env(request: Request) -> Response:
+    """发布运行环境 + 各平台可用性。只做文件系统探测，可以直接同步返回。"""
+    return Response(_env_payload())
+
+
+def publish_login(request: Request) -> Response:
+    """登录态检测 / 打开登录窗口。都要开浏览器，统一走后台任务。"""
+    data = request.json()
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise ApiError("请选择目标平台")
+    action = str(data.get("action") or "check")
+    if action not in {"check", "login", "logout"}:
+        raise ApiError(f"不支持的操作：{action}")
+    service = _publish_service()
+
+    def work(job) -> dict[str, Any]:
+        if action == "check":
+            job.message = "正在检测登录状态…"
+            ok, message = service.check_login(platform)
+            job.message = message or ("已登录" if ok else "未登录")
+            return {"ok": ok, "message": message, "action": action}
+        if action == "logout":
+            job.message = "正在退出登录…"
+            ok, message = service.logout(platform)
+            return {"ok": ok, "message": message, "action": action}
+        job.message = f"请在弹出的浏览器窗口中完成{platform_label(platform)}登录…"
+        ok, message = service.login(platform)
+        job.message = message or ("登录成功" if ok else "登录未完成")
+        return {"ok": ok, "message": message, "action": action}
+
+    label = {"check": "检测登录", "login": "登录", "logout": "退出登录"}[action]
+    job = jobs.start("publish", f"{label}·{platform_label(platform)}", work, message="准备中…")
+    return Response({"job": job.snapshot(with_result=False)})
+
+
+def publish_install(request: Request) -> Response:
+    """一键安装发布环境（Playwright 组件 + Chromium 内核）。
+
+    下载约 150MB，必须后台跑；进度与失败原因都通过任务状态回传，
+    前端据此显示「正在下载内核 40%」而不是干等。
+    """
+    service = _publish_service()
+    if jobs.running("publish"):
+        raise ApiError("已有发布相关任务在进行，请等它结束", status=409, code="busy")
+
+    def work(job) -> dict[str, Any]:
+        ok, message = service.install_environment(
+            on_progress=lambda msg, percent=-1: job.progress(msg, percent),
+            cancel=job.cancel,
+        )
+        job.message = message
+        return {"ok": ok, "message": message, "env": _env_payload()}
+
+    job = jobs.start("publish", "配置发布环境", work, message="正在准备安装…")
+    return Response({"job": job.snapshot(with_result=False)})
+
+
+def publish_start(request: Request) -> Response:
+    """检查通过后执行发布。
+
+    两条硬约束（与 Qt 版一致，也是产品红线）：
+
+    1. 必须带 ``confirmed=true``，否则直接拒绝——Stent 不提供静默自动发布；
+    2. ``dry_run`` 默认 **true**：只填表停在最后一步，由用户在浏览器里确认提交。
+       真要直接提交必须在前端显式选择，并且仍然带 ``confirmed``。
+    """
+    data = request.json()
+    if not data.get("confirmed"):
+        db.log_action("", "denied", "Web 发布缺少人工确认，已拒绝")
+        raise ApiError(
+            "发布需要人工确认：请先勾选「我已核对内容」再执行",
+            status=400,
+            code="not_confirmed",
+        )
+
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise ApiError("请选择目标平台")
+    body = str(data.get("body") or "").strip()
+    if not body:
+        raise ApiError("正文为空，先创作或粘贴内容")
+    dry_run = data.get("dry_run", True) is not False
+
+    existing = jobs.running("publish")
+    if any(job.label.startswith(("填写", "发布")) for job in existing):
+        raise ApiError("已有一个发布任务在进行，请等它结束或先取消", status=409, code="busy")
+
+    fields: dict[str, Any] = {
+        "topic": str(data.get("topic") or ""),
+        "platform": platform,
+        "title": str(data.get("title") or ""),
+        "titles": _str_list(data.get("titles")),
+        "body": body,
+        "summary": str(data.get("summary") or ""),
+        "tags": _str_list(data.get("tags")),
+        "status": "ready",
+    }
+    content_id = 0
+    try:
+        content_id = int(data.get("content_id") or 0)
+    except (TypeError, ValueError):
+        raise ApiError("content_id 必须是整数") from None
+
+    if content_id and db.get_content(content_id) is None:
+        content_id = 0  # 草稿被别处删了：不报错，重新落一条，避免用户白填
+    if content_id:
+        db.update_content(content_id, **fields)
+    else:
+        content_id = db.create_content(source="web", **fields)
+
+    media = _str_list(data.get("media"))
+    service = _publish_service()
+    try:
+        preparation = service.prepare(content_id, platform, media=media, overwrite_platform=True)
+    except Exception as exc:  # noqa: BLE001 - 准备失败要变成可读 400/500
+        log.exception("发布准备失败")
+        raise ApiError(f"发布准备失败：{exc}", status=500, code="prepare_failed") from exc
+
+    def work(job) -> dict[str, Any]:
+        outcome = service.publish(
+            preparation,
+            confirmed=True,
+            dry_run=dry_run,
+            on_progress=lambda msg, percent=-1: job.progress(msg, percent),
+            cancel=job.cancel,
+        )
+        job.message = outcome.message or ("已完成" if outcome.ok else "发布未完成")
+        detail = dict(outcome.detail or {})
+        warnings = [str(w) for w in (detail.get("warnings") or []) if str(w).strip()]
+        return {
+            "ok": bool(outcome.ok),
+            "platform": outcome.platform,
+            "platform_label": platform_label(outcome.platform),
+            "post_id": int(outcome.post_id or 0),
+            "url": outcome.url or "",
+            "message": outcome.message or "",
+            "dry_run": bool(outcome.dry_run),
+            "warnings": warnings,
+            "content_id": content_id,
+        }
+
+    label = f"填写·{platform_label(platform)}" if dry_run else f"发布·{platform_label(platform)}"
+    job = jobs.start("publish", label, work, message="正在打开浏览器…")
+    return Response(
+        {
+            "job": job.snapshot(with_result=False),
+            "content_id": content_id,
+            "platform": platform,
+            "label": platform_label(platform),
+            "dry_run": dry_run,
+            "supported": preparation.supported,
+            "passed": preparation.passed,
+            "preview": preparation.preview,
+            "checks": _report_dict(preparation.report) if preparation.report else None,
+            "notes": list(preparation.adapted_notes),
+            "support_note": preparation.support_note,
+        }
+    )
+
+
+def publish_history(request: Request) -> Response:
+    limit = _int_arg(request, "limit", 100, 1, 500)
+    platform = request.q("platform").strip() or None
+    rows = PublishService().history(platform=platform, limit=limit)
+    items = []
+    for row in rows:
+        status_key = str(row.get("status") or "")
+        items.append(
+            {
+                "id": int(row.get("id") or 0),
+                "platform": row.get("platform") or "",
+                "platform_label": platform_label(row.get("platform") or ""),
+                "title": row.get("title") or "",
+                "url": row.get("url") or "",
+                "status": status_key,
+                "status_label": POST_STATUS_LABELS.get(status_key, status_key or "未知"),
+                "error": row.get("error") or "",
+                "published_at": row.get("published_at") or "",
+                "created_at": row.get("created_at") or "",
+                "last_synced": row.get("last_synced") or "",
+            }
+        )
+    return Response({"items": items, "total": len(items)})
+
+
+def publish_mark(request: Request) -> Response:
+    """用户在浏览器里完成（或放弃）后，回来更新记录状态。"""
+    data = request.json()
+    try:
+        post_id = int(data.get("post_id") or 0)
+    except (TypeError, ValueError):
+        raise ApiError("post_id 必须是整数") from None
+    if not post_id:
+        raise ApiError("缺少记录 id")
+    if db.get_post(post_id) is None:
+        raise ApiError("记录不存在", status=404, code="not_found")
+    action = str(data.get("action") or "published")
+    service = PublishService()
+    if action == "published":
+        service.mark_published_manually(post_id, url=str(data.get("url") or "").strip())
+    elif action == "failed":
+        service.mark_failed_manually(post_id, reason=str(data.get("reason") or "").strip())
+    elif action == "cancelled":
+        service.cancel_post(post_id, reason=str(data.get("reason") or "").strip())
+    else:
+        raise ApiError(f"不支持的操作：{action}")
+    row = db.get_post(post_id) or {}
+    return Response(
+        {
+            "ok": True,
+            "post": {
+                "id": post_id,
+                "status": row.get("status") or "",
+                "status_label": POST_STATUS_LABELS.get(
+                    str(row.get("status") or ""), str(row.get("status") or "")
+                ),
+                "url": row.get("url") or "",
+            },
+        }
+    )
+
+
+def publish_logs(request: Request) -> Response:
+    limit = _int_arg(request, "limit", 100, 1, 500)
+    rows = PublishService().logs(limit=limit)
+    return Response(
+        {
+            "items": [
+                {
+                    "id": int(row.get("id") or 0),
+                    "platform": row.get("platform") or "",
+                    "platform_label": platform_label(row.get("platform") or ""),
+                    "action": row.get("action") or "",
+                    "detail": row.get("detail") or "",
+                    "post_id": row.get("post_id"),
+                    "created_at": row.get("created_at") or "",
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
+# --------------------------------------------------------------------------
+# 后台任务
+# --------------------------------------------------------------------------
+def job_get(request: Request) -> Response:
+    job = jobs.get(request.q("id"))
+    if job is None:
+        raise ApiError("任务不存在或已过期", status=404, code="not_found")
+    return Response({"job": job.snapshot()})
+
+
+def job_cancel(request: Request) -> Response:
+    data = request.json()
+    job = jobs.cancel(str(data.get("id") or ""))
+    if job is None:
+        raise ApiError("任务不存在或已过期", status=404, code="not_found")
+    return Response({"job": job.snapshot(with_result=False)})
 
 
 # --------------------------------------------------------------------------
@@ -517,5 +1137,34 @@ def build_app(*, host: str = "127.0.0.1", port: int = 0, token: str | None = Non
 
     app.route("GET", "/api/publish/platforms")(publish_platforms)
     app.route("POST", "/api/publish/prepare")(publish_prepare)
+
+    # 草稿箱
+    app.route("GET", "/api/drafts")(drafts_list)
+    app.route("GET", "/api/drafts/get")(drafts_get)
+    app.route("POST", "/api/drafts")(drafts_save)
+    app.route("DELETE", "/api/drafts")(drafts_delete)
+
+    # 数据分析
+    app.route("GET", "/api/analytics/overview")(analytics_overview)
+    app.route("GET", "/api/analytics/trend")(analytics_trend)
+    app.route("GET", "/api/analytics/rank")(analytics_rank)
+    app.route("GET", "/api/analytics/posts")(analytics_posts)
+    app.route("POST", "/api/analytics/posts")(analytics_register)
+    app.route("DELETE", "/api/analytics/posts")(analytics_delete_post)
+    app.route("POST", "/api/analytics/sync")(analytics_sync)
+    app.route("POST", "/api/analytics/attribute")(analytics_attribute)
+
+    # 发布中心
+    app.route("GET", "/api/publish/env")(publish_env)
+    app.route("POST", "/api/publish/install")(publish_install)
+    app.route("POST", "/api/publish/login")(publish_login)
+    app.route("POST", "/api/publish/start")(publish_start)
+    app.route("GET", "/api/publish/history")(publish_history)
+    app.route("POST", "/api/publish/mark")(publish_mark)
+    app.route("GET", "/api/publish/logs")(publish_logs)
+
+    # 长任务
+    app.route("GET", "/api/jobs")(job_get)
+    app.route("POST", "/api/jobs/cancel")(job_cancel)
 
     return app

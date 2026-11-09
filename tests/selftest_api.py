@@ -195,6 +195,131 @@ def main() -> int:
         status, payload = call("POST", "/api/create/titles", {"topic": "t", "body": "正文"})
         check("换标题未配置模型返回 409", status == 409, str(status))
 
+        section("草稿箱")
+        status, payload = call(
+            "POST",
+            "/api/drafts",
+            {
+                "topic": "自检草稿",
+                "platform": "xiaohongshu",
+                "body": "这是一段草稿正文",
+                "tags": ["自检"],
+                "params": {"goal": "互动涨粉"},
+            },
+        )
+        check("新建草稿 200", status == 200, str(status))
+        draft_id = (payload.get("draft") or {}).get("id") if isinstance(payload, dict) else 0
+        check("返回草稿 id", bool(draft_id))
+        check("平台名已翻译", (payload.get("draft") or {}).get("platform_label") == "小红书")
+
+        status, payload = call("GET", "/api/drafts")
+        check("草稿列表 200", status == 200, str(status))
+        check("草稿出现在列表", any(d["id"] == draft_id for d in payload.get("items") or []))
+
+        status, payload = call("GET", f"/api/drafts/get?id={draft_id}")
+        check("读取单篇草稿 200", status == 200, str(status))
+        check("草稿正文正确", payload["draft"]["body"] == "这是一段草稿正文")
+
+        status, payload = call("POST", "/api/drafts", {"id": draft_id, "body": "改过的正文"})
+        check("更新草稿 200", status == 200, str(status))
+        check("更新生效", payload["draft"]["body"] == "改过的正文")
+
+        status, payload = call("POST", "/api/drafts", {"topic": "  ", "body": ""})
+        check("空草稿被拒绝（400）", status == 400, str(status))
+
+        status, payload = call("GET", "/api/drafts/get?id=999999")
+        check("不存在的草稿返回 404", status == 404, str(status))
+
+        status, payload = call("DELETE", f"/api/drafts?id={draft_id}")
+        check("删除草稿 200", status == 200, str(status))
+        status, payload = call("GET", f"/api/drafts/get?id={draft_id}")
+        check("删除后读不到（404）", status == 404, str(status))
+
+        section("数据分析")
+        status, payload = call("GET", "/api/analytics/overview?days=30")
+        check("概览 200", status == 200, str(status))
+        check("空数据也给结构", isinstance((payload or {}).get("overview"), dict))
+        check(
+            "概览带基准/告警字段",
+            "benchmark" in payload["overview"] and "warnings" in payload["overview"],
+        )
+        check("返回可登记平台", isinstance(payload.get("importable_platforms"), list))
+
+        status, payload = call("GET", "/api/analytics/trend?days=7&metric=views")
+        check("趋势 200", status == 200, str(status))
+        check("无数据时趋势为空列表", payload.get("series") == [])
+
+        status, payload = call("GET", "/api/analytics/trend?metric=not-a-metric")
+        check("非法指标被拒绝（400）", status == 400, str(status))
+
+        status, payload = call("GET", "/api/analytics/rank?by=views")
+        check("排行 200", status == 200, str(status))
+        check("排行返回列表", isinstance(payload.get("items"), list))
+
+        status, payload = call("GET", "/api/analytics/rank?by=bogus")
+        check("非法排行依据被拒绝（400）", status == 400, str(status))
+
+        status, payload = call("GET", "/api/analytics/posts")
+        check("作品记录 200", status == 200, str(status))
+        check("作品记录返回列表", isinstance(payload.get("items"), list))
+
+        status, payload = call("POST", "/api/analytics/posts", {"url": ""})
+        check("空链接登记被拒绝（400）", status == 400, str(status))
+
+        status, payload = call("POST", "/api/analytics/posts", {"url": "https://example.com/x"})
+        check("无法识别平台的链接被拒绝（400）", status == 400, str(status))
+        check(
+            "提示可操作",
+            "平台" in json.dumps(payload, ensure_ascii=False),
+        )
+
+        section("发布中心")
+        status, payload = call("GET", "/api/publish/env")
+        check("环境检测 200", status == 200, str(status))
+        check("环境带平台清单", len(payload.get("platforms") or []) >= 4)
+        check("环境标明是否就绪", "ready" in payload)
+
+        status, payload = call(
+            "POST",
+            "/api/publish/start",
+            {"platform": "xiaohongshu", "body": "内容", "dry_run": True},
+        )
+        check("缺少人工确认被拒绝（400）", status == 400, str(status))
+        check(
+            "拒绝原因说明人工确认",
+            "人工确认" in json.dumps(payload, ensure_ascii=False),
+        )
+        check("错误码为 not_confirmed", (payload.get("error") or {}).get("code") == "not_confirmed")
+
+        status, payload = call(
+            "POST",
+            "/api/publish/start",
+            {"platform": "xiaohongshu", "body": "", "confirmed": True},
+        )
+        check("空正文发布被拒绝（400）", status == 400, str(status))
+
+        status, payload = call("GET", "/api/publish/history")
+        check("发布记录 200", status == 200, str(status))
+        check("发布记录返回列表", isinstance(payload.get("items"), list))
+
+        status, payload = call(
+            "POST", "/api/publish/mark", {"post_id": 999999, "action": "published"}
+        )
+        check("标记不存在的记录返回 404", status == 404, str(status))
+
+        status, payload = call("GET", "/api/publish/logs")
+        check("审计日志 200", status == 200, str(status))
+        check(
+            "拒绝发布已留痕",
+            any("denied" == row.get("action") for row in payload.get("items") or []),
+        )
+
+        section("后台任务")
+        status, payload = call("GET", "/api/jobs?id=does-not-exist")
+        check("未知任务返回 404", status == 404, str(status))
+        status, payload = call("POST", "/api/jobs/cancel", {"id": "does-not-exist"})
+        check("取消未知任务返回 404", status == 404, str(status))
+
         section("请求体校验")
         request = urllib.request.Request(
             BASE.rstrip("/") + "/api/settings",

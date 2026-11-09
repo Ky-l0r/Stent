@@ -1,7 +1,7 @@
 // 设置：LLM 三件套 + 主题。密钥只写不读——页面上永远显示不出已存的 Key。
 
 import { api } from "../api.js";
-import { esc, setStatus, toast } from "../ui.js";
+import { confirmDialog, esc, setBusy, setStatus, toast } from "../ui.js";
 
 let data = null;
 
@@ -63,15 +63,17 @@ function render(root, ctx) {
           <input id="max_tokens" type="number" min="256" step="256" value="${Number(llm.max_tokens ?? 4096)}">
         </label>
       </div>
-      <p class="card__hint">密钥存储方式：${esc(data.key_mode || "未知")}</p>
+      <p class="card__hint">密钥存储方式：${esc(data.key_mode || "未知")}${
+        data.key_set ? '　<button class="btn btn--sm btn--ghost" id="clear-key" type="button">清除已保存的密钥</button>' : ""
+      }</p>
       <div id="test-result" class="muted" style="font-size:12.5px"></div>
     </div>
 
     <div class="card">
       <h2 class="card__title">外观</h2>
       <div style="display:flex;gap:8px">
-        <button class="btn" data-theme="light">浅色</button>
-        <button class="btn" data-theme="dark">暗色</button>
+        <button class="btn${data.theme !== "dark" ? " btn--primary" : ""}" data-theme="light">浅色</button>
+        <button class="btn${data.theme === "dark" ? " btn--primary" : ""}" data-theme="dark">暗色</button>
       </div>
     </div>
   `;
@@ -83,20 +85,37 @@ function render(root, ctx) {
     if (preset.model) root.querySelector("#model").value = preset.model;
   });
 
-  const collect = () => ({
-    llm: {
-      provider: root.querySelector("#provider").value,
-      base_url: root.querySelector("#base_url").value.trim(),
-      model: root.querySelector("#model").value.trim(),
-      temperature: Number(root.querySelector("#temperature").value || 0.7),
-      max_tokens: Number(root.querySelector("#max_tokens").value || 4096),
-    },
-    api_key: root.querySelector("#api_key").value,
-  });
+  const collect = () => {
+    const temperature = Number(root.querySelector("#temperature").value);
+    const maxTokens = Number(root.querySelector("#max_tokens").value);
+    if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
+      throw new Error("温度需要在 0 到 2 之间");
+    }
+    if (!Number.isFinite(maxTokens) || maxTokens < 256) {
+      throw new Error("最大 token 不能小于 256");
+    }
+    return {
+      llm: {
+        provider: root.querySelector("#provider").value,
+        base_url: root.querySelector("#base_url").value.trim(),
+        model: root.querySelector("#model").value.trim(),
+        temperature,
+        max_tokens: Math.round(maxTokens),
+      },
+      api_key: root.querySelector("#api_key").value,
+    };
+  };
 
-  root.querySelector("#save").addEventListener("click", async () => {
+  root.querySelector("#save").addEventListener("click", async (event) => {
+    let payload;
     try {
-      data = await api.put("/api/settings", collect());
+      payload = collect();
+    } catch (err) {
+      return toast(err.message, "warn", 3000);
+    }
+    setBusy(event.target, true, "保存中…");
+    try {
+      data = await api.put("/api/settings", payload);
       root.querySelector("#api_key").value = "";
       setStatus("配置已保存", "ok");
       toast("配置已保存", "ok", 1600);
@@ -104,12 +123,13 @@ function render(root, ctx) {
       render(root, ctx);
     } catch (err) {
       toast(err.message, "error", 5000);
+    } finally {
+      setBusy(event.target, false);
     }
   });
 
   root.querySelector("#test").addEventListener("click", async (event) => {
-    event.target.disabled = true;
-    event.target.textContent = "测试中…";
+    setBusy(event.target, true, "测试中…");
     const box = root.querySelector("#test-result");
     box.textContent = "";
     try {
@@ -118,13 +138,38 @@ function render(root, ctx) {
       const res = await api.post("/api/settings/test", {});
       box.textContent = res.ok ? `${res.message}　返回：${res.sample || ""}` : res.message;
       box.style.color = res.ok ? "var(--ok)" : "var(--danger)";
-      if (res.ok) await ctx.refreshMeta();
+      if (res.ok) {
+        await ctx.refreshMeta();
+        toast("连通正常", "ok", 2000);
+      } else {
+        toast(res.message, "warn", 5000);
+      }
     } catch (err) {
       box.textContent = err.message;
       box.style.color = "var(--danger)";
     } finally {
-      event.target.disabled = false;
-      event.target.textContent = "测试连通性";
+      setBusy(event.target, false);
+    }
+  });
+
+  root.querySelector("#clear-key")?.addEventListener("click", async (event) => {
+    const ok = await confirmDialog({
+      title: "清除 API Key",
+      message: "清除后创作与归因都会停止，直到重新填写密钥。确定清除吗？",
+      confirmText: "清除",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(event.target, true, "清除中…");
+    try {
+      data = await api.put("/api/settings", { clear_key: true });
+      await ctx.refreshMeta();
+      toast("密钥已清除", "ok", 1800);
+      render(root, ctx);
+    } catch (err) {
+      toast(err.message, "error", 5000);
+    } finally {
+      setBusy(event.target, false);
     }
   });
 
@@ -132,8 +177,14 @@ function render(root, ctx) {
     btn.addEventListener("click", async () => {
       const theme = btn.dataset.theme;
       document.documentElement.dataset.theme = theme;
+      root.querySelectorAll("[data-theme]").forEach((other) => {
+        other.classList.toggle("btn--primary", other === btn);
+      });
+      const toggle = document.getElementById("theme-btn");
+      if (toggle) toggle.textContent = theme === "dark" ? "☀" : "◐";
       try {
         await api.put("/api/settings", { theme });
+        data.theme = theme;
         toast(theme === "dark" ? "已切到暗色" : "已切到浅色", "ok", 1400);
       } catch (err) {
         toast(err.message, "error", 4000);

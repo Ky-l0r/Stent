@@ -157,8 +157,9 @@ python main.py --qt           # 旧界面（回退 / 对照）
 python main.py --browser      # 只起本机服务，用浏览器调前端
 ```
 
-当前 Web 版可用：热点发现、内容创作、账号画像、设置；发布中心只做「检查 + 预览」，不提交。
-架构、职责划分与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。
+当前 Web 版可用：热点发现、内容创作、草稿箱、发布中心（登录 / 检查 / 人工确认后填写或提交 / 发布记录）、
+数据分析（概览、趋势、排行、指标同步、归因回流）、账号画像、设置。
+架构、接口清单、职责划分与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。
 
 ### 方式三：Electron 客户端（webapp/，需要 Node 22）
 

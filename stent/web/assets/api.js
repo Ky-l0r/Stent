@@ -90,3 +90,65 @@ export const shell = {
     return bridge[method](...args);
   },
 };
+
+/**
+ * 轮询一个后台任务直到终态。
+ *
+ * 为什么不用 SSE：任务结果不需要逐字推送，1 秒一次轮询足够；而 SSE 需要自己维护
+ * 连接存活与重连，对「单人单机、最多几十次请求」的场景是过度设计。
+ *
+ * 返回的 Promise 额外带 `cancel()`：页面离开或用户点取消时调用，
+ * 它会请求服务端置位取消信号并让本地轮询立即停下（不再等待任务真正收尾）。
+ */
+export function watchJob(id, { onTick, interval = 900 } = {}) {
+  let stopped = false;
+  let timer = 0;
+  let failures = 0;
+  let settle;
+  const promise = new Promise((resolve, reject) => {
+    settle = { resolve, reject };
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const data = await api.get(`/api/jobs?id=${encodeURIComponent(id)}`);
+        failures = 0;
+        const job = data.job;
+        onTick?.(job);
+        if (job.terminal) {
+          stopped = true;
+          resolve(job);
+          return;
+        }
+      } catch (err) {
+        // 任务被回收或接口短暂不可用：连续失败才判定失败，避免一次抖动就打断长任务
+        failures += 1;
+        if (failures >= 3) {
+          stopped = true;
+          reject(err);
+          return;
+        }
+      }
+      timer = setTimeout(tick, interval);
+    };
+    tick();
+  });
+  promise.cancel = async () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(timer);
+    settle.resolve({ status: "cancelled", message: "已取消", terminal: true, percent: -1 });
+    try {
+      await api.post("/api/jobs/cancel", { id });
+    } catch {
+      /* 取消失败也不影响本地停止轮询；任务会按自己的超时收尾 */
+    }
+  };
+  // 离开页面时只停轮询、**不取消任务**：发布可能正停在浏览器里等用户确认
+  promise.stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+    settle.resolve({ status: "detached", message: "已离开页面", terminal: true, percent: -1 });
+  };
+  return promise;
+}
+
