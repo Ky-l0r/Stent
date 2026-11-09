@@ -35,6 +35,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -63,6 +64,9 @@ WM_NCMOUSELEAVE = 0x02A2
 WM_GETMINMAXINFO = 0x0024
 WM_SETTINGCHANGE = 0x001A
 
+SW_MAXIMIZE = 3
+SW_RESTORE = 9
+
 GWL_STYLE = -16
 WS_THICKFRAME = 0x00040000
 WS_CAPTION = 0x00C00000
@@ -72,6 +76,7 @@ WS_MAXIMIZEBOX = 0x00010000
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 
 HTCLIENT = 1
@@ -111,6 +116,19 @@ class MINMAXINFO(ctypes.Structure):
         ("ptMaxPosition", wintypes.POINT),
         ("ptMinTrackSize", wintypes.POINT),
         ("ptMaxTrackSize", wintypes.POINT),
+    ]
+
+
+class WINDOWPLACEMENT(ctypes.Structure):
+    """``GetWindowPlacement`` 的结果，只用得上 ``rcNormalPosition``。"""
+
+    _fields_ = [
+        ("length", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("showCmd", wintypes.DWORD),
+        ("ptMinPosition", wintypes.POINT),
+        ("ptMaxPosition", wintypes.POINT),
+        ("rcNormalPosition", wintypes.RECT),
     ]
 
 
@@ -243,6 +261,39 @@ def _lparam_point(lparam: int) -> tuple[int, int]:
     x = ctypes.c_short(lparam & 0xFFFF).value
     y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
     return x, y
+
+
+def monitor_work_rect(hwnd: int) -> wintypes.RECT | None:
+    """取窗口所在显示器的工作区（不含任务栏）；失败返回 None。"""
+    if not IS_WINDOWS or not hwnd:
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        # 不声明 restype 的话 HMONITOR 会按 32 位 int 返回，64 位下被截断，
+        # 再喂给 GetMonitorInfoW 就是野指针
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.MonitorFromWindow.restype = wintypes.HMONITOR
+        monitor = user32.MonitorFromWindow(wintypes.HWND(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        return info.rcWork
+    except Exception:  # noqa: BLE001
+        log.debug("读取显示器工作区失败", exc_info=True)
+        return None
+
+
+def show_window(hwnd: int, command: int) -> bool:
+    """调系统 ``ShowWindow``（最大化 / 还原）。"""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    try:
+        ctypes.windll.user32.ShowWindow(wintypes.HWND(hwnd), int(command))
+        return True
+    except Exception:  # noqa: BLE001
+        log.debug("ShowWindow 失败：%s", command, exc_info=True)
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -562,6 +613,15 @@ class FramelessWindow(QMainWindow):
         self._animating = True
         self._pending_state = state
 
+        if state == "normal" and self._is_zoomed():
+            # 最大化状态下 Qt 会把 setGeometry 当成「记住的还原尺寸」存起来，
+            # 几何根本不会动，动画就变成「瞬间跳回」。先让系统退出最大化，
+            # 再把窗口摆回最大化矩形，动画才能从满屏开始收缩。
+            start = self.geometry()
+            self._apply_window_state_native(maximized=False)
+            if self.geometry() != start:
+                self.setGeometry(start)
+
         if state == "maximized":
             # 放大过程中窗口还是 normal 状态，若保留圆角会看到"到顶后圆角突然消失"，
             # 所以提前切成直角。
@@ -637,9 +697,14 @@ class FramelessWindow(QMainWindow):
         self._animation = None
 
         if state == "maximized":
-            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+            # 动画把几何推到工作区之后，再让系统确认一次最大化：这样 isMaximized、
+            # Snap、任务栏行为都是真的最大化，而不是「看起来铺满了」
+            if not self._apply_window_state_native(maximized=True):
+                self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         elif state == "normal":
-            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMaximized)
+            # 收缩动画开始时就已经退出最大化，这里只要保证状态确实是普通的
+            if self._is_zoomed() and not self._apply_window_state_native(maximized=False):
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMaximized)
         elif state == "minimized":
             self._opacity_animation = None
             self.setWindowOpacity(1.0)
@@ -674,34 +739,145 @@ class FramelessWindow(QMainWindow):
             return False
 
     # -- 窗口操作 ----------------------------------------------------------
+    def _is_zoomed(self, hwnd: int | None = None) -> bool:
+        """窗口是否「被系统最大化」（``WS_MAXIMIZE``）。
+
+        **不能用 ``isFullScreen()`` 判断最大化**：当显示器工作区正好等于整屏
+        （任务栏自动隐藏、或副屏没有任务栏）时，Qt 会在最大化的同时把窗口状态
+        标成 ``WindowFullScreen``（实测 ``WindowMaximized|WindowFullScreen``）。
+        旧代码据此判定「当前是全屏」直接跳进全屏分支，于是点最大化永远进不了
+        还原逻辑——「最大化后点不回去」就是这么来的。
+        """
+        handle = hwnd or hwnd_of(self)
+        if IS_WINDOWS and handle:
+            try:
+                return bool(ctypes.windll.user32.IsZoomed(wintypes.HWND(handle)))
+            except Exception:  # noqa: BLE001
+                log.debug("IsZoomed 调用失败", exc_info=True)
+        return self.isMaximized()
+
+    def normal_geometry(self) -> QRect | None:
+        """系统记账的「还原矩形」（``GetWindowPlacement``）。
+
+        比 Qt 的 ``normalGeometry()`` 可靠：窗口处于最大化时 Qt 会把还原尺寸记成
+        最大化矩形，Windows 则单独维护一份，且 ``setGeometry`` 会同步更新它。
+        """
+        hwnd = hwnd_of(self)
+        if not IS_WINDOWS or not hwnd:
+            return None
+        try:
+            placement = WINDOWPLACEMENT()
+            placement.length = ctypes.sizeof(WINDOWPLACEMENT)
+            if not ctypes.windll.user32.GetWindowPlacement(
+                wintypes.HWND(hwnd), ctypes.byref(placement)
+            ):
+                return None
+            rect = placement.rcNormalPosition
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width <= 0 or height <= 0:
+                return None
+            return QRect(rect.left, rect.top, width, height)
+        except Exception:  # noqa: BLE001
+            log.debug("读取还原矩形失败", exc_info=True)
+            return None
+
+    def _apply_window_state_native(
+        self,
+        maximized: bool,
+        target: QRect | None = None,
+    ) -> bool:
+        """用系统 ``ShowWindow`` 切换最大化 / 还原；失败返回 False。
+
+        这里曾经是自己 ``setGeometry(工作区)`` + ``setWindowState(WindowMaximized)``：
+        两个记账系统（Windows 的还原位置、Qt 的 normalGeometry）互相打架，结果就是
+        「点最大化后再点还原，窗口还在全屏矩形上」——状态标志清掉了，几何没回来。
+
+        交给系统之后，isMaximized、还原位置、Snap 全部由 Windows 维护；只有在几何
+        对不上时才补一次 ``setGeometry``（例如系统记录被外部改动）。
+        """
+        hwnd = hwnd_of(self)
+        # QTBUG-120196 + 系统摆放规则：只要窗口还带着 WS_THICKFRAME / WS_CAPTION，
+        # 最大化时系统就会把窗口撑到「工作区+边框」（1920×1080 实测得
+        # (-8,-8,1936,1096)），Qt 也会按样式推出 8px 的 frameMargins，两边各错
+        # 8px 且方向不同。最大化用不到可调整大小的边框和标题栏，把这两个样式位
+        # 摘掉，系统 zoomed 摆放正好落在工作区，Qt margins 恒为 0。
+        self._toggle_frame_styles(maximized=maximized)
+        if not show_window(hwnd, SW_MAXIMIZE if maximized else SW_RESTORE):
+            return False
+        if not maximized and target is not None and self.geometry() != target:
+            # 此时窗口已经是普通状态，setGeometry 是精确的（最大化状态下会被忽略）
+            self.setGeometry(target)
+        return True
+
+    def _toggle_frame_styles(self, maximized: bool) -> None:
+        """最大化时摘掉 ``WS_THICKFRAME | WS_CAPTION``，还原时补回。
+
+        实测两者任一存在都会让系统的 zoomed 摆放外扩一个边框厚度；摘掉后
+        ``ShowWindow(SW_MAXIMIZE)`` 的窗口矩形正好等于显示器工作区，Qt 的
+        frameMargins 恒为 0，``geometry()`` 与真实客户区一致。还原时补回来，
+        恢复拖边调整大小与 DWM 阴影；样式变化必须配一次 ``SWP_FRAMECHANGED``
+        才会让系统与 Qt 重新记账。
+        """
+        hwnd = hwnd_of(self)
+        if not hwnd:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE)
+            if maximized:
+                new_style = style & ~(WS_THICKFRAME | WS_CAPTION)
+            else:
+                new_style = style | WS_THICKFRAME | WS_CAPTION
+            if new_style == style:
+                return
+            user32.SetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE, new_style)
+            user32.SetWindowPos(
+                wintypes.HWND(hwnd),
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("切换窗口框架样式失败", exc_info=True)
+
     def toggle_maximize(self) -> None:
         if self._animating:
             return
-        if self.isFullScreen():
+        maximized = self._is_zoomed()
+        if not maximized and self.isFullScreen():
+            # 真的在全屏（而不是最大化被误标成全屏）→ 退出全屏
             self.toggle_fullscreen()
             return
         if self.isMinimized():
-            # 从「最小化」直接切最大化：先恢复显示，否则 showMaximized 不会生效
+            # 从「最小化」直接切最大化：先恢复显示，否则 ShowWindow 不会生效
             self.showNormal()
 
         if not self._animations_enabled():
-            # 关闭动画时不走过渡，但顺序很关键：先把几何摆到位，再声明窗口状态。
-            # 反过来的话，setGeometry 会清掉系统的 WS_MAXIMIZE 标志，
-            # 导致 isMaximized() 变回 False（按钮图标与圆角就会错）。
-            if self.isMaximized():
-                target = self._restore_geometry or self._default_restore_geometry()
+            if self._apply_window_state_native(maximized=not maximized):
+                self._sync_state()
+                return
+            # 非 Windows 兜底：没有系统调用时只能自己摆几何
+            if maximized:
+                target = self.normal_geometry() or self._default_restore_geometry()
                 self.setGeometry(target)
                 self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMaximized)
             else:
-                self._restore_geometry = self.geometry()
                 self.setGeometry(self._work_area())
                 self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
             self._sync_state()
             return
-        if self.isMaximized():
-            target = self._restore_geometry or self._default_restore_geometry()
+        if maximized:
+            target = (
+                self._restore_geometry or self.normal_geometry() or self._default_restore_geometry()
+            )
             self._start_transition(target, "normal", duration=self.TRANSITION_MS)
         else:
+            # 必须动画之前记：放大动画是逐帧 setGeometry，系统会把最后一帧
+            # （工作区尺寸）记成「还原位置」，动画开始后再问就只剩满屏矩形了
             self._restore_geometry = self.geometry()
             self._start_transition(self._work_area(), "maximized", duration=self.TRANSITION_MS)
 
@@ -731,7 +907,7 @@ class FramelessWindow(QMainWindow):
     def toggle_fullscreen(self) -> None:
         if self._animating:
             return
-        if self.isFullScreen():
+        if self.isFullScreen() and not self._is_zoomed():
             self.showNormal()
         else:
             self.showFullScreen()
@@ -784,31 +960,51 @@ class FramelessWindow(QMainWindow):
     def start_native_move(self) -> bool:
         """进入系统移动循环（等价于按住原生标题栏拖动）。
 
-        直接发送 ``WM_NCLBUTTONDOWN + HTCAPTION``：Aero Snap、贴边分屏、
-        拖到顶部呼出 Snap 布局选择器等行为全部由系统接管。
-        ``SendMessage`` 会阻塞到用户松开鼠标，期间由系统内部消息循环驱动，
-        界面照常重绘。
+        用 ``WM_NCLBUTTONDOWN + HTCAPTION`` **同步**发起：系统在本次事件处理里就
+        进入移动循环，锚点取的是按下瞬间的光标位置，后续每一步鼠标位移都一一对应。
+
+        两个细节都踩过坑：
+
+        - ``lParam`` 必须带真实光标坐标。传 0 时系统退回 ``GetMessagePos()``，
+          取到的是「上一次从队列取到消息时」的过期位置，整段拖动都带着这个偏移。
+        - 不能用 ``QWindow.startSystemMove()`` 主路。它是异步投递 ``SC_DRAGMOVE``，
+          循环启动前到达的鼠标移动会被并进锚点（实测按下后 120ms 才移动就会整体
+          偏一个步长），只有循环立刻启动时才精确。
+
+        代价是 ``SendMessage`` 会阻塞到用户松开鼠标，期间由系统内部消息循环驱动，
+        因此结束后必须重新同步一次状态（拖到屏幕边缘会吸附成最大化）。
         """
         if not IS_WINDOWS:
             return False
-        hwnd = hwnd_of(self)
-        if not hwnd:
-            return False
         self._stop_transition()  # 用户开始拖动时放弃进行中的过渡
-        try:
-            user32 = ctypes.windll.user32
-            user32.ReleaseCapture()
-            user32.SendMessageW(wintypes.HWND(hwnd), WM_NCLBUTTONDOWN, HTCAPTION, 0)
-            # 拖拽可能让窗口吸附成最大化 / 半屏，需要同步按钮与圆角
-            self._sync_state()
-            return True
-        except Exception:  # noqa: BLE001
-            log.debug("系统拖拽调用失败", exc_info=True)
-            return False
+        hwnd = hwnd_of(self)
+        if hwnd:
+            try:
+                cursor = QCursor.pos()
+                lparam = ((cursor.y() & 0xFFFF) << 16) | (cursor.x() & 0xFFFF)
+                user32 = ctypes.windll.user32
+                user32.ReleaseCapture()
+                user32.SendMessageW(wintypes.HWND(hwnd), WM_NCLBUTTONDOWN, HTCAPTION, lparam)
+                # 拖拽可能让窗口吸附成最大化 / 半屏，需要同步按钮与圆角
+                self._sync_state()
+                return True
+            except Exception:  # noqa: BLE001
+                log.debug("系统拖拽调用失败，退回 Qt 接口", exc_info=True)
+        # 兜底：消息调用不可用时交给平台插件（Snap 仍可用，只是锚点可能偏一个步长）
+        window = self.windowHandle()
+        if window is not None:
+            try:
+                return bool(window.startSystemMove())
+            except Exception:  # noqa: BLE001
+                log.debug("startSystemMove 失败", exc_info=True)
+        return False
 
     def changeEvent(self, event: Any) -> None:  # noqa: N802
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
+            # Snap / 双击标题栏 / Win+Up 等外部最大化不经过 _apply_window_state_native，
+            # 在这里补一次样式同步（内部调用的路径已提前同步过，这里幂等）
+            self._toggle_frame_styles(maximized=self._is_zoomed())
             self._sync_state()
 
     def resizeEvent(self, event: Any) -> None:  # noqa: N802
@@ -847,7 +1043,9 @@ class FramelessWindow(QMainWindow):
         if message_id == WM_NCCALCSIZE and int(msg.wParam):
             # 客户区 = 整个窗口：把 WS_THICKFRAME 带来的系统边框让给 Qt，
             # 否则界面会四周内缩约 8px。阴影与圆角仍由 DWM 绘制。
-            return 0
+            # 注意字段名是 hWnd（大写 W）——写 hwnd 会抛 AttributeError，
+            # 异常被 nativeEvent 兜底吞掉后处理器就永远不生效了
+            return self._client_rect(msg.lParam, int(getattr(msg, "hWnd", 0) or 0))
 
         if message_id == WM_NCLBUTTONDOWN and int(msg.wParam) == HTMAXBUTTON:
             self.toggle_maximize()
@@ -867,6 +1065,19 @@ class FramelessWindow(QMainWindow):
             return 0
 
         return None
+
+    def _client_rect(self, lparam: int, hwnd: int) -> int:
+        """``WM_NCCALCSIZE`` 的答复：客户区恒等于整个窗口。
+
+        曾尝试在最大化时把客户区收紧到显示器工作区（同 Chromium 做法），结果
+        Qt 按 QTBUG-120196 对最大化 + THICKFRAME 的窗口改用按样式推算的
+        frameMargins（8px），``geometry()`` 从此整体偏 8px。最终的解法是最大化
+        时直接摘掉 ``WS_THICKFRAME``（见 ``_toggle_thickframe``），客户区无需收紧。
+
+        ``hwnd`` 来自消息本身而不是 ``self.winId()``：``WM_NCCALCSIZE`` 发生在窗口
+        创建过程中，这时去问 Qt 要句柄会重入创建流程，直接崩进程。
+        """
+        return 0
 
     def _hit_test(self, lparam: int) -> int:
         """决定鼠标落在窗口的哪个部位：边框 / 自定义按钮 / 客户区。"""
@@ -929,7 +1140,13 @@ class FramelessWindow(QMainWindow):
             target.set_nc_hover(True)  # type: ignore[attr-defined]
 
     def _apply_work_area(self, lparam: int) -> None:
-        """最大化时贴合显示器工作区，避免遮住任务栏。"""
+        """最大化时贴合显示器工作区，避免遮住任务栏。
+
+        注意：Windows 对带边框的窗口会用「工作区 + 边框厚度」重算一遍，这里写入的
+        ptMaxSize 实测会被覆盖，**真正让客户区落在工作区内的是** ``_client_rect``
+        里的 ``WM_NCCALCSIZE`` 处理。这里保留是因为部分 Windows 版本 / 多显示器
+        场景仍会参考它，且不写会让默认值更离谱。
+        """
         try:
             info = ctypes.cast(lparam, ctypes.POINTER(MINMAXINFO)).contents
             hwnd = hwnd_of(self)
