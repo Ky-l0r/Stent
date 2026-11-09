@@ -21,6 +21,7 @@ from ..core.llm import LLMClient, LLMError, Message
 from ..platforms import (
     platform_label,
     platform_limits,
+    registered_platforms,
     system_browser_channel,
     system_browser_label,
 )
@@ -206,6 +207,20 @@ def put_settings(request: Request) -> Response:
     if "theme" in data:
         theme = "dark" if str(data.get("theme")).lower() == "dark" else "light"
         config_manager.update(theme=theme)
+
+    if "hotlist_platforms" in data:
+        raw = data.get("hotlist_platforms")
+        if not isinstance(raw, list):
+            raise ApiError("hotlist_platforms 必须是数组")
+        known = set(ALL_PLATFORMS)
+        chosen = []
+        for key in raw:
+            text = str(key or "").strip().lower()
+            if text in known and text not in chosen:
+                chosen.append(text)
+        if not chosen:
+            raise ApiError("至少要保留一个热点平台")
+        config_manager.update(hotlist_platforms=chosen)
 
     # 密钥只进不出：传了非空值才写，传 clear_key 才清
     key = data.get("api_key")
@@ -697,11 +712,14 @@ def analytics_rank(request: Request) -> Response:
 
 
 def analytics_posts(request: Request) -> Response:
-    """作品记录（含未同步到指标的），供数据分析页管理与登记。"""
+    """作品记录（含未同步到指标的），支持平台 / 状态 / 关键词与分页。"""
     limit = _int_arg(request, "limit", 100, 1, 500)
+    offset = _int_arg(request, "offset", 0, 0, 1 << 30)
     platform = request.q("platform").strip() or None
     status = request.q("status").strip() or None
-    rows = db.list_posts(status=status, platform=platform, limit=limit)
+    query = request.q("query").strip()
+    rows = db.list_posts(status=status, platform=platform, limit=limit, offset=offset, query=query)
+    total = db.count_posts(status=status, platform=platform, query=query)
     items = []
     for row in rows:
         status_key = str(row.get("status") or "")
@@ -721,7 +739,99 @@ def analytics_posts(request: Request) -> Response:
                 "metrics": _metric_summary(row),
             }
         )
-    return Response({"items": items, "total": len(items)})
+    return Response({"items": items, "total": total, "offset": offset, "limit": limit})
+
+
+def analytics_importable(request: Request) -> Response:
+    """哪些平台支持「从已登录账号导入作品」，供前端禁用入口并给出原因。"""
+    service = _analytics()
+    supported = set(service.importable_platforms())
+    rows = []
+    for key in registered_platforms():
+        ok = key in supported
+        rows.append(
+            {
+                "key": key,
+                "label": platform_label(key),
+                "supported": ok,
+                "hint": (
+                    "" if ok else f"{platform_label(key)}暂不支持账号导入，请用「粘贴作品链接」登记"
+                ),
+            }
+        )
+    return Response({"platforms": rows})
+
+
+def analytics_import(request: Request) -> Response:
+    """从已登录账号批量导入作品（后台任务）。
+
+    一次最多 200 条；重复作品由 ``register_post`` 按平台 + 作品标识去重，
+    返回新增 / 已存在 / 失败三项计数。
+    """
+    data = request.json()
+    platform = str(data.get("platform") or "").strip().lower()
+    if not platform:
+        raise ApiError("请选择要导入的平台")
+    try:
+        limit = max(1, min(int(data.get("limit") or 50), 200))
+    except (TypeError, ValueError):
+        raise ApiError("limit 必须是整数") from None
+
+    service = _analytics()
+    if not service.supports_account_import(platform):
+        raise ApiError(
+            f"{platform_label(platform)}暂不支持从账号导入作品，请用「粘贴作品链接」逐个登记"
+        )
+    busy = [job for job in jobs.running("analytics") if job.label.startswith("导入作品")]
+    if busy:
+        raise ApiError("已有一个账号导入任务在进行，请等它结束", status=409, code="busy")
+
+    def work(job) -> dict[str, Any]:
+        job.progress("正在打开平台账号页读取作品列表…", 10)
+        result = service.discover_account_posts(platform, limit=limit)
+        posts = result.pop("posts", []) or []
+        result["samples"] = [
+            str(getattr(item, "title", "") or getattr(item, "url", ""))[:60] for item in posts[:5]
+        ]
+        job.message = str(result.get("message") or ("导入完成" if result.get("ok") else "导入失败"))
+        return result
+
+    job = jobs.start(
+        "analytics",
+        f"导入作品·{platform_label(platform)}",
+        work,
+        message="正在准备导入…",
+    )
+    return Response({"job": job.snapshot(with_result=False)})
+
+
+def analytics_post_sync(request: Request) -> Response:
+    """单独刷新一条作品的指标（作品多时不必全量同步）。"""
+    data = request.json()
+    try:
+        post_id = int(data.get("id") or 0)
+    except (TypeError, ValueError):
+        raise ApiError("id 必须是整数") from None
+    if not post_id:
+        raise ApiError("缺少记录 id")
+    row = db.get_post(post_id)
+    if row is None:
+        raise ApiError("记录不存在", status=404, code="not_found")
+    if not str(row.get("url") or "").strip():
+        raise ApiError("该记录没有作品链接，无法拉取指标；请先补上链接")
+
+    service = _analytics()
+
+    def work(job) -> dict[str, Any]:
+        job.progress("正在打开作品页读取指标…", 30)
+        result = service.sync_one(post_id)
+        job.message = str(
+            result.get("message") or ("指标已更新" if result.get("ok") else "未取到指标")
+        )
+        return result
+
+    job = jobs.start("analytics", "刷新单条指标", work, message="准备中…")
+    return Response({"job": job.snapshot(with_result=False)})
 
 
 def analytics_register(request: Request) -> Response:
@@ -1162,6 +1272,9 @@ def build_app(*, host: str = "127.0.0.1", port: int = 0, token: str | None = Non
     app.route("GET", "/api/analytics/posts")(analytics_posts)
     app.route("POST", "/api/analytics/posts")(analytics_register)
     app.route("DELETE", "/api/analytics/posts")(analytics_delete_post)
+    app.route("POST", "/api/analytics/posts/sync")(analytics_post_sync)
+    app.route("GET", "/api/analytics/importable")(analytics_importable)
+    app.route("POST", "/api/analytics/import")(analytics_import)
     app.route("POST", "/api/analytics/sync")(analytics_sync)
     app.route("POST", "/api/analytics/attribute")(analytics_attribute)
 

@@ -277,7 +277,10 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 .seg button:hover { color: var(--primary); }
 
 /* ---------- 表格 ---------- */
-.table-wrap { overflow: auto; }
+/* 固定高度 + 内部滚动：作品多起来时不能让整页跟着无限拉长 */
+.table-wrap { overflow: auto; max-height: 420px; }
+.table-wrap--rank { max-height: 340px; }
+.table-wrap--posts { max-height: 440px; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th {
   text-align: left; font-weight: 600; color: var(--muted); font-size: 12px;
@@ -389,6 +392,23 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 
 /* ---------- 归因列表 ---------- */
 .attr-list { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+
+/* 归因结论与平台分布同样限高：条目再多也在卡片内滚动 */
+#attr-result,
+#breakdown { max-height: 300px; overflow: auto; padding-right: 4px; }
+
+/* 草稿箱与发布记录也按同一规则限高，避免历史数据把整页撑长 */
+#list-card { max-height: 640px; overflow: auto; }
+#history { max-height: 360px; overflow: auto; }
+
+/* ---------- 账号导入面板 ---------- */
+.import-panel {
+  border: 1px dashed var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); padding: 12px 14px; margin-bottom: 10px;
+}
+.import-panel__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.import-panel select { width: auto; min-width: 150px; }
+.import-panel__hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; line-height: 1.7; }
 
 .check__fix { color: var(--text); }
 

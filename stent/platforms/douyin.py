@@ -29,6 +29,7 @@ from ._browser import (  # noqa: F401 — 平台共用工具
     first_visible_text,
     hold_for_review,
     open_browser,
+    page_requires_login,
     page_title,
     parse_cn_number,
     paste_into_focused,
@@ -1121,6 +1122,8 @@ class DouYinAdapter(PlatformAdapter):
                 except Exception:
                     return []
                 page.wait_for_timeout(3_000)
+                if page_requires_login(page):
+                    return []
                 links = collect_content_links(
                     page,
                     _WORK_URL_RE,

@@ -1088,10 +1088,14 @@ class AnalyticsService:
         }
 
     def _find_post_by_identity(self, platform: str, canonical: str) -> dict[str, Any] | None:
-        """按「平台 + 作品唯一标识」查重，兼容历史数据里存的各种链接写法。"""
+        """按「平台 + 作品唯一标识」查重，兼容历史数据里存的各种链接写法。
+
+        按平台取**全部**记录再比对，而不是 ``list_posts(limit=1000)``：
+        作品多的账号在导入第 1001 条以后会突然失去去重能力，重复数据很难再发现。
+        """
         identity = _post_identity(platform, canonical)
         try:
-            posts = self.db.list_posts(limit=1000)
+            posts = self.db.query("SELECT * FROM posts WHERE platform = ?", (platform,))
         except Exception:  # noqa: BLE001
             return None
         for post in posts:
@@ -1199,7 +1203,7 @@ class AnalyticsService:
         if not posts:
             out["message"] = (
                 f"没能从{_platform_label(key)}账号读到作品。"
-                "常见原因：尚未在该平台登录（可在「设置 → 平台账号」登录后重试）、"
+                "常见原因：尚未在该平台登录（到「发布中心 → 检测登录 / 去登录」完成登录后重试）、"
                 "账号下还没有已发布内容，或平台页面结构有变化。"
                 "可以改用「粘贴作品链接」逐个登记。"
             )

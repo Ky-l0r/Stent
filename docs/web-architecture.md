@@ -151,9 +151,12 @@ pywebview 自带 `js_api` 可以把 Python 函数直接暴露给 JS，省掉一�
 | GET | `/api/analytics/overview` | 汇总 + 平台分布 + 可登记平台 |
 | GET | `/api/analytics/trend` | 按天趋势（`?metric=&cumulative=`） |
 | GET | `/api/analytics/rank` | 内容排行（`?by=&limit=`） |
-| GET | `/api/analytics/posts` | 作品记录（含指标快照） |
+| GET | `/api/analytics/posts` | 作品记录（平台 / 状态 / 关键词 / 分页） |
 | POST | `/api/analytics/posts` | 登记平台上已有的作品（返回同步**任务**） |
+| POST | `/api/analytics/posts/sync` | 刷新单条作品的指标（**任务**） |
 | DELETE | `/api/analytics/posts` | 删除作品记录及其指标（`?id=`） |
+| GET | `/api/analytics/importable` | 哪些平台支持「从已登录账号导入」 |
+| POST | `/api/analytics/import` | 从账号批量导入作品（**任务**，内部按链接去重） |
 | POST | `/api/analytics/sync` | 增量同步指标（**任务**） |
 | POST | `/api/analytics/attribute` | 归因回流，写入画像记忆（**任务**） |
 | GET | `/api/jobs` | 查询任务状态（`?id=`） |
@@ -195,7 +198,7 @@ data: {"message":"模型返回了空内容"}
 | `pages/create.py` | `#/create` | 三栏简化为「输入 / 生成中 / 结果」单列 + 侧栏，去掉多平台批量；补存草稿、草稿恢复、平台上限提示 |
 | —（Qt 无独立页面） | `#/drafts` | 草稿箱：检索、载入创作、送发布、删除；侧栏显示篇数角标 |
 | `pages/publish.py` | `#/publish` | 登录检测 → 检查预览 → 人工确认 → 填写 / 直接发布；发布记录可回填状态 |
-| `pages/analytics.py` | `#/analytics` | 概览、趋势、平台分布、排行、作品登记 / 删除、指标同步、归因回流 |
+| `pages/analytics.py` | `#/analytics` | 概览、趋势、平台分布、排行、作品登记 / 账号批量导入 / 删除、指标同步、归因回流；表格与结论限高内部滚动、作品分页与搜索 |
 | `pages/profile.py` | `#/profile` | 六维表单 + 完整度 |
 | `pages/settings.py` | `#/settings` | LLM 三件套 + 主题 + 清除密钥 |
 | `pages/onboarding.py` | 首启提示 | 未配置 LLM 时在创作页顶部提示 |
@@ -293,6 +296,18 @@ Qt 版大量 `self.ctx.toast(...)`。Web 侧统一 `toast(message, level)`，
   失败（服务端原文 + 可重试入口）、空状态（说明为什么空、下一步去哪）。
 - 页面模块用 `ctx.onLeave(fn)` 注册清理：停轮询、中断流式生成、把 `active` 置 false，
   避免几秒后才回来的响应去改全局状态灯或往已卸载的 DOM 里写东西。
+
+### 6.10 大量数据下的布局
+
+作品一多，「把所有行都铺在页面上」会让整页无限拉长，滚动条失去位置感。规则：
+
+- **表格与结论区固定高度 + 内部滚动**：排行 340px、作品记录 440px、归因结论 300px、
+  草稿箱 640px、发布记录 360px；表头 `position: sticky` 保留在容器顶部。
+- **列表必须分页**：作品记录按 100 条一页，服务端 `limit/offset` + `total`，
+  支持平台 / 状态 / 关键词过滤；「加载更多」追加而不是一次渲染几百行。
+- **单条操作优于全量**：作品行内提供「刷新指标」，避免为了看一条数据跑一次全量同步。
+- 判断标准：`#view` 的 `scrollHeight` 不应随作品数量线性增长；容器内部
+  `scrollHeight > clientHeight` 才是数据在滚动，而不是页面在变长。
 
 ---
 

@@ -177,6 +177,32 @@ def main() -> int:
     check("内容可列表", len(db.list_contents()) == 1)
     check("按状态过滤", len(db.list_contents(status="published")) == 1)
 
+    # 作品记录分页 / 搜索：作品多起来以后，前端不能再靠一次全量渲染
+    for index in range(5):
+        db.create_post(
+            platform="bilibili",
+            title=f"作品 {index}",
+            url=f"https://www.bilibili.com/video/BV1xx411c7m{index}",
+            status="published",
+            # 放到窗口外：分页测试不该改变后面「指标总览」的期数
+            published_at="2020-01-01 00:00:00",
+        )
+    page_one = db.list_posts(platform="bilibili", limit=2)
+    page_two = db.list_posts(platform="bilibili", limit=2, offset=2)
+    check("作品分页 limit 生效", len(page_one) == 2, str(len(page_one)))
+    check(
+        "作品分页 offset 不重叠",
+        {p["id"] for p in page_one}.isdisjoint({p["id"] for p in page_two}),
+    )
+    check("作品按标题搜索", len(db.list_posts(query="作品 3")) == 1)
+    check("作品按链接搜索", len(db.list_posts(query="BV1xx411c7m4")) == 1)
+    check(
+        "作品总数与筛选一致",
+        db.count_posts(platform="bilibili") == 5,
+        str(db.count_posts(platform="bilibili")),
+    )
+    check("作品搜索总数一致", db.count_posts(query="作品") == 5, str(db.count_posts(query="作品")))
+
     # 草稿要连「创作输入」一起存：补充要求与快捷参数是从草稿箱载回来后
     # 继续用同一组设定重新生成的上下文，丢了就等于让用户从零重来。
     draft_id = db.create_content(
@@ -278,10 +304,12 @@ def main() -> int:
 
     section("热榜解析（离线，用真实响应样本）")
     from stent.services.hotsearch import (
+        SOURCES,
         HotSearchService,
         _parse_douyin_xx,
         _parse_sixty,
         _parse_strlist,
+        _parse_uapis,
         _parse_xxapi,
         _unwrap,
         classify,
@@ -303,7 +331,32 @@ def main() -> int:
         sl[0]["title"] == "B站标题" and sl[0]["url"].startswith("https://"),
         str(sl[0]),
     )
+    up = _parse_uapis(
+        [
+            {
+                "index": 3,
+                "title": "知乎标题",
+                "url": "https://zhihu.com/q/1",
+                "hot_value": "493 万热度",
+            }
+        ],
+        "zhihu",
+    )
+    check(
+        "uapis 解析",
+        up[0]["rank"] == 3 and up[0]["heat"] == "493 万热度" and up[0]["title"] == "知乎标题",
+        str(up[0]),
+    )
     check("嵌套解包", _unwrap({"code": 200, "data": {"data": [1, 2]}}) == [1, 2])
+    check(
+        "uapis 能解出 list 包裹",
+        _unwrap({"type": "zhihu", "list": [{"title": "x"}]}) == [{"title": "x"}],
+    )
+    # 60s 单源被限流时整片失败，因此除小红书外都要有第二个来源
+    for key in ("weibo", "douyin", "zhihu", "bilibili", "baidu", "toutiao", "it-news"):
+        check(f"{key} 至少两个数据源", len(SOURCES[key]) >= 2, str(len(SOURCES[key])))
+    check("知乎有 uapis 兜底", any(s.name == "uapis" for s in SOURCES["zhihu"]))
+    check("头条有 uapis 兜底", any(s.name == "uapis" for s in SOURCES["toutiao"]))
     check("垂类分类-体育", classify("亚运会闭幕夺冠") == "体育")
     check("垂类分类-科技", classify("国产 AI 芯片发布") == "科技")
     check("垂类兜底", classify("zzz qqq") == "综合")
@@ -499,6 +552,31 @@ def main() -> int:
             os.environ.pop("STENT_BROWSER_CHANNEL", None)
         else:
             os.environ["STENT_BROWSER_CHANNEL"] = previous
+
+    # 账号导入前的登录页判断：未登录时创作中心会跳登录页，页面上还有推荐内容
+    from stent.platforms._browser import page_requires_login
+
+    class _LoginByUrl:
+        url = "https://www.zhihu.com/signin?next=%2Fcreator"
+
+        def inner_text(self, *_args):
+            return "创作中心"
+
+    class _LoginByText:
+        url = "https://www.douyin.com/creator-micro/home"
+
+        def inner_text(self, *_args):
+            return "扫码登录 / 密码登录"
+
+    class _ContentPage:
+        url = "https://www.zhihu.com/creator"
+
+        def inner_text(self, *_args):
+            return "我的文章 草稿箱 数据看板"
+
+    check("登录页按 URL 识别", page_requires_login(_LoginByUrl()))
+    check("登录页按文案识别", page_requires_login(_LoginByText()))
+    check("正常内容页不误判", not page_requires_login(_ContentPage()))
 
     section("B 站改版适配（简介 / 分区 / dry-run 收尾）")
     from stent.platforms import bilibili as bili
@@ -830,6 +908,60 @@ def main() -> int:
     check("排行按播放降序", len(ranked) >= 1 and ranked[0]["rank"] == 1)
     breakdown = analytics.platform_breakdown(days=30)
     check("平台分布非空", len(breakdown) >= 1 and breakdown[0]["post_count"] >= 1)
+
+    # 去重：同一作品的长链 / 带追踪参数链接必须只落一条
+    from stent.platforms.base import AccountPost
+    from stent.services import analytics as analytics_module
+
+    if analytics.supports_account_import("bilibili"):
+        first = analytics.register_post(
+            "https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333.999"
+        )
+        check("登记作品成功", bool(first.get("ok")), str(first))
+        second = analytics.register_post("https://www.bilibili.com/video/BV1xx411c7mD/")
+        check("同一作品的变体链接被判重", bool(second.get("duplicated")), str(second))
+        check(
+            "去重后只保留一条",
+            adb.count_posts(platform="bilibili", query="BV1xx411c7mD") == 1,
+            str(adb.count_posts(platform="bilibili", query="BV1xx411c7mD")),
+        )
+
+        # 账号导入：用假适配器验证「已有作品跳过、批量内也不重复写」
+        real_resolve = analytics_module.resolve_adapter
+
+        class FakeAdapter:
+            supports_account_import = True
+
+            def list_account_posts(self, *, headless: bool = True, limit: int = 50):
+                return [
+                    AccountPost(url="https://www.bilibili.com/video/BV1xx411c7mD"),
+                    AccountPost(url="https://www.bilibili.com/video/BV1yy411c7mE"),
+                ]
+
+        analytics_module.resolve_adapter = lambda key: (
+            (FakeAdapter(), "") if key == "bilibili" else real_resolve(key)
+        )
+        try:
+            first_import = analytics.discover_account_posts("bilibili")
+            second_import = analytics.discover_account_posts("bilibili")
+        finally:
+            analytics_module.resolve_adapter = real_resolve
+
+        check(
+            "账号导入跳过已登记作品",
+            first_import.get("added") == 1 and first_import.get("skipped") == 1,
+            str(first_import),
+        )
+        check(
+            "重复导入全部跳过",
+            second_import.get("added") == 0 and second_import.get("skipped") == 2,
+            str(second_import),
+        )
+    else:
+        print("  [SKIP] B 站适配器不可用，跳过去重/账号导入断言")
+
+    check("小红书不支持账号导入", not analytics.supports_account_import("xiaohongshu"))
+
     hours = analytics.best_publish_hours(days=90)
     check("最佳时段返回列表", isinstance(hours, list))
     attr = analytics.attribute(days=30, use_llm=False, persist=False)

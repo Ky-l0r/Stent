@@ -144,6 +144,20 @@ def main() -> int:
             isinstance(payload, dict) and "必须是数字" in json.dumps(payload, ensure_ascii=False),
         )
 
+        status, payload = call("PUT", "/api/settings", {"hotlist_platforms": ["bilibili", "zhihu"]})
+        check(
+            "热榜平台可保存",
+            status == 200 and payload.get("hotlist_platforms") == ["bilibili", "zhihu"],
+        )
+        status, payload = call("PUT", "/api/settings", {"hotlist_platforms": []})
+        check("空热榜平台被拒绝（400）", status == 400, str(status))
+        status, payload = call(
+            "PUT",
+            "/api/settings",
+            {"hotlist_platforms": ["weibo", "douyin", "zhihu", "bilibili", "baidu", "toutiao"]},
+        )
+        check("热榜平台可恢复默认", status == 200, str(status))
+
         status, payload = call("POST", "/api/settings/test")
         check("未配置模型时测试返回 409", status == 409, str(status))
         check("提示可操作", "API Base URL" in json.dumps(payload, ensure_ascii=False))
@@ -262,6 +276,31 @@ def main() -> int:
         status, payload = call("GET", "/api/analytics/posts")
         check("作品记录 200", status == 200, str(status))
         check("作品记录返回列表", isinstance(payload.get("items"), list))
+        check("作品记录带总数", isinstance(payload.get("total"), int), str(payload.get("total")))
+
+        status, payload = call("GET", "/api/analytics/posts?limit=1&offset=0")
+        check("作品分页参数生效", payload.get("limit") == 1 and payload.get("offset") == 0)
+
+        status, payload = call("GET", "/api/analytics/importable")
+        check("可导入平台 200", status == 200, str(status))
+        rows = payload.get("platforms") or []
+        check("可导入平台带 supported 标记", rows and all("supported" in row for row in rows))
+        check(
+            "小红书明确不支持账号导入",
+            any(row["key"] == "xiaohongshu" and row["supported"] is False for row in rows),
+        )
+
+        status, payload = call("POST", "/api/analytics/import", {"platform": "xiaohongshu"})
+        check("不支持账号导入的平台被拒绝（400）", status == 400, str(status))
+        check(
+            "拒绝原因可操作",
+            "粘贴" in json.dumps(payload, ensure_ascii=False),
+        )
+
+        status, payload = call("POST", "/api/analytics/posts/sync", {"id": 999999})
+        check("刷新不存在的作品返回 404", status == 404, str(status))
+        status, payload = call("POST", "/api/analytics/posts/sync", {})
+        check("刷新缺少 id 返回 400", status == 400, str(status))
 
         status, payload = call("POST", "/api/analytics/posts", {"url": ""})
         check("空链接登记被拒绝（400）", status == 400, str(status))

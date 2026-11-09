@@ -345,7 +345,13 @@ class Database:
         return self.query_one("SELECT * FROM posts WHERE url = ? LIMIT 1", (text,))
 
     def list_posts(
-        self, *, status: str | None = None, platform: str | None = None, limit: int = 200
+        self,
+        *,
+        status: str | None = None,
+        platform: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+        query: str = "",
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM posts WHERE 1=1"
         params: list[Any] = []
@@ -355,9 +361,35 @@ class Database:
         if platform:
             sql += " AND platform = ?"
             params.append(platform)
-        sql += " ORDER BY COALESCE(published_at, created_at) DESC LIMIT ?"
-        params.append(limit)
+        keyword = str(query or "").strip()
+        if keyword:
+            # 标题或链接里包含关键词：作品多起来以后，仅靠滚动找不到目标
+            sql += " AND (title LIKE ? OR url LIKE ?)"
+            like = f"%{keyword}%"
+            params.extend([like, like])
+        sql += " ORDER BY COALESCE(published_at, created_at) DESC LIMIT ? OFFSET ?"
+        params.extend([max(1, int(limit)), max(0, int(offset))])
         return self.query(sql, tuple(params))
+
+    def count_posts(
+        self, *, status: str | None = None, platform: str | None = None, query: str = ""
+    ) -> int:
+        """与 :meth:`list_posts` 同口径的总数，供分页使用。"""
+        sql = "SELECT COUNT(*) AS n FROM posts WHERE 1=1"
+        params: list[Any] = []
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        if platform:
+            sql += " AND platform = ?"
+            params.append(platform)
+        keyword = str(query or "").strip()
+        if keyword:
+            sql += " AND (title LIKE ? OR url LIKE ?)"
+            like = f"%{keyword}%"
+            params.extend([like, like])
+        row = self.query_one(sql, tuple(params))
+        return int((row or {}).get("n") or 0)
 
     def posts_needing_sync(
         self, min_interval_minutes: int = 30, limit: int = 50

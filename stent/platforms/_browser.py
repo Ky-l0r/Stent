@@ -349,6 +349,32 @@ def record_browser_error(exc: BaseException) -> None:
     )
 
 
+_LOGIN_PAGE_KEYWORDS: tuple[str, ...] = (
+    "扫码登录",
+    "密码登录",
+    "验证码登录",
+    "立即登录",
+    "请先登录",
+)
+
+
+def page_requires_login(page: Any) -> bool:
+    """当前页面是否停在登录页。
+
+    账号导入前必须先拦这个：未登录时创作中心会跳登录页，而登录页上还有
+    「推荐文章 / 推荐视频」，按链接扫描会把别人的内容当成自己的导入进来。
+    只认明确的登录信号，宁可少导入也不能导错。
+    """
+    url = str(getattr(page, "url", "") or "").lower()
+    if any(key in url for key in ("signin", "login", "passport", "sso.")):
+        return True
+    try:
+        text = page.inner_text("body")[:2000]
+    except Exception:
+        return False
+    return any(key in text for key in _LOGIN_PAGE_KEYWORDS)
+
+
 @contextmanager
 def open_browser(
     adapter: Any, *, headless: bool, args: tuple[str, ...] = COMMON_LAUNCH_ARGS

@@ -45,6 +45,7 @@ from ._browser import (
     first_visible_text,
     hold_for_review,
     open_browser,
+    page_requires_login,
     parse_cn_number,
     paste_into_focused,
 )
@@ -1639,6 +1640,8 @@ class BiliBiliAdapter(PlatformAdapter):
                 except Exception:
                     return []
                 page.wait_for_timeout(2_000)
+                if page_requires_login(page):
+                    return []
 
                 for page_no in range(1, 11):  # 最多翻 10 页，兜住异常分页
                     if len(out) >= limit:

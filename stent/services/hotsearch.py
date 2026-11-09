@@ -1,11 +1,12 @@
 """热点发现服务（企划书 3.2 模块一）。
 
-- 聚合多平台热榜：微博、抖音、知乎、B 站、百度、头条（另附小红书热搜）
-- 数据源复用 Easel 的 ``skills/shared/hotlist-apis.md``：60s API 为主，xxapi 为备源
+- 聚合多平台热榜：微博、抖音、知乎、B 站、百度、头条（另附小红书 / IT 资讯 / 每日 60 秒）
+- 多源降级：60s、xxapi、uapis 三个公益接口互补；60s 对单 IP 限流较严，
+  uapis 与 xxapi 不需要密钥，任一源成功即可返回
 - 多平台并发拉取，本地 SQLite 缓存 5~10 分钟（可配置）
 - 支持关键词与垂类筛选
 
-数据源降级策略（与 Easel 一致）：主源失败自动切备源，
+数据源降级策略（与 Easel 一致）：同一平台的多个源并发竞速，最快的成功者胜出；
 全部失败时返回缓存中的过期数据并标注「数据可能过期」，不向用户抛异常。
 """
 
@@ -33,6 +34,7 @@ log = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Stent/1.0"
 BASE_60S = "https://60s.viki.moe"
 BASE_XXAPI = "https://v2.xxapi.cn"
+BASE_UAPIS = "https://uapis.cn"
 
 
 def _http_get_json(url: str, timeout: float) -> Any:
@@ -108,31 +110,54 @@ def _s(name: str, url: str, parser: str) -> Source:
     return Source(name=name, url=url, parser=parser)
 
 
+def _uapis(type_name: str) -> Source:
+    """uapis 热榜：一个接口覆盖多个平台，字段统一（index/title/url/hot_value）。"""
+    return _s("uapis", f"{BASE_UAPIS}/api/v1/misc/hotboard?type={type_name}", "uapis")
+
+
 #: 平台 → 有序数据源列表（前者失败自动降级到后者）
+#:
+#: 60s.viki.moe 对同一 IP 有较严的限流（429/Cloudflare 1027），一旦被限流，
+#: 只有它一路的平台（知乎 / 头条 / 小红书 / IT 资讯）会整片失败。因此除 B 站外
+#: 都补了至少两个来源；uapis 与 xxapi 都不需要密钥。
 SOURCES: dict[str, tuple[Source, ...]] = {
     "weibo": (
         _s("60s", f"{BASE_60S}/v2/weibo", "sixty"),
         _s("xxapi", f"{BASE_XXAPI}/api/weibohot", "xxapi"),
+        _uapis("weibo"),
     ),
     # 抖音的 60s 端点响应不稳定（常握手超时），把稳定的 xxapi 放前面
     "douyin": (
         _s("xxapi", f"{BASE_XXAPI}/api/douyinhot", "douyin_xx"),
+        _uapis("douyin"),
         _s("60s", f"{BASE_60S}/v2/douyin", "sixty"),
     ),
-    "zhihu": (_s("60s", f"{BASE_60S}/v2/zhihu", "sixty"),),
+    "zhihu": (
+        _uapis("zhihu"),
+        _s("60s", f"{BASE_60S}/v2/zhihu", "sixty"),
+    ),
     "bilibili": (
         _s("xxapi", f"{BASE_XXAPI}/api/bilibilihot", "strlist"),
+        _uapis("bilibili"),
         _s("60s", f"{BASE_60S}/v2/bili", "sixty"),
     ),
     "baidu": (
         _s("xxapi", f"{BASE_XXAPI}/api/baiduhot", "xxapi"),
+        _uapis("baidu"),
         _s("60s", f"{BASE_60S}/v2/baidu/hot", "sixty"),
     ),
-    "toutiao": (_s("60s", f"{BASE_60S}/v2/toutiao", "sixty"),),
+    "toutiao": (
+        _uapis("toutiao"),
+        _s("60s", f"{BASE_60S}/v2/toutiao", "sixty"),
+    ),
+    # 小红书：uapis 的榜单停在 2026-10，比失败更糟，因此仍只用 60s
     "rednote": (_s("60s", f"{BASE_60S}/v2/rednote", "sixty"),),
     # 以下两个是「垂类频道」：主流热榜偏综合，游戏 / 数码 / 时政这类内容
     # 常常进不了总榜，单独收一路可以让垂类筛选真正有内容可选。
-    "it-news": (_s("60s", f"{BASE_60S}/v2/it-news", "sixty"),),
+    "it-news": (
+        _uapis("ithome"),
+        _s("60s", f"{BASE_60S}/v2/it-news", "sixty"),
+    ),
     "60s": (_s("60s", f"{BASE_60S}/v2/60s", "strlist"),),
 }
 
@@ -535,11 +560,42 @@ def _parse_strlist(raw: list[Any], platform: str) -> list[dict[str, Any]]:
     return out
 
 
+def _parse_uapis(raw: list[Any], platform: str) -> list[dict[str, Any]]:
+    """uapis：index/title/url/hot_value（热度是「493 万热度」这类展示值）。"""
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw):
+        if isinstance(item, str):
+            out.append(
+                {
+                    "rank": idx + 1,
+                    "title": _clean(item),
+                    "url": _search_url(platform, item),
+                    "heat": "",
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        title = _clean(item.get("title") or item.get("name") or item.get("word"))
+        if not title:
+            continue
+        out.append(
+            {
+                "rank": int(item.get("index") or item.get("rank") or idx + 1),
+                "title": title,
+                "url": str(item.get("url") or item.get("link") or _search_url(platform, title)),
+                "heat": _fmt_heat(item.get("hot_value") or item.get("hot") or ""),
+            }
+        )
+    return out
+
+
 PARSERS: dict[str, Callable[[list[Any], str], list[dict[str, Any]]]] = {
     "sixty": _parse_sixty,
     "xxapi": _parse_xxapi,
     "douyin_xx": _parse_douyin_xx,
     "strlist": _parse_strlist,
+    "uapis": _parse_uapis,
 }
 
 

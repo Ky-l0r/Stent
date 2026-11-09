@@ -70,6 +70,22 @@ function render(root, ctx) {
     </div>
 
     <div class="card">
+      <h2 class="card__title">热点平台</h2>
+      <p class="card__hint">勾选要聚合的平台。保存后回热点页点「刷新」生效；至少有选一个。</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px 16px">
+        ${(ctx.meta?.hot_platforms || [])
+          .map((p) => {
+            const checked = (data.hotlist_platforms || []).includes(p.key);
+            return `<label class="checkbox" style="margin-top:0">
+              <input type="checkbox" data-hot-platform="${esc(p.key)}"${checked ? " checked" : ""}>
+              <span>${esc(p.label)}</span>
+            </label>`;
+          })
+          .join("")}
+      </div>
+    </div>
+
+    <div class="card">
       <h2 class="card__title">外观</h2>
       <div style="display:flex;gap:8px">
         <button class="btn${data.theme !== "dark" ? " btn--primary" : ""}" data-theme="light">浅色</button>
@@ -94,6 +110,12 @@ function render(root, ctx) {
     if (!Number.isFinite(maxTokens) || maxTokens < 256) {
       throw new Error("最大 token 不能小于 256");
     }
+    const hotPlatforms = [...root.querySelectorAll("[data-hot-platform]:checked")].map(
+      (box) => box.dataset.hotPlatform
+    );
+    if (!hotPlatforms.length) {
+      throw new Error("热点平台至少要选一个");
+    }
     return {
       llm: {
         provider: root.querySelector("#provider").value,
@@ -103,6 +125,7 @@ function render(root, ctx) {
         max_tokens: Math.round(maxTokens),
       },
       api_key: root.querySelector("#api_key").value,
+      hotlist_platforms: hotPlatforms,
     };
   };
 

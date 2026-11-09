@@ -30,6 +30,7 @@ from ._browser import (
     first_visible_text,
     hold_for_review,
     open_browser,
+    page_requires_login,
     page_title,
     parse_cn_number,
     paste_into_focused,
@@ -869,6 +870,9 @@ class ZhiHuAdapter(PlatformAdapter):
                 except Exception:
                     return []
                 page.wait_for_timeout(3_000)
+                if page_requires_login(page):
+                    # 登录页上也有推荐文章链接，扫下去会把别人的内容导进来
+                    return []
                 links = collect_content_links(
                     page,
                     _WORK_URL_RE,

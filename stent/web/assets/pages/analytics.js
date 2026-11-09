@@ -5,6 +5,7 @@ import { api, watchJob } from "../api.js";
 import { lineChart } from "../chart.js";
 import {
   confirmDialog,
+  debounce,
   esc,
   fmtCount,
   fmtInt,
@@ -49,11 +50,20 @@ const state = {
   series: [],
   rank: [],
   posts: [],
+  postsTotal: 0,
+  postsQuery: "",
+  postsStatus: "",
+  postsLoading: false,
+  accountPlatforms: [],
   importable: [],
   llmReady: false,
   attr: null,
   job: null,
 };
+
+//: 作品记录每页条数。列表在固定高度容器里滚动，不靠一次渲染几百行。
+const POST_PAGE = 100;
+let postsSeq = 0;
 
 let ctxRef = null;
 let rootRef = null;
@@ -65,6 +75,11 @@ export async function mount(root, ctx) {
   rootRef = root;
   active = true;
   state.attr = null;
+  state.posts = [];
+  state.postsTotal = 0;
+  state.postsQuery = "";
+  state.postsStatus = "";
+  state.accountPlatforms = [];
 
   const platforms = platformOptions(ctx.meta);
 
@@ -147,7 +162,7 @@ export async function mount(root, ctx) {
             ).join("")}
           </select>
         </div>
-        <div class="table-wrap" id="rank"><div class="loading">正在统计…</div></div>
+        <div class="table-wrap table-wrap--rank" id="rank"><div class="loading">正在统计…</div></div>
       </div>
 
       <div>
@@ -169,23 +184,62 @@ export async function mount(root, ctx) {
         <h2 class="card__title" style="margin:0">作品记录</h2>
         <div class="spacer"></div>
         <span class="muted" id="post-count"></span>
+        <button class="btn btn--sm" id="import-account">从账号导入</button>
       </div>
+
+      <div class="import-panel hidden" id="import-panel">
+        <div class="import-panel__row">
+          <span class="muted" style="font-size:12px">账号</span>
+          <select id="import-account-platform"></select>
+          <select id="import-limit" title="最多导入多少条">
+            <option value="20">最近 20 条</option>
+            <option value="50" selected>最近 50 条</option>
+            <option value="100">最近 100 条</option>
+            <option value="200">最近 200 条</option>
+          </select>
+          <button class="btn btn--primary btn--sm" id="import-start">开始导入</button>
+          <button class="btn btn--sm" id="import-login-check">检测登录</button>
+          <button class="btn btn--sm btn--ghost" id="import-cancel">取消</button>
+        </div>
+        <p class="import-panel__hint" id="import-hint">
+          需要先在该平台登录（发布中心 → 检测登录 / 去登录）。导入会按作品链接去重，已有的不会重复写入。
+        </p>
+        <p class="import-panel__hint hidden" id="import-login-state"></p>
+      </div>
+
       <div class="toolbar" style="margin-bottom:10px">
-        <select id="import-platform" title="登记平台">
+        <select id="import-platform" title="粘贴登记时指定平台">
           <option value="">自动识别平台</option>
           ${state.importable
             .map((p) => `<option value="${esc(p.key)}">${esc(p.label)}</option>`)
             .join("")}
         </select>
         <input id="import-url" type="text" placeholder="粘贴作品链接，登记到数据分析…">
-        <button class="btn" id="import-btn">登记作品</button>
+        <button class="btn" id="import-btn">登记</button>
       </div>
-      <div class="table-wrap" id="posts"><div class="loading">正在读取记录…</div></div>
+
+      <div class="toolbar" style="margin-bottom:8px">
+        <input id="post-search" type="text" placeholder="搜索标题或链接…" style="width:220px">
+        <select id="post-status" title="按状态筛选">
+          <option value="">全部状态</option>
+          <option value="published">已发布</option>
+          <option value="draft_filled">待你确认</option>
+          <option value="pending">进行中</option>
+          <option value="failed">失败</option>
+        </select>
+        <div class="spacer"></div>
+        <span class="muted" id="post-hint" style="font-size:12px"></span>
+      </div>
+
+      <div class="table-wrap table-wrap--posts" id="posts"><div class="loading">正在读取记录…</div></div>
+      <div style="display:flex;justify-content:center;margin-top:10px">
+        <button class="btn btn--sm hidden" id="load-more">加载更多</button>
+      </div>
     </div>
   `;
 
   bind(root);
-  await loadAll();
+  await Promise.all([loadImportable(), loadAll()]);
 }
 
 function platformOptions(meta) {
@@ -231,6 +285,28 @@ function bind(root) {
   root.querySelector("#import-url").addEventListener("keydown", (event) => {
     if (event.key === "Enter") registerPost();
   });
+
+  // 作品记录：搜索 / 状态筛选 / 分页 / 账号导入
+  root.querySelector("#post-search").addEventListener(
+    "input",
+    debounce((event) => {
+      state.postsQuery = event.target.value.trim();
+      loadPosts({ reset: true });
+    }, 250)
+  );
+  root.querySelector("#post-status").addEventListener("change", (event) => {
+    state.postsStatus = event.target.value;
+    loadPosts({ reset: true });
+  });
+  root.querySelector("#load-more").addEventListener("click", () => loadPosts({ reset: false }));
+  root.querySelector("#import-account").addEventListener("click", () => toggleImportPanel());
+  root.querySelector("#import-cancel").addEventListener("click", () => toggleImportPanel(false));
+  root.querySelector("#import-start").addEventListener("click", (event) => startAccountImport(event.target));
+  root.querySelector("#import-login-check").addEventListener("click", (event) =>
+    checkImportLogin(event.target)
+  );
+  root.querySelector("#import-account-platform").addEventListener("change", () => setImportLoginState(""));
+
   root.querySelector("#job-cancel")?.addEventListener("click", async () => {
     if (!state.job) return;
     await state.job.cancel();
@@ -251,13 +327,12 @@ async function loadAll() {
   const days = state.days;
   const platform = state.platform ? `&platform=${encodeURIComponent(state.platform)}` : "";
 
-  const [overview, trend, rank, posts] = await Promise.allSettled([
+  const [overview, trend, rank] = await Promise.allSettled([
     api.get(`/api/analytics/overview?days=${days}${platform}`),
     api.get(
       `/api/analytics/trend?days=${days}&metric=${state.metric}&cumulative=${state.cumulative ? 1 : 0}${platform}`
     ),
     api.get(`/api/analytics/rank?days=${days}&by=${state.by}&limit=30`),
-    api.get(`/api/analytics/posts?limit=200${platform}`),
   ]);
 
   const failures = [];
@@ -289,14 +364,7 @@ async function loadAll() {
     failures.push(`排行：${rank.reason?.message || "读取失败"}`);
   }
 
-  if (posts.status === "fulfilled") {
-    state.posts = posts.value.items || [];
-    renderPosts();
-    renderHint();
-  } else {
-    failures.push(`作品记录：${posts.reason?.message || "读取失败"}`);
-  }
-
+  await loadPosts({ reset: true });
   if (!active) return;
   const note = rootRef?.querySelector("#scope-note");
   if (note) {
@@ -342,14 +410,151 @@ async function loadRank() {
   }
 }
 
-async function loadPosts() {
+/**
+ * 拉取作品记录。``reset=true`` 从第一页重新取（筛选变化时），
+ * 否则按已加载数量作为 offset 追加下一页。
+ */
+async function loadPosts({ reset = true } = {}) {
+  const host = rootRef?.querySelector("#posts");
+  const seq = ++postsSeq;
+  state.postsLoading = true;
+  if (reset && host) host.innerHTML = '<div class="loading">正在读取记录…</div>';
+
+  const offset = reset ? 0 : state.posts.length;
   const platform = state.platform ? `&platform=${encodeURIComponent(state.platform)}` : "";
+  const query = state.postsQuery ? `&query=${encodeURIComponent(state.postsQuery)}` : "";
+  const status = state.postsStatus ? `&status=${encodeURIComponent(state.postsStatus)}` : "";
   try {
-    const data = await api.get(`/api/analytics/posts?limit=200${platform}`);
-    state.posts = data.items || [];
+    const data = await api.get(
+      `/api/analytics/posts?limit=${POST_PAGE}&offset=${offset}${platform}${query}${status}`
+    );
+    if (seq !== postsSeq || !active) return;
+    const items = data.items || [];
+    state.postsTotal = Number(data.total) || items.length;
+    state.posts = reset ? items : state.posts.concat(items);
     renderPosts();
+    renderHint();
   } catch (err) {
+    if (seq !== postsSeq || !active) return;
+    if (host) host.innerHTML = `<div class="empty empty--inset">${esc(err.message)}</div>`;
     toast(err.message, "error", 5000);
+  } finally {
+    if (seq === postsSeq) state.postsLoading = false;
+  }
+}
+
+async function loadImportable() {
+  try {
+    const data = await api.get("/api/analytics/importable");
+    state.accountPlatforms = data.platforms || [];
+  } catch {
+    state.accountPlatforms = [];
+  }
+  fillAccountOptions();
+}
+
+function fillAccountOptions() {
+  const select = rootRef?.querySelector("#import-account-platform");
+  if (!select) return;
+  const supported = state.accountPlatforms.filter((p) => p.supported);
+  select.innerHTML = supported.length
+    ? supported.map((p) => `<option value="${esc(p.key)}">${esc(p.label)}</option>`).join("")
+    : '<option value="">暂无可用平台</option>';
+  select.disabled = !supported.length;
+  const start = rootRef.querySelector("#import-start");
+  if (start) start.disabled = !supported.length;
+  const hint = rootRef.querySelector("#import-hint");
+  if (hint) {
+    const unsupported = state.accountPlatforms.filter((p) => !p.supported);
+    hint.textContent = supported.length
+      ? "需要先在该平台登录（发布中心 → 检测登录 / 去登录）。导入会按作品链接去重，已有的不会重复写入。"
+      : "当前没有支持账号导入的平台，请用下方「粘贴链接」逐个登记。";
+    if (supported.length && unsupported.length) {
+      hint.textContent += ` 暂不支持：${unsupported.map((p) => p.label).join("、")}。`;
+    }
+  }
+}
+
+function toggleImportPanel(force) {
+  const panel = rootRef?.querySelector("#import-panel");
+  if (!panel) return;
+  const show = force === undefined ? panel.classList.contains("hidden") : force;
+  panel.classList.toggle("hidden", !show);
+  if (show) {
+    fillAccountOptions();
+    setImportLoginState("");
+  }
+}
+
+function setImportLoginState(text, tone = "") {
+  const host = rootRef?.querySelector("#import-login-state");
+  if (!host) return;
+  host.textContent = text;
+  host.classList.toggle("hidden", !text);
+  host.style.color = tone === "ok" ? "var(--ok)" : tone === "warn" ? "var(--warn)" : "";
+}
+
+async function checkImportLogin(button) {
+  const platform = rootRef?.querySelector("#import-account-platform")?.value || "";
+  if (!platform) return toast("当前没有可导入的平台", "warn", 2400);
+  if (state.job) return toast("已有任务在进行", "warn", 1800);
+  setBusy(button, true, "检测中…");
+  setImportLoginState("正在检测登录状态…");
+  try {
+    const data = await api.post("/api/publish/login", { platform, action: "check" });
+    await trackJob(data.job.id, async (result) => {
+      const ok = Boolean(result.ok);
+      setImportLoginState(
+        ok ? "已登录，可以开始导入" : `未登录：${result.message || "请先去发布中心登录"}`,
+        ok ? "ok" : "warn"
+      );
+      toast(result.message || (ok ? "已登录" : "未登录"), ok ? "ok" : "warn", 5000);
+    });
+  } catch (err) {
+    setImportLoginState(`检测失败：${err.message}`, "warn");
+    toast(err.message, "error", 5000);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function startAccountImport(button) {  const platform = rootRef?.querySelector("#import-account-platform")?.value || "";
+  const limit = Number(rootRef?.querySelector("#import-limit")?.value || 50);
+  if (!platform) return toast("当前没有可导入的平台", "warn", 2600);
+  if (state.job) return toast("已有任务在进行", "warn", 1800);
+
+  setBusy(button, true, "导入中…");
+  try {
+    const data = await api.post("/api/analytics/import", { platform, limit });
+    await trackJob(data.job.id, async (result) => {
+      const ok = Boolean(result.ok);
+      toast(result.message || (ok ? "导入完成" : "导入未完成"), ok ? "ok" : "warn", 6000);
+      setStatus(ok ? "账号导入完成" : "账号导入未完成", ok ? "ok" : "warn");
+      toggleImportPanel(false);
+      await loadAll();
+    });
+  } catch (err) {
+    toast(err.message, "error", 6000);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function syncPost(item, button) {
+  if (state.job) return toast("已有任务在进行", "warn", 1800);
+  setBusy(button, true, "刷新中…");
+  try {
+    const data = await api.post("/api/analytics/posts/sync", { id: item.id });
+    await trackJob(data.job.id, async (result) => {
+      const ok = Boolean(result?.ok);
+      toast(result?.message || (ok ? "指标已更新" : "未取到指标"), ok ? "ok" : "warn", 5000);
+      if (ok) await loadAll();
+      else await loadPosts({ reset: true });
+    });
+  } catch (err) {
+    toast(err.message, "error", 6000);
+  } finally {
+    setBusy(button, false);
   }
 }
 
@@ -359,10 +564,10 @@ async function loadPosts() {
 function renderHint() {
   const host = rootRef?.querySelector("#hint");
   if (!host) return;
-  const total = state.posts.length;
+  const total = state.postsTotal;
   if (total === 0) {
     host.innerHTML = `<div class="banner banner--info">
-      <span>还没有任何作品记录。要么在发布中心发一篇，要么把已经发过的作品链接登记进来。</span>
+      <span>还没有任何作品记录。可以从已登录账号批量导入，或粘贴作品链接逐条登记。</span>
       <span style="display:flex;gap:8px">
         <button class="btn btn--sm" id="hint-register">登记已有作品</button>
         <button class="btn btn--sm btn--primary" id="hint-publish">去发布</button>
@@ -376,7 +581,7 @@ function renderHint() {
   }
   const unsynced = state.posts.filter((p) => p.status === "published" && !p.metrics?.captured_at).length;
   host.innerHTML = unsynced
-    ? `<div class="banner"><span>有 ${unsynced} 篇已发布作品还没有指标数据，点「同步指标」拉一次。</span></div>`
+    ? `<div class="banner"><span>已加载的作品里有 ${unsynced} 篇还没指标数据，点「同步指标」拉一次。</span></div>`
     : "";
 }
 
@@ -527,16 +732,34 @@ function renderPosts() {
   const host = rootRef?.querySelector("#posts");
   if (!host) return;
   const count = rootRef.querySelector("#post-count");
-  if (count) count.textContent = `共 ${state.posts.length} 条`;
+  if (count) count.textContent = `共 ${state.postsTotal} 条`;
+  const hint = rootRef.querySelector("#post-hint");
+  if (hint) {
+    const filtered = Boolean(state.postsQuery || state.postsStatus || state.platform);
+    hint.textContent = filtered
+      ? `筛选出 ${state.postsTotal} 条 · 已加载 ${state.posts.length} 条`
+      : `已加载 ${state.posts.length} / ${state.postsTotal} 条`;
+  }
+  const more = rootRef.querySelector("#load-more");
+  if (more) more.classList.toggle("hidden", state.posts.length >= state.postsTotal);
+
   if (!state.posts.length) {
-    host.innerHTML = '<div class="empty empty--inset">还没有作品记录</div>';
+    const filtered = Boolean(state.postsQuery || state.postsStatus || state.platform);
+    host.innerHTML = `<div class="empty empty--state">
+      <div class="empty__title">${filtered ? "没有匹配的记录" : "还没有作品记录"}</div>
+      <div class="empty__hint">${
+        filtered
+          ? "换个关键词，或把状态 / 平台筛选切回「全部」。"
+          : "在发布中心发一篇，或用上方「从账号导入 / 粘贴链接」把已有作品登记进来。"
+      }</div>
+    </div>`;
     return;
   }
   host.innerHTML = `<table class="table">
     <thead><tr>
       <th style="width:78px">平台</th><th>标题 / 链接</th><th style="width:82px">状态</th>
       <th class="num">播放</th><th class="num">点赞</th><th class="num">收藏</th>
-      <th style="width:110px">最近同步</th><th style="width:120px"></th>
+      <th style="width:110px">最近同步</th><th style="width:150px"></th>
     </tr></thead>
     <tbody>${state.posts
       .map((row) => {
@@ -562,6 +785,7 @@ function renderPosts() {
           <td class="num">${fmtInt(row.metrics?.collects)}</td>
           <td class="muted" style="font-size:12px">${row.metrics?.captured_at ? esc(fmtTime(row.metrics.captured_at)) : "未同步"}</td>
           <td class="actions">
+            ${row.url && row.status === "published" ? '<button class="btn btn--sm btn--ghost" data-act="sync">刷新指标</button>' : ""}
             ${row.url ? '<button class="btn btn--sm btn--ghost" data-act="open">打开</button>' : ""}
             <button class="btn btn--sm btn--ghost" data-act="delete">删除</button>
           </td>
@@ -575,6 +799,9 @@ function renderPosts() {
     const item = state.posts.find((entry) => entry.id === id);
     if (!item) return;
     row.querySelector('[data-act="open"]')?.addEventListener("click", () => openExternal(item.url));
+    row.querySelector('[data-act="sync"]')?.addEventListener("click", (event) =>
+      syncPost(item, event.target)
+    );
     row.querySelector('[data-act="delete"]')?.addEventListener("click", () => removePost(item));
   });
 }

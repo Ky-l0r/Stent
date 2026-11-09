@@ -31,6 +31,7 @@ export async function mount(root, ctx) {
       </div>
       <div class="page-actions">
         <input id="q" type="text" placeholder="搜索标题…" style="width:200px" value="${esc(filters.keyword)}">
+        <button class="btn" id="platform-settings" title="选择要聚合的热榜平台">平台设置</button>
         <button class="btn" id="refresh">刷新</button>
       </div>
     </div>
@@ -46,6 +47,7 @@ export async function mount(root, ctx) {
     }, 180)
   );
   root.querySelector("#refresh").addEventListener("click", (event) => load(true, root, ctx, event.target));
+  root.querySelector("#platform-settings").addEventListener("click", () => ctx.navigate("settings"));
 
   await load(false, root, ctx);
 }

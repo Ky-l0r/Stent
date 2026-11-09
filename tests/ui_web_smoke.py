@@ -60,6 +60,17 @@ def main() -> int:
     url = app.start()
     print(f"接口服务：{url}")
 
+    # 塞一条作品：分析页要从「空数据」切到「有数据」的表格/筛选/分页分支
+    from stent.core.db import db as store
+
+    store.create_post(
+        platform="bilibili",
+        title="冒烟测试作品",
+        url="https://www.bilibili.com/video/BV1xx411c7mZ",
+        status="published",
+        published_at="2026-11-01 10:00:00",
+    )
+
     headed = "--headed" in sys.argv
     problems: list[str] = []
 
@@ -160,6 +171,10 @@ def main() -> int:
             page.click('[data-route="settings"]')
             page.wait_for_selector("#base_url", timeout=15000)
             check("设置页渲染", page.is_visible("#api_key"))
+            check(
+                "热点平台可选（含垂类频道）",
+                page.eval_on_selector_all("[data-hot-platform]", "els => els.length") == 9,
+            )
             before = page.get_attribute("html", "data-theme")
             page.click("#theme-btn")
             page.wait_for_timeout(300)
@@ -188,6 +203,43 @@ def main() -> int:
             check("指标卡渲染", page.eval_on_selector_all(".kpi", "els => els.length") == 5)
             check("趋势区域存在", page.is_visible("#chart"))
             check("作品记录区域存在", page.is_visible("#posts"))
+            page.wait_for_selector("#posts table", timeout=20000)
+            check(
+                "作品记录渲染",
+                "冒烟测试作品" in page.inner_text("#posts"),
+                page.inner_text("#posts")[:60],
+            )
+            check(
+                "作品表固定高度内滚动",
+                page.eval_on_selector("#posts", "el => getComputedStyle(el).maxHeight") == "440px",
+                page.eval_on_selector("#posts", "el => getComputedStyle(el).maxHeight"),
+            )
+            page.fill("#post-search", "冒烟")
+            page.wait_for_timeout(900)
+            check(
+                "作品搜索生效",
+                page.eval_on_selector_all("#posts tbody tr", "els => els.length") == 1,
+            )
+            page.fill("#post-search", "")
+            page.wait_for_timeout(900)
+            page.click("#import-account")
+            page.wait_for_timeout(300)
+            check("账号导入面板可展开", page.is_visible("#import-panel"))
+            check(
+                "账号导入只列出支持的平台",
+                page.eval_on_selector_all("#import-account-platform option", "els => els.length")
+                == 3,
+            )
+            check(
+                "账号导入说明去重与登录前提",
+                "去重" in page.inner_text("#import-hint")
+                and "登录" in page.inner_text("#import-hint"),
+            )
+            check(
+                "归因结论限高",
+                page.eval_on_selector("#attr-result", "el => getComputedStyle(el).maxHeight")
+                == "300px",
+            )
             page.screenshot(path=str(shots / "web-analytics.png"))
 
             print("\n=== 控制台 ===")
