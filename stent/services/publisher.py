@@ -28,6 +28,8 @@ from ..platforms import (
     platform_label,
     platform_limits,
     registered_platforms,
+    system_browser_channel,
+    system_browser_label,
 )
 
 log = logging.getLogger(__name__)
@@ -463,11 +465,15 @@ class PublishService:
         *,
         on_progress: Callable[[str, int], None] | None = None,
         cancel: Any = None,
+        force: bool = False,
     ) -> tuple[bool, str]:
         """一键安装发布运行环境（Playwright 组件 + Chromium 内核）。
 
         面向非技术用户：这里把「该敲哪条命令」变成一次点击。命令仍然会执行，
         只是不再需要用户自己复制粘贴——失败时把原始输出回传给界面供排查。
+
+        ``force=True``：即使当前已经能借系统 Edge/Chrome 运行，也仍然下载内置内核
+        （给「系统浏览器改版导致填写异常」留的备用路径）。
         """
         import sys  # noqa: PLC0415
 
@@ -480,8 +486,8 @@ class PublishService:
                 pass
 
         status = environment_status()
-        if status.ready:
-            return True, "发布环境已就绪"
+        if status.ready and not force:
+            return True, status.detail or "发布环境已就绪"
 
         from ..paths import is_frozen
 
@@ -522,8 +528,11 @@ class PublishService:
         except Exception:  # pragma: no cover
             log.debug("重置适配器缓存失败", exc_info=True)
 
+        if _has_chromium(_chromium_root(), expected_chromium_revision()):
+            return True, "内置浏览器内核已安装完成，之后会优先使用它"
         if environment_status().ready:
-            return True, "发布环境安装完成，现在可以登录并发布了"
+            # 系统浏览器仍可用，但这次下载没有真正落地：不要报「安装完成」
+            return False, "内置内核仍未就绪，当前仍会使用系统浏览器；可稍后重试下载"
         return False, "安装命令已执行，但仍未检测到浏览器内核，请查看日志了解详情"
 
     @staticmethod
@@ -745,7 +754,23 @@ def environment_status() -> EnvironmentStatus:
             ready=True,
             code="ok",
             title="发布环境已就绪",
-            detail="浏览器内核已安装，登录与发布都可以正常使用。",
+            detail="内置浏览器内核已安装，登录与发布都可以正常使用。",
+        )
+
+    # 没下载内置内核不代表不能用：本机装了 Edge / Chrome 就直接借它，
+    # Playwright 的 channel 模式用的是系统安装，不需要再复制一份浏览器。
+    channel = system_browser_channel()
+    if channel:
+        label = system_browser_label(channel) or channel
+        return EnvironmentStatus(
+            ready=True,
+            code="system_browser",
+            title=f"发布环境可用（{label}）",
+            detail=(
+                f"没有下载内置内核，将直接使用本机已安装的 {label}。"
+                "不需要额外下载；若平台页面改版导致填写异常，可再下载内置内核作为备用。"
+            ),
+            size_hint="可选：内置内核约 150 MB",
         )
 
     installed = (
@@ -760,7 +785,7 @@ def environment_status() -> EnvironmentStatus:
             title="浏览器内核版本不匹配",
             detail=(
                 f"本机现有的内核（{existing}）与当前版本需要的 chromium-{revision} "
-                "不是同一个，需要重新下载一次。"
+                "不是同一个，需要重新下载一次；也可以装一个 Edge / Chrome 直接复用。"
             ),
             command=install_command_hint(),
             size_hint="约 150 MB",
@@ -769,7 +794,10 @@ def environment_status() -> EnvironmentStatus:
         ready=False,
         code="no_chromium",
         title="未检测到浏览器内核",
-        detail="发布时需要浏览器内核来打开平台页面并填写表单，当前还没有下载。",
+        detail=(
+            "发布时需要浏览器打开平台页面。可以一键下载内置内核（约 150 MB），"
+            "也可以直接装一个 Microsoft Edge 或 Google Chrome，Stent 会自动复用它。"
+        ),
         command=install_command_hint(),
         size_hint="约 150 MB",
     )

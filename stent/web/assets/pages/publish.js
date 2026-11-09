@@ -298,7 +298,18 @@ function renderEnv() {
     return;
   }
   if (env.ready) {
-    host.innerHTML = "";
+    // 借系统浏览器跑的时候仍然可用，但给一条「想用内置内核」的退路
+    if (env.code === "system_browser") {
+      host.innerHTML = `<div class="banner banner--info">
+        <span>${esc(env.detail)}</span>
+        <button class="btn btn--sm" id="install-env">下载内置内核备用</button>
+      </div>`;
+      host.querySelector("#install-env").addEventListener("click", (event) =>
+        installEnv(event.target, true)
+      );
+    } else {
+      host.innerHTML = "";
+    }
     return;
   }
   host.innerHTML = `<div class="banner${env.code === "no_chromium" ? "" : " banner--error"}">
@@ -308,10 +319,10 @@ function renderEnv() {
   host.querySelector("#install-env").addEventListener("click", (event) => installEnv(event.target));
 }
 
-async function installEnv(button) {
+async function installEnv(button, force = false) {
   setBusy(button, true, "配置中…");
   try {
-    const data = await api.post("/api/publish/install");
+    const data = await api.post("/api/publish/install", force ? { force: true } : {});
     showJob("正在配置发布环境…");
     const promise = watchJob(data.job.id, { onTick: updateJob });
     state.job = promise;
@@ -360,7 +371,7 @@ function updateLoginHint() {
   if (!envReady) {
     pillEl.className = "pill pill--warn";
     pillEl.textContent = "环境未就绪";
-    msg.textContent = "先完成上方的一键配置，才能打开登录窗口";
+    msg.textContent = "先完成上方配置；装一个 Edge / Chrome 也能直接复用，不必下载内核";
   } else if (!available) {
     pillEl.className = "pill pill--warn";
     pillEl.textContent = "适配器不可用";

@@ -11,7 +11,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -45,6 +48,108 @@ GENERIC_LOGGED_OUT_KEYWORDS: tuple[str, ...] = (
     "立即登录",
     "登录后",
 )
+
+#: 可复用的系统浏览器（Playwright 的 channel 名）。顺序＝优先使用谁。
+SYSTEM_BROWSERS: tuple[tuple[str, str], ...] = (
+    ("msedge", "Microsoft Edge"),
+    ("chrome", "Google Chrome"),
+)
+
+
+# --------------------------------------------------------------------------- #
+# 系统浏览器探测
+# --------------------------------------------------------------------------- #
+def _browser_candidates(channel: str) -> list[Path]:
+    """各平台常见的可执行文件位置。返回存在的那些由调用方筛。"""
+    if sys.platform == "win32":
+        program_files = [
+            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")),
+            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")),
+        ]
+        local = os.environ.get("LOCALAPPDATA")
+        if channel == "msedge":
+            bases = [p / "Microsoft" / "Edge" / "Application" for p in program_files]
+            if local:
+                bases.append(Path(local) / "Microsoft" / "Edge" / "Application")
+            return [base / "msedge.exe" for base in bases]
+        bases = [p / "Google" / "Chrome" / "Application" for p in program_files]
+        if local:
+            bases.append(Path(local) / "Google" / "Chrome" / "Application")
+        return [base / "chrome.exe" for base in bases]
+
+    if sys.platform == "darwin":
+        if channel == "msedge":
+            return [Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")]
+        return [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
+
+    # Linux：发行版装的通常已经在 PATH 里。
+    # 只认真正的 Chrome / Edge：Playwright 的 channel 没有 "chromium"，
+    # 把系统 chromium 当成 chrome 会探测成功却启动失败。
+    names = (
+        ("microsoft-edge", "microsoft-edge-stable")
+        if channel == "msedge"
+        else ("google-chrome", "google-chrome-stable")
+    )
+    found: list[Path] = []
+    for name in names:
+        located = shutil.which(name)
+        if located:
+            found.append(Path(located))
+    return found
+
+
+def browser_executable(channel: str) -> Path | None:
+    """系统里该 channel 的可执行文件；没装返回 ``None``。"""
+    for path in _browser_candidates(channel):
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _channel_override() -> str | None:
+    """读 ``STENT_BROWSER_CHANNEL``：``chromium`` = 只用内置，其余 = 强制指定。"""
+    raw = os.environ.get("STENT_BROWSER_CHANNEL", "").strip().lower()
+    if not raw or raw == "auto":
+        return None
+    if raw in {"chromium", "bundled", "playwright", "内置"}:
+        return ""
+    if raw in {"msedge", "edge", "系统edge"}:
+        return "msedge"
+    if raw in {"chrome", "google-chrome"}:
+        return "chrome"
+    log.warning("无法识别的 STENT_BROWSER_CHANNEL=%s，按自动处理", raw)
+    return None
+
+
+def system_browser_channel() -> str | None:
+    """优先可用的系统浏览器 channel；``None`` 表示没有可用的系统浏览器。
+
+    设置 ``STENT_BROWSER_CHANNEL=chromium`` 可强制只认内置内核；
+    设置 ``=msedge`` / ``=chrome`` 可强制走系统浏览器（即使没探测到也照用，
+    启动失败会给出明确原因）。
+    """
+    override = _channel_override()
+    if override == "":
+        return None
+    if override:
+        return override
+    for channel, _label in SYSTEM_BROWSERS:
+        if browser_executable(channel) is not None:
+            return channel
+    return None
+
+
+def system_browser_label(channel: str | None = None) -> str:
+    """channel → 给用户看的名字（未指定时取当前可用的那个）。"""
+    target = channel or system_browser_channel()
+    for key, label in SYSTEM_BROWSERS:
+        if key == target:
+            return label
+    return ""
+
 
 _NUM_TOKEN_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*[万亿wWkK]?)")
 
@@ -164,21 +269,50 @@ class BrowserSession:
         timeout_ms: int,
         args: tuple[str, ...],
     ):
-        """启动持久化上下文；先试禁用系统代理（国内平台直连更稳），失败退回默认。"""
+        """启动持久化上下文。
+
+        顺序：内置 Chromium → 系统 Edge/Chrome（若装了）。每次先试禁用系统代理
+        （国内平台直连更稳），失败再退回默认参数。
+
+        系统浏览器走 Playwright 的 ``channel``，用的是本机已经装好的 Edge/Chrome，
+        不需要下载 150MB 内核——这对「只想发个内容」的用户差别很大。
+        """
         common: dict[str, Any] = dict(
             headless=headless,
             locale="zh-CN",
             viewport={"width": 1440, "height": 900},
             timeout=timeout_ms,
         )
-        try:
-            return playwright.chromium.launch_persistent_context(
-                user_data_dir, args=list(args) + ["--no-proxy-server"], **common
-            )
-        except Exception:
-            return playwright.chromium.launch_persistent_context(
-                user_data_dir, args=list(args), **common
-            )
+
+        override = _channel_override()
+        if override == "":
+            attempts: list[str | None] = [None]
+        elif override:
+            attempts = [override]
+        else:
+            attempts = [None]
+            channel = system_browser_channel()
+            if channel:
+                attempts.append(channel)
+
+        failures: list[str] = []
+        seen: set[str] = set()
+        for channel in attempts:
+            kwargs = dict(common)
+            if channel:
+                kwargs["channel"] = channel
+            for flags in (list(args) + ["--no-proxy-server"], list(args)):
+                try:
+                    return playwright.chromium.launch_persistent_context(
+                        user_data_dir, args=flags, **kwargs
+                    )
+                except Exception as exc:  # noqa: BLE001 - 换下一个通道/参数再试
+                    name = f"系统 {system_browser_label(channel)}" if channel else "内置内核"
+                    message = f"{name}：{type(exc).__name__}: {exc}"
+                    if message not in seen:
+                        seen.add(message)
+                        failures.append(message)
+        raise RuntimeError("；".join(failures[-2:]) or "无法启动浏览器")
 
     def close(self) -> None:
         try:

@@ -278,6 +278,12 @@ def main() -> int:
         check("环境检测 200", status == 200, str(status))
         check("环境带平台清单", len(payload.get("platforms") or []) >= 4)
         check("环境标明是否就绪", "ready" in payload)
+        check(
+            "环境结论可识别",
+            payload.get("code") in {"ok", "system_browser", "no_chromium", "no_playwright"},
+            str(payload.get("code")),
+        )
+        check("环境说明复用的是哪个系统浏览器", "system_browser" in payload)
 
         status, payload = call(
             "POST",

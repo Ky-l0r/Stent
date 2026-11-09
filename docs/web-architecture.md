@@ -260,6 +260,10 @@ Qt 用 QSS + `theme.py` 常量。Web 侧把这些**翻译成 CSS 变量**（`--s
 
 - WebView2 运行时：Win11 与多数 Win10 已内置；缺失时壳层要给出**可操作提示**
   （下载常青版运行时），不能白屏。
+- 发布用的浏览器：**不要求用户先下载 Chromium**。启动顺序是
+  内置内核 → 系统 Edge → Chrome（Playwright `channel`），Windows 10/11 自带 Edge，
+  开箱即用；环境检测会标明当前复用的是哪一个，并留「下载内置内核」的备用入口。
+  `STENT_BROWSER_CHANNEL=chromium|msedge|chrome` 可强制指定。
 - `Stent.spec` 需要增加：`stent/web` 目录进 `datas`、`pywebview` 相关 hiddenimports。
 - 体积：去掉 PySide6 后本可瘦一大截，但 P0 阶段**保留 PySide6**
   （旧界面仍可用，回退成本为零），等 Web 版稳定再摘。见第七章。

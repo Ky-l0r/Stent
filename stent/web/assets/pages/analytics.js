@@ -133,7 +133,7 @@ export async function mount(root, ctx) {
           <button type="button" data-cumulative="0">单日表现</button>
         </div>
       </div>
-      <div id="chart" style="margin-top:10px"></div>
+      <div id="chart" style="margin-top:10px"><div class="loading">正在统计…</div></div>
     </div>
 
     <div class="grid-side">

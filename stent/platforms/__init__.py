@@ -20,6 +20,11 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from ._browser import (
+    browser_executable,
+    system_browser_channel,
+    system_browser_label,
+)
 from .base import (
     LoginRequired,
     LoginState,
@@ -53,6 +58,7 @@ __all__ = [
     "adapters",
     "all_adapters",
     "available_platforms",
+    "browser_executable",
     "canonical_post_url",
     "emit",
     "get_adapter",
@@ -64,6 +70,8 @@ __all__ = [
     "post_identity",
     "registered_platforms",
     "reset_cache",
+    "system_browser_channel",
+    "system_browser_label",
 ]
 
 #: 平台 key → (子模块名, 类名, 中文名)

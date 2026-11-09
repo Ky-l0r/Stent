@@ -110,7 +110,13 @@ def main() -> int:
             check("输入可写入", page.input_value("#topic") == "冒烟测试主题")
             page.fill("#body", "这是一段用于冒烟测试的正文，先存成草稿，再从草稿箱送发布。")
             page.click("#save-draft")
-            page.wait_for_timeout(600)
+            try:
+                page.wait_for_function(
+                    "() => document.querySelector('#save-draft').textContent.includes('更新')",
+                    timeout=8000,
+                )
+            except Exception:  # noqa: BLE001 - 没变成「更新」交给下面的断言报告
+                pass
             check(
                 "草稿保存后按钮变成更新",
                 "更新" in page.inner_text("#save-draft"),

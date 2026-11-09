@@ -54,8 +54,9 @@ pwsh -File build.ps1 -Clean
 
 - onefile 每次启动要把包解到临时目录，冷启动明显变慢；
 - onefile 的临时解压与 Playwright 的子进程模型容易冲突；
-- **Chromium 不内置**：默认复用系统已安装的 Playwright 浏览器，缺失时由应用提示按需下载，
-  以此控制安装体积。冻结态下 `paths.ensure_playwright_browsers_path()` 会把
+- **Chromium 不内置**：优先复用系统已装的 Playwright 内核；没有时**自动回退到本机
+  Edge / Chrome**（Playwright 的 `channel` 模式），因此用户侧不必先下载 150MB。
+  冻结态下 `paths.ensure_playwright_browsers_path()` 会把
   `PLAYWRIGHT_BROWSERS_PATH` 从包内 `.local-browsers` 纠正到用户目录——不纠正必然报「浏览器不可用」。
 
 ### 瘦身
@@ -66,10 +67,11 @@ v1.1 实测 232.7MB → 约 190MB。`excludes` 只能挡住 Python 侧的模块�
 
 ### 分发
 
-把 `dist\Stent` 整个目录压缩即可发给用户。发布功能需要 Chromium，任选：
+把 `dist\Stent` 整个目录压缩即可发给用户。发布功能会先用本机 Edge / Chrome，
+没有可复用的浏览器时再任选：
 
 - 把打包机上的 `%USERPROFILE%\AppData\Local\ms-playwright` 一并分发；
-- 让用户自己执行 `python -m playwright install chromium`。
+- 让用户自己执行 `python -m playwright install chromium`（应用内也有一键下载）。
 
 ---
 

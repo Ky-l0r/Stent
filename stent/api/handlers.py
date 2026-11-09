@@ -18,7 +18,12 @@ from ..config import PROVIDER_PRESETS, config_manager
 from ..config import secrets as secret_store
 from ..core.db import db
 from ..core.llm import LLMClient, LLMError, Message
-from ..platforms import platform_label, platform_limits
+from ..platforms import (
+    platform_label,
+    platform_limits,
+    system_browser_channel,
+    system_browser_label,
+)
 from ..services.creator import PLATFORM_STYLES, CreationRequest, CreationResult, creator_service
 from ..services.hotsearch import ALL_PLATFORMS, PLATFORM_LABELS, hotsearch_service
 from ..services.profile import DIMENSIONS, profile_service
@@ -837,6 +842,7 @@ def _env_payload() -> dict[str, Any]:
         "title": status.title,
         "detail": status.detail,
         "size_hint": status.size_hint,
+        "system_browser": system_browser_label(system_browser_channel()) or "",
         "platforms": rows,
     }
 
@@ -882,7 +888,11 @@ def publish_install(request: Request) -> Response:
 
     下载约 150MB，必须后台跑；进度与失败原因都通过任务状态回传，
     前端据此显示「正在下载内核 40%」而不是干等。
+
+    ``force=true``：系统已有 Edge/Chrome 时也强制下载内置内核（备用路径）。
     """
+    data = request.json()
+    force = bool(data.get("force"))
     service = _publish_service()
     if jobs.running("publish"):
         raise ApiError("已有发布相关任务在进行，请等它结束", status=409, code="busy")
@@ -891,6 +901,7 @@ def publish_install(request: Request) -> Response:
         ok, message = service.install_environment(
             on_progress=lambda msg, percent=-1: job.progress(msg, percent),
             cancel=job.cancel,
+            force=force,
         )
         job.message = message
         return {"ok": ok, "message": message, "env": _env_payload()}

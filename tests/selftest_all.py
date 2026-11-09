@@ -456,6 +456,50 @@ def main() -> int:
         print("  [SKIP] 平台适配器未加载（playwright 未安装或模块缺失）")
     check("available_platforms 是列表", isinstance(available_platforms(), list))
 
+    section("系统浏览器复用（不下载内核也能发布）")
+    from stent.platforms import (
+        browser_executable,
+        system_browser_channel,
+        system_browser_label,
+    )
+    from stent.services.publisher import environment_status
+
+    try:
+        import playwright  # noqa: F401
+
+        has_playwright = True
+    except ImportError:
+        has_playwright = False
+
+    channel = system_browser_channel()
+    check("channel 取值合法", channel in {None, "msedge", "chrome"}, str(channel))
+    if channel:
+        exe = browser_executable(channel)
+        label = system_browser_label(channel)
+        check(f"{label} 可执行文件存在", exe is not None and exe.is_file(), str(exe))
+        check("channel 有中文名", bool(label), label)
+        if has_playwright:
+            status = environment_status()
+            check(
+                "有系统浏览器时环境可用",
+                status.ready,
+                f"{status.code} {status.title} {status.detail}",
+            )
+            check("标明复用系统浏览器", status.code in {"ok", "system_browser"}, status.code)
+    else:
+        print("  [SKIP] 本机未检测到 Edge / Chrome")
+
+    # 强制只用内置内核时，不应再返回系统浏览器（用户可在环境变量里指定）
+    previous = os.environ.get("STENT_BROWSER_CHANNEL")
+    os.environ["STENT_BROWSER_CHANNEL"] = "chromium"
+    try:
+        check("强制内置时忽略系统浏览器", system_browser_channel() is None)
+    finally:
+        if previous is None:
+            os.environ.pop("STENT_BROWSER_CHANNEL", None)
+        else:
+            os.environ["STENT_BROWSER_CHANNEL"] = previous
+
     section("B 站改版适配（简介 / 分区 / dry-run 收尾）")
     from stent.platforms import bilibili as bili
 

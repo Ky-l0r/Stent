@@ -126,13 +126,19 @@ Stent 把这条链路收进一个桌面窗口：
 到 [Releases](https://github.com/Ky-l0r/Stent/releases/latest) 下载 `Stent-vX.Y-win64.zip`，解压后双击 `Stent.exe`。
 **无需安装 Python**，数据写在 `%APPDATA%\Stent\`。
 
-发布功能需要 Chromium 内核，任选一种方式准备：
+发布功能不再强制要求自备 Chromium：**本机装了 Microsoft Edge 或 Google Chrome 就会直接复用**
+（Windows 10/11 默认自带 Edge），首次点发布即可用。
+
+想要更稳定的固定内核时，再任选一种方式准备：
 
 ```powershell
 python -m playwright install chromium
 ```
 
 或把打包机上的 `%USERPROFILE%\AppData\Local\ms-playwright` 目录一并分发。
+有内置内核时会优先用它；没有时自动回退到系统 Edge / Chrome。
+可用 `STENT_BROWSER_CHANNEL=chromium` 强制只用内置内核，
+`=msedge` / `=chrome` 强制指定系统浏览器。
 
 ### 方式二：源码运行
 
