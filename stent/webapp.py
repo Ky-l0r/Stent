@@ -107,8 +107,15 @@ _PREVIEW_CARD = 0x002E1B1F  # 近黑的卡片底，深浅主题下都能压住�
 _PREVIEW_SLOT = 0x008A85A0  # 缩略图里的空闲分区
 _PREVIEW_ALPHA = 112
 
+# DWM：Win11 的圆角偏好值 2 = DWMWCP_ROUND。设上之后 DWM 会同时给圆角与投影，
+# 这是实测结论（见 docs/ui-internals.md）：DwmExtendFrameIntoClientArea 在这条
+# WS_POPUP 窗口上单独用既不产生阴影，还会在边缘留 1px 痕迹，所以不碰它。
+_DWMWA_WINDOW_CORNER_PREFERENCE = 33
+_DWMWCP_ROUND = 2
+
 _user32_cached: Any = None
 _gdi32_cached: Any = None
+_dwmapi_cached: Any = None
 
 
 if _IS_WINDOWS:
@@ -273,6 +280,49 @@ if _IS_WINDOWS:
 
     def _module_handle() -> Any:
         return ctypes.WinDLL("kernel32").GetModuleHandleW(None)
+
+    def _dwmapi() -> Any:
+        """取一份私有的 dwmapi 并声明签名（理由同 ``_user32``）。"""
+        global _dwmapi_cached
+        if _dwmapi_cached is not None:
+            return _dwmapi_cached
+        d = ctypes.WinDLL("dwmapi")
+        d.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+        d.DwmSetWindowAttribute.restype = ctypes.c_long
+        d.DwmIsCompositionEnabled.argtypes = [ctypes.POINTER(wt.BOOL)]
+        d.DwmIsCompositionEnabled.restype = ctypes.c_long
+        _dwmapi_cached = d
+        return d
+
+    def _apply_round_corners(hwnd: int) -> bool:
+        """给窗口套上 DWM 圆角与投影。
+
+        Win11（build 22000+）上只设这一个属性就够：DWM 会同时把四角裁圆、在窗口
+        外沿画投影。Win10 没有这个属性，返回 E_INVALIDARG——此时保持直角即可，
+        不能因为「没圆角」就把窗口开不起来。
+        """
+        if not hwnd:
+            return False
+        try:
+            d = _dwmapi()
+            composed = wt.BOOL()
+            if d.DwmIsCompositionEnabled(ctypes.byref(composed)) != 0 or not composed.value:
+                log.debug("DWM 合成未启用，跳过圆角")
+                return False
+            value = ctypes.c_int(_DWMWCP_ROUND)
+            result = d.DwmSetWindowAttribute(
+                hwnd,
+                _DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+        except Exception:  # noqa: BLE001 - 圆角是锦上添花，不能影响窗口可用性
+            log.debug("DWM 圆角设置失败", exc_info=True)
+            return False
+        if result != 0:
+            log.debug("DWM 圆角不受支持（系统可能低于 Win11）：HRESULT=0x%08X", result & 0xFFFFFFFF)
+            return False
+        return True
 
     def _find_window_handle(pid: int) -> int:
         """找本进程的宿主窗口：可见、有标题、面积最大的那个。
@@ -557,6 +607,7 @@ class _NativeWindow:
 
     def __init__(self) -> None:
         self._hwnd = 0
+        self._framed_hwnd = 0
         self._animating = threading.Event()
         self._dragging = threading.Event()
         self._resizing = threading.Event()
@@ -574,7 +625,28 @@ class _NativeWindow:
         if self._hwnd and u.IsWindow(self._hwnd):
             return self._hwnd
         self._hwnd = _find_window_handle(os.getpid())
+        # 句柄一拿到就补圆角：早于任何窗口操作，用户看不到「先直角后变圆」的跳变
+        self._ensure_frame(self._hwnd)
         return self._hwnd
+
+    def apply_frame(self) -> bool:
+        """给宿主窗口套 DWM 圆角与投影（幂等，每个句柄只设一次）。
+
+        窗口是在 ``webview.start()`` 里才创建的，``create_window`` 那一刻还没有
+        句柄，所以这里挂两个入口：``events.shown``（正常路径，窗口一出现就圆角）
+        与句柄首次发现（兜底，比如事件没来）。
+        """
+        if not _IS_WINDOWS:
+            return False
+        return self._ensure_frame(self.handle())
+
+    def _ensure_frame(self, hwnd: int) -> bool:
+        if not hwnd or hwnd == self._framed_hwnd:
+            return bool(self._framed_hwnd)
+        if _apply_round_corners(hwnd):
+            self._framed_hwnd = hwnd
+            return True
+        return False
 
     def rect(self) -> tuple[int, int, int, int]:
         r = _RECT()
@@ -1015,6 +1087,10 @@ class ShellApi:
         if self._window is not None:
             self._window.destroy()
 
+    def apply_frame(self) -> bool:
+        """窗口显示后套 DWM 圆角与投影；系统不支持时返回 False（不影响使用）。"""
+        return self._native.apply_frame()
+
     def start_drag(self, x: int = 0, y: int = 0) -> None:
         """自绘标题栏的「按下了」：由壳层按光标摆窗口，直到松开。
 
@@ -1141,6 +1217,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         js_api=shell,
     )
     shell._window = window  # noqa: SLF001 - 同一模块内注入窗口引用
+    # 窗口一出现就套圆角（原生窗口是 webview.start() 里才创建的，此时还没句柄）
+    window.events.shown += lambda *_: shell.apply_frame()
     # 有这条日志才能区分「窗口开了」和「页面真的渲染了」——白屏时看日志即可定位
     window.events.loaded += lambda *_: log.info("窗口页面已加载：%s", url)
     try:

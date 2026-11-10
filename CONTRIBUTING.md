@@ -115,6 +115,7 @@ python tests/selftest_attribution_zh.py              # 归因链路中文化
 python tests/ui_web_smoke.py        # 界面渲染冒烟（真浏览器，缺内核退到系统 Edge）
 python tests/ui_web_window.py       # 壳层窗口行为（最大化 / 还原 / 动画 / 拖动 / 吸附 / 缩放）
 python tests/selftest_snap.py       # 贴边吸附、Snap 选择器、拖边缩放（50 项）
+python tests/selftest_frame.py      # 窗口圆角与投影（10 项，像素级）
 ```
 
 文档分工：**README 只写「现在是什么、怎么用」，变更记录一律写 `CHANGELOG.md`**
