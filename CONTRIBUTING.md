@@ -41,7 +41,7 @@ python main.py
 | 文档 | 什么时候读 |
 |---|---|
 | [docs/development.md](docs/development.md) | 打包、自检清单、性能取舍 |
-| [docs/ui-internals.md](docs/ui-internals.md) | 改 `stent/webapp.py` 的窗口行为前**必读** |
+| [docs/ui-internals.md](docs/ui-internals.md) | 改 `stent/webapp.py` 的窗口行为（拖动 / 吸附 / 缩放）前**必读** |
 | [NOTICE](NOTICE) | 想知道哪些代码来自上游 Easel、改动了什么 |
 
 ---
@@ -50,7 +50,8 @@ python main.py
 
 ```
 stent/
-├── webapp.py    桌面壳：无边框窗口、拖动与最大化动画、单实例、文件选择
+├── webapp.py    桌面壳：无边框窗口、拖动与最大化动画、贴边吸附预览、单实例、文件选择
+├── window_snap.py  吸附与缩放的纯几何（贴边判定、布局平铺、缩放边界）
 ├── api/         本机 HTTP 接口：路由、令牌校验、SSE
 ├── web/         前端：index.html + assets（原生 ES Module，无构建步骤）
 ├── services/    业务逻辑：热榜 / 创作 / 检查 / 发布编排 / 分析。可脱离界面单测
@@ -112,8 +113,12 @@ python tests/check_project.py                        # 版本号 / CHANGELOG / �
 python tests/selftest_all.py                         # 服务层端到端（当前 171 项）
 python tests/selftest_attribution_zh.py              # 归因链路中文化
 python tests/ui_web_smoke.py        # 界面渲染冒烟（真浏览器，缺内核退到系统 Edge）
-python tests/ui_web_window.py       # 壳层窗口行为（最大化 / 还原 / 动画 / 拖动）
+python tests/ui_web_window.py       # 壳层窗口行为（最大化 / 还原 / 动画 / 拖动 / 吸附 / 缩放）
+python tests/selftest_snap.py       # 贴边吸附、Snap 选择器、拖边缩放（48 项）
 ```
+
+文档分工：**README 只写「现在是什么、怎么用」，变更记录一律写 `CHANGELOG.md`**
+（详见 [AGENTS.md 第八章](AGENTS.md#八文档同步)）。
 
 再按你改动的区域补跑对应的回归脚本，清单见
 [docs/development.md「发版前自检清单」](docs/development.md#发版前自检清单)。

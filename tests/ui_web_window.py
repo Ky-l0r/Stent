@@ -355,8 +355,121 @@ def app_window_checks() -> None:
             f"rect={restored_rect} 期望={normal_rect}",
         )
 
+        # ---- 拖窗口边缘改尺寸（无边框窗口没有系统缩放边）----
+        #
+        # 注入鼠标有两个坑，都在这里踩过：
+        # 1) 最小化再恢复之后，WebView2 的渲染进程还在「挂起 → 恢复」的路上，
+        #    大约 1–2 秒内页面收不到任何 pointerdown（点按钮没反应、拖也拖不动），
+        #    而 GetWindowRect 看起来一切正常。所以每段注入都必须允许重试。
+        # 2) 窗口被别的置顶窗口压住时，输入直接落不到页面上，同样表现为「没反应」，
+        #    所以每次注入前都重新钉到最前。
+        def pin_foreground() -> None:
+            user32.SetWindowPos(
+                ctypes.c_void_p(hwnd),
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                0x0002 | 0x0001,  # SWP_NOMOVE | SWP_NOSIZE
+            )
+            user32.SetForegroundWindow(wt.HWND(hwnd))
+
+        def drag_from(
+            point: tuple[int, int], path: list[tuple[int, int]], attempts: int = 3
+        ) -> tuple[int, int, int, int]:
+            """注入一次拖动，返回拖动后的矩形；页面还没醒就重试。"""
+            before = rect_of(hwnd)
+            for attempt in range(attempts):
+                pin_foreground()
+                _set_cursor(*point)
+                time.sleep(0.2 + 0.6 * attempt)
+
+                def inject() -> None:
+                    time.sleep(0.15)
+                    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.12)
+                    for px, py in path:
+                        _set_cursor(px, py)
+                        time.sleep(0.06)
+                    time.sleep(0.1)
+                    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+                thread = threading.Thread(target=inject)
+                thread.start()
+                thread.join(10.0)
+                time.sleep(0.5)
+                after = rect_of(hwnd)
+                if after != before:
+                    return after
+            return rect_of(hwnd)
+
+        def hit_of(point: tuple[int, int]) -> int:
+            under = user32.WindowFromPoint(wt.POINT(point[0], point[1]))
+            return int(user32.GetAncestor(under, 2)) if under else 0
+
+        base = rect_of(hwnd)
+        work = work_area(hwnd)
+
+        mid_y = (base[1] + base[3]) // 2
+        check(
+            "缩放按下点命中本窗口",
+            hit_of((base[2] - 2, mid_y)) == hwnd,
+            f"命中={hit_of((base[2] - 2, mid_y))}",
+        )
+        # 视口右边缘：命中区只有 5px，取 right-2。位移按光标算，终点是
+        # 「按下点 -120」，窗口右沿同样收到 -120。
+        resized = drag_from(
+            (base[2] - 2, mid_y),
+            [(base[2] - 62, mid_y), (base[2] - 122, mid_y), (base[2] - 122, mid_y)],
+        )
+        check(
+            "拖右边缘改窗口宽度",
+            resized[0] == base[0] and resized[2] == base[2] - 120,
+            f"rect={resized} 期望右沿={base[2] - 120}",
+        )
+
+        # ---- 贴边分屏：拖到屏幕左沿松手 ----
+        left_half = (work[0], work[1], work[0] + (work[2] - work[0]) // 2, work[3])
+        start_rect = rect_of(hwnd)
+        start = (start_rect[0] + 120, start_rect[1] + 23)
+        edge_y = (work[1] + work[3]) // 2
+        snapped = drag_from(
+            start,
+            [
+                (start[0] - 240, start[1]),
+                (work[0] + 2, edge_y),
+                (work[0] + 2, edge_y),
+                (work[0] + 2, edge_y),
+            ],
+        )
+        check("拖到左边缘吸附左半屏", snapped == left_half, f"rect={snapped} 期望={left_half}")
+
+        # ---- 拖到屏幕上沿松手（没选分区）：最大化 ----
+        start_rect = rect_of(hwnd)
+        center_x = work[0] + (work[2] - work[0]) // 2
+        top_drop = drag_from(
+            (start_rect[0] + 120, start_rect[1] + 23),
+            [
+                (start_rect[0] + 120, work[1] + 140),
+                (center_x, work[1] + 2),
+                (center_x, work[1] + 2),
+            ],
+        )
+        time.sleep(0.6)
+        check("拖到上沿松手最大化", top_drop == work, f"rect={top_drop} 工作区={work}")
+
         # ---- 最小化按钮（「全屏之后不能缩小」的另一种读法）----
-        click(restored_rect[2] - 93, restored_rect[1] + 23)
+        #
+        # 放在最后：从外面 ShowWindow 恢复最小化窗口时，WinForms 的 WindowState
+        # 不会跟着回到 Normal，WebView2 就继续当自己不可见，页面长时间收不到
+        # pointerdown。这个副作用会污染后面所有靠注入输入的检查，所以最小化
+        # 一定是最后一项。
+        maximized_rect = rect_of(hwnd)
+        click(maximized_rect[2] - 57, maximized_rect[1] + 23)  # 先退出最大化
+        time.sleep(0.5)
+        base = rect_of(hwnd)
+        click(base[2] - 93, base[1] + 23)
         time.sleep(0.5)
         iconic = bool(user32.IsIconic(wt.HWND(hwnd)))
         check("点最小化按钮能收起窗口", iconic, f"IsIconic={iconic}")
@@ -364,9 +477,10 @@ def app_window_checks() -> None:
         time.sleep(0.5)
         check(
             "从最小化恢复后位置不变",
-            (not user32.IsIconic(wt.HWND(hwnd))) and rect_of(hwnd) == restored_rect,
-            f"rect={rect_of(hwnd)} 期望={restored_rect}",
+            (not user32.IsIconic(wt.HWND(hwnd))) and rect_of(hwnd) == base,
+            f"rect={rect_of(hwnd)} 期望={base}",
         )
+
     finally:
         subprocess.run(
             ["taskkill", "/pid", str(proc.pid), "/T", "/F"],

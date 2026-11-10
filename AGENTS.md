@@ -243,12 +243,17 @@ Git 默认后端因此在握手阶段直接失败：
 
 - 颜色只从 CSS 变量取（`stent/web/assets/app.css` 的 `--stent-*`），不写死十六进制；
   平台品牌色在前端常量里，加平台时同步加品牌色。
+  唯一例外是吸附预览层（`webapp._SnapOverlay`）：它画在 Win32 分层窗口上，不是页面，
+  拿不到 CSS 变量，而且 `COLORREF` 是 `0x00BBGGRR` 序，与 CSS 的 `#RRGGBB` 相反——
+  那里的色值集中在模块顶部并注明来源，改配色时两处一起看。
 - 图标用内联 SVG，不要引入图片资源或 emoji 当图标。
 - 支持浅色 / 暗色双主题，新增控件必须两套主题都看过；语义色要随主题变暗
   （例如警告底色用暗金棕而非浅黄）。
 - 布局不许写死像素高度导致小窗口下压叠；需要限高的列表用固定高度 + 内部滚动。
 - 动效与窗口行为改动前读 `docs/ui-internals.md`：无边框窗口的拖动、最大化动画、
-  最小化都是壳层用 Win32 自己做的，改动前先看那里的坑。
+  最小化、贴边吸附、拖边缩放都是壳层用 Win32 自己做的，改动前先看那里的坑。
+- 吸附 / 缩放的几何只在 `window_snap.py` 里算，`webapp.py` 不许再写一套坐标推导：
+  两套算法一旦不一致，就会出现「预览在这、窗口落在那」。
 
 ### 5.6 注释与文案
 
@@ -267,7 +272,8 @@ Git 默认后端因此在握手阶段直接失败：
 
 | 目录 | 放什么 |
 | --- | --- |
-| `stent/webapp.py` | 桌面壳：窗口（含无边框、最大化动画、拖动）、单实例、文件选择 |
+| `stent/webapp.py` | 桌面壳：窗口（含无边框、最大化动画、拖动、贴边吸附落位）、吸附预览层、单实例、文件选择 |
+| `stent/window_snap.py` | 吸附与缩放的**纯几何**：贴边判定、布局平铺、选择器命中、缩放边界（不 import Win32，可单测） |
 | `stent/api/` | 本机 HTTP 接口：`server.py` 路由与 SSE、`handlers.py` 端点实现 |
 | `stent/web/` | 前端：`index.html` + `assets/*.js` + `assets/pages/*.js`（原生 ES Module，无构建步骤） |
 | `stent/bootstrap.py` | 启动期公共设施：控制台 UTF-8 与日志落盘 |
@@ -330,7 +336,8 @@ Git 默认后端因此在握手阶段直接失败：
 | 归因、画像记忆、中文文案 | 上项 + `python tests/selftest_attribution_zh.py` |
 | `api/`（接口层） | 上项 + `python tests/selftest_api.py` |
 | `web/`（前端资源） | `python tests/selftest_api.py`（静态资源与 token 注入）+ `python tests/ui_web_smoke.py`（真浏览器渲染） |
-| `webapp.py`（壳层 / 窗口） | 上项 + `python tests/ui_web_window.py`（最大化 / 还原 / 动画 / 拖动 / 最小化） |
+| `webapp.py`（壳层 / 窗口） | 上项 + `python tests/ui_web_window.py`（最大化 / 还原 / 动画 / 拖动 / 最小化 / 拖边缩放 / 贴边吸附） |
+| `window_snap.py`（吸附与缩放几何） | 上项 + `python tests/selftest_snap.py`（48 项：几何 / 预览层 / 窗口行为） |
 | `platforms/` | 上项 + selftest 里的平台断言；涉及真实页面的改动**标注"需真机验证"** |
 | `pyproject.toml`、依赖、CI、构建脚本 | 全部门禁 + `python tests/check_project.py`；改依赖后本地 `pip install -r requirements.txt` 跑一次源码 |
 | 准备发版 | 全部 + `pwsh -File build.ps1 -Clean`（约 2 分半，产物约 190MB） |
@@ -346,6 +353,7 @@ python tests/selftest_all.py                  # 服务层端到端 200+ 项
 python tests/selftest_attribution_zh.py       # 归因链路中文化
 python tests/ui_web_smoke.py                  # 界面渲染冒烟（真浏览器）
 python tests/ui_web_window.py                 # 壳层窗口行为（真窗口 + 注入鼠标）
+python tests/selftest_snap.py                 # 贴边吸附 / 拖边缩放 / Snap 选择器（48 项）
 pwsh -File build.ps1 -Clean                   # 打包
 ```
 
@@ -361,13 +369,32 @@ pwsh -File build.ps1 -Clean                   # 打包
 
 ## 八、文档同步
 
+### 8.1 文档分工（硬规则）
+
+**README 写用户向内容，变更记录写 CHANGELOG。** 两者不许混：
+
+| 文件 | 只写 | 不许写 |
+| --- | --- | --- |
+| `README.md` | 功能是什么、怎么用、怎么配、已知限制、路线图 | 版本号、更新记录、"本次新增/修复了…"、`v1.x.x` 变更段落、内部实现取舍 |
+| `CHANGELOG.md` | 每个版本改了什么、为什么改、取舍与代价、新增/调整的回归脚本 | 泛泛的功能介绍、使用教程 |
+
+- README 描述的是**当前这一版的行为**，不背历史：功能上线就写进对应章节，下线就删掉，
+  不写"曾经有/后来删了"（那些属于 CHANGELOG 的「移除」小节）。
+- CHANGELOG 是变更的唯一去处。任何用户可见的变化都要在里面留一条，
+  按「新增 / 改进 / 修复 / 移除 / 其他」归到当前未发布版本下。
+- 两边都要改的情况：功能上线时 README 加用法、CHANGELOG 加条目——**写的是两件事**，
+  不要互相复制句子。
+- 文档里出现"最近更新""更新日志"这类小节标题就是违规，内容一律搬到 CHANGELOG。
+
+### 8.2 按改动找文档
+
 | 触发 | 必须更新 |
 | --- | --- |
 | 用户可见行为变化 | `CHANGELOG.md`（在"未发布"版本下按 修复 / 改进 / 其他 小节） |
 | 发版 | `stent/__init__.py` 的 `__version__` + `CHANGELOG.md` 版本标题一起改（CI 会校验） |
-| 能力或已知限制变化 | `README.md`（含「已知限制」「路线图」表） |
+| 能力或已知限制变化 | `README.md`（只写当前行为，含「已知限制」「路线图」表；不写变更记录） |
 | 构建流程、自检清单、平台改版取证 | `docs/development.md` |
-| 无边框窗口 / Win32 / 拖动与最大化动画 | `docs/ui-internals.md` |
+| 无边框窗口 / Win32 / 拖动与最大化动画 / 贴边吸附与缩放 | `docs/ui-internals.md` |
 | Web 前端的架构、职责边界、迁移进度 | `docs/web-architecture.md` |
 | 分层、代码约定、提交规范 | `CONTRIBUTING.md` |
 | 新增或调整回归脚本 | `docs/development.md` 的回归表 |

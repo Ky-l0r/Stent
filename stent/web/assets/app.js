@@ -128,16 +128,72 @@ async function route() {
   }
 }
 
+// 视口边缘多宽算「抓住了窗口边」。无边框窗口的视口就是窗口本身，
+// 所以这里判断的是窗口的物理边缘。
+const RESIZE_EDGE = 5;
+const EDGE_CURSORS = {
+  n: "ns-resize",
+  s: "ns-resize",
+  e: "ew-resize",
+  w: "ew-resize",
+  ne: "nesw-resize",
+  sw: "nesw-resize",
+  nw: "nwse-resize",
+  se: "nwse-resize",
+};
+
+// 铺满工作区的窗口没有可拖的边（与系统一致）。这只是**光标**上的提示：
+// 用工作区尺寸反推比每次追问壳层便宜。按下事件照样交给壳层——真最大化了它会
+// 直接拒绝，而「恰好调整成铺满工作区但没最大化」的窗口仍然可以拖边。
+function looksMaximized() {
+  return (
+    window.innerWidth >= screen.availWidth - 2 && window.innerHeight >= screen.availHeight - 2
+  );
+}
+
+function resizeEdgeAt(x, y) {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const left = x <= RESIZE_EDGE;
+  const right = x >= w - 1 - RESIZE_EDGE;
+  const top = y <= RESIZE_EDGE;
+  const bottom = y >= h - 1 - RESIZE_EDGE;
+  return `${top ? "n" : bottom ? "s" : ""}${left ? "w" : right ? "e" : ""}`;
+}
+
 function wireShell() {
-  // 自绘标题栏：按下时只把「按下点的屏幕坐标」交给壳层，由系统进入它自己的
-  // 移动循环。旧实现是逐帧算位移再调 move_window()，每一帧都过一次 JS→Python
-  // 的桥，必然比鼠标慢半拍。
+  // 自绘标题栏：按下时只把「按下点的屏幕坐标」交给壳层，之后由 Python 侧
+  // 按光标摆窗口（见 docs/ui-internals.md）。逐帧回传位移会慢半拍。
   const zone = document.getElementById("dragzone");
   zone.addEventListener("pointerdown", (event) => {
     if (!shell.available() || event.button !== 0) return;
     shell.call("start_drag", Math.round(event.screenX), Math.round(event.screenY));
   });
   zone.addEventListener("dblclick", () => shell.call("toggle_maximize"));
+
+  // 边缘拖拽改尺寸：命中区只有 5px，不值得为它加 8 个 DOM 覆盖层，
+  // 直接在捕获阶段拦下按下事件即可——顺带挡住标题栏的拖动。
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!shell.available() || event.button !== 0) return;
+      const edge = resizeEdgeAt(event.clientX, event.clientY);
+      if (!edge) return;
+      event.preventDefault();
+      event.stopPropagation();
+      shell.call("start_resize", edge, Math.round(event.screenX), Math.round(event.screenY));
+    },
+    { capture: true },
+  );
+  window.addEventListener("pointermove", (event) => {
+    if (!shell.available() || event.buttons !== 0) return;
+    const edge = looksMaximized() ? "" : resizeEdgeAt(event.clientX, event.clientY);
+    document.documentElement.style.cursor = EDGE_CURSORS[edge] || "";
+  });
+  // 光标从窗口边缘移出去之后不会再收到 pointermove，双箭头会留在窗口里
+  document.addEventListener("pointerleave", () => {
+    document.documentElement.style.cursor = "";
+  });
 
   document.querySelectorAll(".win-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {

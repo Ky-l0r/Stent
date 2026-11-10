@@ -127,7 +127,10 @@ python tests/selftest_attribution_zh.py
 python tests/ui_web_smoke.py
 
 # 5. 真实窗口冒烟（双主题 + 无边框检查）
-python tests/ui_web_window.py
+python tests/ui_web_window.py                       # 当前 16 项通过 / 0 失败
+
+# 6. 贴边吸附 / 拖边缩放 / Snap 选择器（几何 + 预览层 + 窗口行为）
+python tests/selftest_snap.py                       # 当前 48 项通过 / 0 失败
 ```
 
 ### 按改动区域选跑的回归
@@ -138,6 +141,8 @@ python tests/ui_web_window.py
 | 草稿与创作输入 | `tests/selftest_all.py` | 补充要求与快捷参数在往返中不丢 |
 | B 站表单写入 | `tests/bili_quill_js.py` | 真实 Chromium 里的富文本写入与分区点选 |
 | 窗口行为 / 动画 / 拖动 | `tests/ui_web_window.py` | 最大化贴合工作区、还原回原尺寸、过渡动画有中间帧、拖动 1:1、最小化与恢复 |
+| 贴边吸附 / 布局选择器 / 拖边缩放 | `tests/selftest_snap.py` | 吸附判定与卡片命中（含多显示器、窄屏）、吸附结果不越工作区、预览层可见且鼠标穿透、缩放夹边界与最小尺寸、从吸附态拖开能还原 |
+| 改 `stent/window_snap.py` 的几何 | `tests/selftest_snap.py` | 纯函数断言，不需要窗口；配合上面那条一起看 |
 | 界面渲染 / 主题 | `tests/ui_web_smoke.py` | 真浏览器渲染、路由、主题切换、控制台报错，并截图到临时目录 |
 
 > 改 UI 时建议用 `python main.py` 直接跑源码验证，不必每次都重新打包；确认无误后再打包分发。
