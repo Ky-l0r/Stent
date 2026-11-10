@@ -339,6 +339,19 @@ def overlay_checks() -> None:
     )
     check("预览层鼠标穿透", bool(ex_style & WS_EX_TRANSPARENT), hex(ex_style))
 
+    # 窗口可见、样式正确，并不等于画出了东西：FillRect 曾经被错放到 gdi32，
+    # WM_PAINT 每次都在异常里结束，窗口一直是块黑玻璃。这里同时验两件事——
+    # 绘制帧计数，以及窗口内容里真的出现了主题色像素。
+    painted = wait_until(lambda: overlay._painted > 0, 2.0)
+    check("预览层执行了绘制", painted, f"帧数={overlay._painted}")
+
+    probe_pixel = _print_window_pixel(hwnd, canvas, target)
+    check(
+        "预览层画出了主题色",
+        probe_pixel == (0x7C, 0x5C, 0xE6),
+        f"取样={probe_pixel} 期望={(0x7C, 0x5C, 0xE6)}",
+    )
+
     probe = wt.POINT((target[0] + target[2]) // 2, (target[1] + target[3]) // 2)
     under = user32.WindowFromPoint(probe)
     root = user32.GetAncestor(under, 2) if under else 0
@@ -361,6 +374,33 @@ def overlay_checks() -> None:
 # --------------------------------------------------------------------------
 # 第三段：窗口行为（探针窗口 + 脚本化输入）
 # --------------------------------------------------------------------------
+def _print_window_pixel(
+    hwnd: int, canvas: tuple[int, int, int, int], rect: tuple[int, int, int, int]
+):
+    """把窗口内容重绘到位图里，取目标区域中心的像素（颜色按 R, G, B 返回）。
+
+    ``PrintWindow`` 比截屏可靠：截屏会受其它窗口遮挡影响，而这里问的是
+    「这个窗口自己画了什么」。
+    """
+    gdi32 = ctypes.windll.gdi32
+    width = canvas[2] - canvas[0]
+    height = canvas[3] - canvas[1]
+    screen = user32.GetDC(0)
+    mem = gdi32.CreateCompatibleDC(screen)
+    bitmap = gdi32.CreateCompatibleBitmap(screen, width, height)
+    gdi32.SelectObject(mem, bitmap)
+    user32.PrintWindow(wt.HWND(hwnd), mem, 2)  # PW_RENDERFULLCONTENT
+    x = (rect[0] + rect[2]) // 2 - canvas[0]
+    y = (rect[1] + rect[3]) // 2 - canvas[1]
+    color = gdi32.GetPixel(mem, x, y)
+    gdi32.DeleteObject(bitmap)
+    gdi32.DeleteDC(mem)
+    user32.ReleaseDC(0, screen)
+    if color == 0xFFFFFFFF:
+        return (-1, -1, -1)
+    return (color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF)
+
+
 def _make_probe() -> int:
     # 尺寸必须大于 MIN_SIZE（1080×700）：比最小尺寸还小的窗口一拖就顶到下限，
     # 量出来的位移全是夹紧后的值，看不出缩放到底有没有跟上鼠标。

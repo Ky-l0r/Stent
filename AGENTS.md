@@ -337,7 +337,7 @@ Git 默认后端因此在握手阶段直接失败：
 | `api/`（接口层） | 上项 + `python tests/selftest_api.py` |
 | `web/`（前端资源） | `python tests/selftest_api.py`（静态资源与 token 注入）+ `python tests/ui_web_smoke.py`（真浏览器渲染） |
 | `webapp.py`（壳层 / 窗口） | 上项 + `python tests/ui_web_window.py`（最大化 / 还原 / 动画 / 拖动 / 最小化 / 拖边缩放 / 贴边吸附） |
-| `window_snap.py`（吸附与缩放几何） | 上项 + `python tests/selftest_snap.py`（48 项：几何 / 预览层 / 窗口行为） |
+| `window_snap.py`（吸附与缩放几何） | 上项 + `python tests/selftest_snap.py`（50 项：几何 / 预览层 / 窗口行为） |
 | `platforms/` | 上项 + selftest 里的平台断言；涉及真实页面的改动**标注"需真机验证"** |
 | `pyproject.toml`、依赖、CI、构建脚本 | 全部门禁 + `python tests/check_project.py`；改依赖后本地 `pip install -r requirements.txt` 跑一次源码 |
 | 准备发版 | 全部 + `pwsh -File build.ps1 -Clean`（约 2 分半，产物约 190MB） |
@@ -353,7 +353,7 @@ python tests/selftest_all.py                  # 服务层端到端 200+ 项
 python tests/selftest_attribution_zh.py       # 归因链路中文化
 python tests/ui_web_smoke.py                  # 界面渲染冒烟（真浏览器）
 python tests/ui_web_window.py                 # 壳层窗口行为（真窗口 + 注入鼠标）
-python tests/selftest_snap.py                 # 贴边吸附 / 拖边缩放 / Snap 选择器（48 项）
+python tests/selftest_snap.py                 # 贴边吸附 / 拖边缩放 / Snap 选择器（50 项）
 pwsh -File build.ps1 -Clean                   # 打包
 ```
 

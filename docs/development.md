@@ -130,7 +130,7 @@ python tests/ui_web_smoke.py
 python tests/ui_web_window.py                       # 当前 16 项通过 / 0 失败
 
 # 6. 贴边吸附 / 拖边缩放 / Snap 选择器（几何 + 预览层 + 窗口行为）
-python tests/selftest_snap.py                       # 当前 48 项通过 / 0 失败
+python tests/selftest_snap.py                       # 当前 50 项通过 / 0 失败
 ```
 
 ### 按改动区域选跑的回归

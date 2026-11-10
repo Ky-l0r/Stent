@@ -251,6 +251,13 @@ if _IS_WINDOWS:
         u.PostQuitMessage.argtypes = [ctypes.c_int]
         u.LoadCursorW.argtypes = [wt.HINSTANCE, ctypes.c_void_p]
         u.LoadCursorW.restype = wt.HANDLE
+        # FillRect / FrameRect 在 user32 里（不是 gdi32，别按名字猜），
+        # 放错库的表现是 AttributeError: function 'FillRect' not found，
+        # 只在真正收到 WM_PAINT 时才炸——窗口照样可见，只是内容全黑。
+        u.FillRect.argtypes = [wt.HDC, ctypes.POINTER(_RECT), wt.HBRUSH]
+        u.FillRect.restype = ctypes.c_int
+        u.FrameRect.argtypes = [wt.HDC, ctypes.POINTER(_RECT), wt.HBRUSH]
+        u.FrameRect.restype = ctypes.c_int
         _user32_cached = u
         return u
 
@@ -261,10 +268,6 @@ if _IS_WINDOWS:
         g = ctypes.WinDLL("gdi32")
         g.CreateSolidBrush.argtypes = [wt.DWORD]
         g.CreateSolidBrush.restype = wt.HBRUSH
-        g.FillRect.argtypes = [wt.HDC, ctypes.POINTER(_RECT), wt.HBRUSH]
-        g.FillRect.restype = ctypes.c_int
-        g.FrameRect.argtypes = [wt.HDC, ctypes.POINTER(_RECT), wt.HBRUSH]
-        g.FrameRect.restype = ctypes.c_int
         _gdi32_cached = g
         return g
 
@@ -330,6 +333,7 @@ class _SnapOverlay:
         self._pending: tuple[tuple[int, int, int, int], tuple[Any, ...]] | None = None
         self._visible = False
         self._last_key: Any = None
+        self._painted = 0  # 成功画完的帧数：回归脚本靠它确认「真的画了」
 
     # -- 对外 ------------------------------------------------------------
     def warm_up(self) -> None:
@@ -506,7 +510,7 @@ class _SnapOverlay:
             canvas, shapes = pending
             width, height = rect_size(canvas)
             client = _RECT(0, 0, width, height)
-            _gdi32().FillRect(hdc, ctypes.byref(client), self._brush(_COLOR_KEY))
+            u.FillRect(hdc, ctypes.byref(client), self._brush(_COLOR_KEY))
             for rect, role in shapes:
                 local = _RECT(
                     rect[0] - canvas[0],
@@ -515,11 +519,12 @@ class _SnapOverlay:
                     rect[3] - canvas[1],
                 )
                 self._draw(hdc, local, role)
+            self._painted += 1
         finally:
             u.EndPaint(hwnd, ctypes.byref(ps))
 
     def _draw(self, hdc: int, rect: Any, role: str) -> None:
-        g = _gdi32()
+        u = _user32()
         if role == "zone-frame":
             # 2px 白框：深色背景上靠它勾出边界
             for offset in range(2):
@@ -529,7 +534,7 @@ class _SnapOverlay:
                     rect.right - offset,
                     rect.bottom - offset,
                 )
-                g.FrameRect(hdc, ctypes.byref(frame), self._brush(_PREVIEW_WHITE))
+                u.FrameRect(hdc, ctypes.byref(frame), self._brush(_PREVIEW_WHITE))
             return
         color = {
             "card": _PREVIEW_CARD,
@@ -537,7 +542,7 @@ class _SnapOverlay:
             "slot-hot": _PREVIEW_ACCENT,
             "zone": _PREVIEW_ACCENT,
         }.get(role, _PREVIEW_ACCENT)
-        g.FillRect(hdc, ctypes.byref(rect), self._brush(color))
+        u.FillRect(hdc, ctypes.byref(rect), self._brush(color))
 
 
 class _NativeWindow:
