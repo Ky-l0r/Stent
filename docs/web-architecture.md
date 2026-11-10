@@ -1,7 +1,8 @@
 # Web 前端重构架构
 
 > 状态：**P0 骨架、P1 四模块、P2 发布 / 数据 / 草稿已落地；P3 壳层打磨待实施**（见第七章）
-> 本文回答三件事：整体架构长什么样、前后端各自负责什么、从 PySide6 迁过来哪些地方最容易翻车。
+> 本文回答三件事：整体架构长什么样、前后端各自负责什么、从 PySide6 迁过来哪些地方容易翻车。
+> 旧壳（PySide6 / Electron）已于 v1.2 删除，第六、九章保留了当年迁移时的取舍记录。
 
 ---
 
@@ -218,9 +219,10 @@ data: {"message":"模型返回了空内容"}
 
 ---
 
-## 六、从 PySide6 迁移的重点环节
+## 六、从 PySide6 迁移时踩过的重点（历史记录）
 
-按"踩了会返工"的顺序排列。
+原 Qt 界面已删除，这一章保留下来是因为取舍理由仍然成立：将来若有人再引第二套前端，
+这里列的坑还会再踩一遍。按"踩了会返工"的顺序排列。
 
 ### 6.1 流式输出与中断（最容易做错）
 
@@ -256,8 +258,8 @@ Qt 用 QSS + `theme.py` 常量。Web 侧把这些**翻译成 CSS 变量**（`--s
 | 选择媒体文件 | `QFileDialog` | 壳层 `pick_files()`（WebView2）；浏览器模式禁用 |
 | 打开外部链接 | `QDesktopServices` | `<a target="_blank">`，壳层拦截 `new_window` 用系统浏览器打开 |
 | 剪贴板 | `QClipboard` | `navigator.clipboard`（需 https 或 localhost，本项目是 localhost，可用） |
-| 窗口拖拽/贴边 | Win32 + DWM | 壳层 frameless + `move()`；**Snap/Aero 需壳层补 Win32 调用**，P3 做 |
-| 托盘 | `QSystemTrayIcon` | pywebview 无托盘，P3 用 pystray 或保留 Qt 托盘 |
+| 窗口拖拽 | Win32 + DWM | 壳层在 Python 侧按光标摆窗口（`SetWindowPos`），1:1 跟手；贴边分屏尚未实现，见 docs/ui-internals.md |
+| 托盘 | `QSystemTrayIcon` | pywebview 无托盘，P3 用 pystray |
 
 ### 6.6 打包
 
@@ -268,8 +270,8 @@ Qt 用 QSS + `theme.py` 常量。Web 侧把这些**翻译成 CSS 变量**（`--s
   开箱即用；环境检测会标明当前复用的是哪一个，并留「下载内置内核」的备用入口。
   `STENT_BROWSER_CHANNEL=chromium|msedge|chrome` 可强制指定。
 - `Stent.spec` 需要增加：`stent/web` 目录进 `datas`、`pywebview` 相关 hiddenimports。
-- 体积：去掉 PySide6 后本可瘦一大截，但 P0 阶段**保留 PySide6**
-  （旧界面仍可用，回退成本为零），等 Web 版稳定再摘。见第七章。
+- 体积：v1.2 已删掉 Qt 与 Electron 两套壳，产物里不再有 Qt 运行时；
+  `Stent.spec` 里那套按文件名过滤 Qt 共享库的裁剪也一并去掉了。
 
 ### 6.7 单实例与端口复用
 
@@ -331,21 +333,19 @@ Qt 版大量 `self.ctx.toast(...)`。Web 侧统一 `toast(message, level)`，
 | P0 | API 骨架（Token、路由、SSE）、壳层、主题变量、四个页面只读 | 已落地 |
 | P1 | 热点 / 创作 / 画像 / 设置 四模块读写打通；SSE 中断 | 已落地 |
 | P2 | 发布中心（登录 + 填写 + 确认提交 + 记录）、数据分析、草稿箱、后台任务轮询 | 已落地 |
-| P3 | 壳层打磨：单实例、托盘、Snap、自动更新；摘除 PySide6 | 待实施 |
+| P3 | 壳层打磨：单实例、托盘、Snap、自动更新 | 待实施 |
+| — | 摘除旧壳：PySide6 与 Electron 两份界面删除，只留 pywebview | v1.2 已落地 |
 
-P3 之前 **不要删 `stent/ui/`**：它是回退路径，也是行为参照。
-两边都跑得起来，才能逐页对照视觉与交互差异。
+旧壳已删（v1.2）。自此「界面」只有一份实现：`stent/web/` 的页面 + `stent/webapp.py` 的壳，
+改动不再需要在两套 UI 之间对齐。
 
 ---
 
 ## 八、如何运行与验证
 
 ```powershell
-# 默认入口就是 Web 前端（v1.2 起）：打开 WebView2 独立窗口
+# 打开 WebView2 独立窗口
 python main.py
-
-# 旧的 PySide6 界面，回退 / 做视觉对照用
-python main.py --qt
 
 # 只起服务，用浏览器调试前端（不需要窗口）
 python main.py --browser
@@ -363,54 +363,34 @@ python tests/ui_web_smoke.py
 python tests/ui_web_window.py
 ```
 
-`--browser` 模式下所有页面功能可用，只有「选择媒体文件」不可用（浏览器拿不到真实路径）。
-`python main.py --selftest` 仍走 PySide6 做无头页面构建——Web 前端的等价检查是
-`tests/ui_web_smoke.py`。
+`--browser` 模式下所有页面功能可用，只有「选择媒体文件」不可用（浏览器拿不到真实路径），
+窗口控制按钮也不可用（没有壳）。界面层的检查由 `tests/ui_web_smoke.py`（渲染）与
+`tests/ui_web_window.py`（窗口行为）承担。
 
 ---
 
-## 九、三种壳，一个后端
+## 九、一种壳，一个后端
 
-同一套 `stent/api` + `stent/services`，外面换了三层皮：
+`stent/api` + `stent/services` 是内核，外面只有一层壳：
 
-| 壳 | 入口 | 前端技术 | 体积 | 什么时候用 |
-| --- | --- | --- | --- | --- |
-| PySide6 | `python main.py --qt` | Qt Widgets | 208MB | 回退、做视觉对照 |
-| pywebview | `python main.py` | 原生 HTML/ES Module | 208MB | 轻量、不装 Node 的默认路径 |
-| Electron | `webapp/` | React 19 + TS + Vite | 484MB | 要 DevTools、渲染一致性、自动更新空间 |
+| 壳 | 入口 | 前端技术 | 说明 |
+| --- | --- | --- | --- |
+| pywebview | `python main.py` | 原生 HTML / ES Module | 唯一入口：WebView2 独立窗口，`--browser` 退化为系统浏览器调试 |
 
-### Electron 壳多做了三件事
-
-1. **托管后端生命周期**：选空闲端口 → 生成令牌 → `spawn` → 轮询 `/api/health` →
-   退出时 `taskkill /T`。pywebview 版是后端自己起、自己开窗，进程模型更简单，
-   但没法把「后端崩了」这件事报给界面。
-2. **令牌走 IPC 而不是注入 HTML**：主进程生成 → 命令行给后端 → 预加载脚本
-   `contextBridge` 暴露给渲染进程。页面源码里搜不到令牌，也不会出现在 URL 上。
-3. **拖拽用 `-webkit-app-region: drag`**：由 Chromium 直接把按下转成系统的拖动，
-   不需要像 pywebview 版那样自己做（见 §6.9.1，两边现在都不逐帧过 IPC）。
-
-### 因此多出来的两处后端改动
-
-- `--headless`：只跑接口服务，不开窗口也不开浏览器。壳层要的是「一个服务」，不是「一个窗口」。
-- `CORS`：渲染进程的源是 `file://`（Origin 为 `null`）或 `http://localhost:5173`，
-  与接口不同源，带 `X-Stent-Token` 的请求必然触发预检。只放行这两类来源，
-  安全边界仍是「只绑回环 + 每次校验令牌」。
-
-### React 壳的功能对齐进度
-
-`webapp/src` 目前仍是原先的五个页面（热点 / 创作 / 发布 / 画像 / 设置），
-P2 新增的**草稿箱**与**数据分析**还没有移植过去。接口是共用的，
-补齐时只需要在 `src/pages/` 加两个页面并把 `Route` 联合类型扩两项，后端不用改。
+v1.2 之前这里还有 PySide6 与 Electron 两份并行实现（三层皮共用一套后端）。
+两者的维护成本都不低：每次改动要在三处对齐交互，而真正被使用的只有 pywebview 那一套。
+现已删除——`stent/ui/`、`stent/app.py`、`webapp/` 都不在了，
+`--qt` / `--selftest` 两个参数随之移除，界面检查改由 `tests/ui_web_*.py` 承担。
 
 ### 打包形态
 
 ```
-webapp/release/win-unpacked/
-├── Stent.exe                 Electron 主进程（本工程的 dist/main）
-├── resources/app.asar        渲染进程产物（React 打包后的 html/js/css）
-└── resources/backend/        PyInstaller 打出来的 Python 后端（Stent.exe + _internal）
+dist/Stent/
+├── Stent.exe                 PyInstaller 入口（main.py → stent.webapp）
+└── _internal/
+    ├── stent/web/            前端静态资源（漏了会白屏）
+    └── ...                   Python 运行时与依赖
 ```
 
-两步走：先 `pwsh -File build.ps1` 产出 `dist/Stent`，再 `npm run package:dir`。
-前端不打包 Python 解释器——它只负责把已有的后端当资源塞进去。
+一步走：`pwsh -File build.ps1`。窗口用系统自带的 WebView2，不打包浏览器内核。
 

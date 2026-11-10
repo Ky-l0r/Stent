@@ -24,7 +24,7 @@
 设计约束
 --------
 - 纯本地规则：不联网、不调用 LLM、不 import anthropic / openclaw / Easel 任何模块；
-- 不 import UI 框架（不 import PySide6），只依赖 ``stent.platforms.base`` 的数据结构；
+- 不 import 界面层（`stent.webapp` / 前端资源），只依赖 ``stent.platforms.base`` 的数据结构；
 - **永不抛异常**：任何内部错误都降级为一条 warn 级 CheckItem，不阻塞用户；
 - 词表从 ``stent/resources/sensitive_words.txt`` 加载，文件缺失时用内置兜底词表；
 - 全部提示为中文。

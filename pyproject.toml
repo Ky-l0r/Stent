@@ -31,7 +31,6 @@ classifiers = [
 # 运行依赖。与 requirements.txt 保持一致——改一处必须同步另一处。
 # httpx 不在此列：只由 openai 传递引入，热点发现刻意走标准库 urllib（见 docs/development.md）。
 dependencies = [
-    "PySide6>=6.6,<7",
     "openai>=1.30",
     "keyring>=25.0",
     "playwright>=1.44",
@@ -54,12 +53,10 @@ Changelog = "https://github.com/Ky-l0r/Stent/blob/main/CHANGELOG.md"
 Releases = "https://github.com/Ky-l0r/Stent/releases"
 
 [project.scripts]
-stent = "stent.app:main"
-stent-web = "stent.webapp:main"
+stent = "stent.webapp:main"
 
 [project.gui-scripts]
-stent-gui = "stent.app:main"
-stent-webgui = "stent.webapp:main"
+stent-gui = "stent.webapp:main"
 
 [tool.setuptools]
 packages = [
@@ -68,8 +65,6 @@ packages = [
     "stent.core",
     "stent.services",
     "stent.platforms",
-    "stent.ui",
-    "stent.ui.pages",
 ]
 
 [tool.setuptools.dynamic]

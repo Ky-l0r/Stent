@@ -1,5 +1,4 @@
 # Stent 运行依赖
-PySide6>=6.6,<7       # 旧界面（python main.py --qt）与窗口/托盘能力，暂未摘除
 openai>=1.30          # LLM 调用；其自身依赖 httpx
 keyring>=25.0         # API Key 写入 Windows 凭据管理器
 playwright>=1.44      # 发布中心的浏览器自动化

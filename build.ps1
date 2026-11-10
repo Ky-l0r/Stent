@@ -81,13 +81,12 @@ if ($SkipTests) {
     Invoke-Checked $python.Source @('tests/selftest_all.py')
 }
 
-Write-Step '5/7 运行界面自检（离屏）'
+Write-Step '5/7 运行界面自检（真浏览器渲染）'
 if ($SkipTests) {
     Write-Host '已跳过（-SkipTests）'
 } else {
-    $env:QT_QPA_PLATFORM = 'offscreen'
-    Invoke-Checked $python.Source @('main.py', '--selftest')
-    Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+    # 渲染冒烟：起接口服务 + 用 Chromium/Edge 打开页面；没有可用内核时脚本自己跳过
+    Invoke-Checked $python.Source @('tests/ui_web_smoke.py')
 }
 
 if ($Clean) {

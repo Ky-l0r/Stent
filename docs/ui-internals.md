@@ -1,59 +1,75 @@
-# 无边框窗口实现说明
+# 窗口实现说明
 
-Stent 用无边框窗口把 Windows 系统标题栏的能力全部搬到应用自己的顶栏上，让顶栏与内容区风格统一。
-这篇文档记录**为什么这么做**和**踩过的坑**，改 `stent/ui/frameless.py` 前先读它。
+Stent 用无边框窗口把标题栏搬进页面：顶栏、按钮、状态灯都由前端画，风格与内容区统一。
+窗口本身是 pywebview 的一个 `frameless=True` WinForms 窗口，里面嵌 WebView2。
+这篇文档记录**为什么这么做**和**踩过的坑**，改 `stent/webapp.py` 里的 `_NativeWindow` 前先读它。
 
-相关代码：[`stent/ui/frameless.py`](../stent/ui/frameless.py)、[`stent/ui/main_window.py`](../stent/ui/main_window.py)、
-[`stent/ui/theme.py`](../stent/ui/theme.py)
+相关代码：[`stent/webapp.py`](../stent/webapp.py)（`_NativeWindow`）、
+[`stent/web/assets/app.js`](../stent/web/assets/app.js)（`wireShell`）、
+[`stent/web/assets/app.css`](../stent/web/assets/app.css)（标题栏）
 
 ---
 
 ## 核心矛盾
 
-`FramelessWindowHint` 生成的窗口是纯 `WS_POPUP`。系统会认为它「不可最大化、不可调整大小」，于是：
+无边框窗口丢掉了系统非客户区，于是「拖动、最大化、最小化、还原」这几件事都得自己做，
+而 pywebview 的 `Window` 在这几件事上并不完整：
 
-- 拖到屏幕边缘不分屏；
-- 悬停最大化按钮不弹 Snap 布局选择器；
-- 最大化没有过渡动画；
-- 没有系统阴影。
+| 需求 | pywebview 提供什么 | 结论 |
+|---|---|---|
+| 是否已最大化 | 只有 `state`（不随系统操作实时更新），**没有** `maximized` 属性 | 只能问 Win32 `IsZoomed` |
+| 最大化 / 还原 | `maximize()` / `restore()` 是瞬时跳变 | 无边框窗口拿不到系统 zoom 动画，要自己做缓动 |
+| 拖动 | `easy_drag` 会把整窗变成拖拽区（正文里选不中文字） | 自己做，且不能逐帧过 IPC |
 
-Stent 的做法是**把原生能力要回来，同时不让系统边框侵占界面**：
-
-1. 启动时用 `SetWindowLongW` 补齐标准窗口样式位
-   `WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU | WS_CAPTION`；
-2. 再用 `WM_NCCALCSIZE` 返回 0，把系统非客户区（标题栏 + 边框）抹掉。
-
-样式位带来原生行为，`WM_NCCALCSIZE` 保证视觉仍是自定义的。
+因此壳层直接用 Win32 驱动窗口，前端只负责「告诉壳层发生了什么」。
 
 ---
 
-## 各能力对应的消息
+## 三件事的做法
 
-| 能力 | 实现 |
-|---|---|
-| 拖动移动 + Aero Snap + 贴边分屏 | 顶栏按下时发 `WM_NCLBUTTONDOWN + HTCAPTION`（等价于按住原生标题栏），后续全部交给系统 |
-| 边缘调整大小 | `WM_NCHITTEST` 在四边 / 四角返回 `HTLEFT` / `HTBOTTOMRIGHT` 等命中码 |
-| 悬停最大化按钮弹 Snap 选择器 | 「最大化」按钮在 `WM_NCHITTEST` 中返回 `HTMAXBUTTON` |
-| 最大化不遮任务栏 | `WM_GETMINMAXINFO` 贴合显示器工作区（`MONITORINFO.rcWork`） |
-| 圆角 | Windows 11 走 DWM 原生圆角 `DWMWA_WINDOW_CORNER_PREFERENCE`，边框色跟随主题；Windows 10 无此 API，降级为 `SetWindowRgn` 区域裁剪 |
-| 阴影 | 由 `WS_THICKFRAME` 一并带来 |
+### 拖动
+
+前端只在 `pointerdown` 时把按下点交给壳层，之后**由 Python 侧按光标位置摆窗口**
+（120Hz 轮询 `GetCursorPos` + `SetWindowPos`），按下点与窗口左上角的偏移全程保持。
+
+两条走不通的路（都实测过）：
+
+- **逐帧回传位移**（旧实现）：每一帧过一次 JS→Python 的桥，必然比鼠标慢半拍。
+- **`SendMessage(WM_NCLBUTTONDOWN + HTCAPTION)` 交给系统移动循环**：这条窗口是
+  WinForms 的无边框 `WS_POPUP`，按下时鼠标捕获在 WebView2 的子窗口、属于另一个进程的线程，
+  `ReleaseCapture` 跨线程无效，系统移动循环拿不到后续移动——四种样式组合实测都是零位移。
+
+代价：拖动期间窗口位置由我们算，因此没有 Aero Snap / 贴边分屏（那是系统移动循环的副产品）。
+
+### 最大化 / 还原（带动画）
+
+```
+最大化：ShowWindow(SW_MAXIMIZE)          ← 先落状态，还原点由 Windows 自己记成当前矩形
+        SetWindowPos(原矩形)             ← 同一 tick 内拉回来，动画从原位置起跑
+        SetWindowPos × 12 帧缓动到工作区  ← 170ms，先快后慢
+还原：  SetWindowPos × 12 帧缓动回还原点   ← 最大化状态下改矩形是允许的，状态保持
+        ShowWindow(SW_RESTORE)           ← 落位后再清状态，不会二次跳变
+```
+
+`SetWindowPlacement` 手写 `showCmd` 的写法**不行**：窗口已经铺满工作区时它不会真的切状态，
+而且会串用旧的 `ptMaxPosition`，窗口最后停在「原位置 + 工作区尺寸」。
+
+### 最小化 / 关闭
+
+`ShowWindow(SW_MINIMIZE)`（系统自带动画）与 `window.destroy()`。
 
 ---
 
-## 过渡动画：为什么默认关闭
+## 踩过的坑
 
-无边框窗口丢掉了系统非客户区，DWM 不再播放最大化 / 最小化的缩放过渡。若要动画，只能自己用
-`QPropertyAnimation` 对窗口几何做缓动（最大化 / 还原 130ms `OutCubic`，最小化 120ms `InCubic` + 淡出）。
-
-为压低每帧成本做了两件事：
-
-- 动画期间把内容尺寸**冻结**——不逐帧重排，同时消除卡片文字抖动；
-- 开启 `WA_StaticContents`，只重绘新暴露的区域。
-
-**实测结论**：Qt 界面是 CPU 光栅化，1920×1080 单帧重绘约 29ms，动画帧率上限约 35~40fps。
-与其给一个掉帧的动画，不如瞬间切换来得利落，因此**默认关闭**。
-
-想要过渡效果：「设置 → 通用 → 启用窗口过渡动画」。Snap、圆角、阴影等其余行为不受这个开关影响。
+- **`argtypes` 要挂在私有实例上**：`ctypes.WinDLL("user32")`，不要改写共享的
+  `ctypes.windll.user32`。签名是挂在函数对象上的，改共享实例会污染同进程里其它 ctypes 调用
+  （测试里就被反噬过：`GetWindowRect` 突然要求 `LP_RECT`）。
+- **`HWND_TOPMOST` 与 `SWP_NOZORDER` 互斥**：带上 `NOZORDER` 时 `hWndInsertAfter` 被忽略，
+  置顶静默失效。
+- **`SendMessage` 会阻塞到操作结束**：拖动、动画都要放工作线程，不能占着 `js_api` 的调用线程。
+- **注入输入的测试要先置顶窗口**：被别的置顶窗口挡住时，鼠标事件根本到不了页面，
+  测试会表现成「拖动没反应」，其实是输入没送达。
 
 ---
 
@@ -61,10 +77,22 @@ Stent 的做法是**把原生能力要回来，同时不让系统边框侵占界
 
 | 脚本 | 验证什么 |
 |---|---|
-| `tests/ui_smoke.py` | 真实窗口双主题冒烟（含无边框检查） |
-| `tests/ui_animation.py` | 最大化 / 还原 / 最小化过渡逐帧验证 |
-| `tests/ui_wheel.py` | 真实滚轮注入（Win32 输入），防「悬停误改数值」回归 |
-| `tests/ui_contrast.py` | 主题对比度，找出与背景撞色的文字 |
-| `tests/ui_screenshot.py` | 抓窗口关键区域截图，人工核对视觉 |
+| `tests/ui_web_window.py` | 进程内真实 Win32 弹窗验状态机 + 真启动应用注入鼠标走完整链路：最大化贴合工作区、还原回原尺寸、往返稳定、过渡动画真有中间帧、拖动 1:1、最小化与恢复 |
+| `tests/ui_web_smoke.py` | 真浏览器渲染冒烟（页面、主题、路由、控制台报错） |
 
-改窗口消息处理时至少跑前两个；调主题色时跑 `ui_contrast.py`。
+改窗口行为时跑第一个；改前端视觉时跑第二个。
+
+---
+
+## 尚缺的能力
+
+无边框窗口没有系统非客户区，下面这些在旧 Qt 版里靠 `WM_NCHITTEST` / `WM_GETMINMAXINFO`
+补齐，v1.2 删掉该壳后一并失去，目前**没有**：
+
+- 贴边分屏（Aero Snap）与拖到顶部最大化；
+- 拖窗口四边 / 四角调整大小；
+- `F11` 全屏；
+- DWM 圆角与阴影（`WS_THICKFRAME` 带来的那套）。
+
+要补的话，正路是给这个窗口装一个 `WM_NCHITTEST` / `WM_NCCALCSIZE` 的 wndproc 钩子
+（`SetWindowLongPtrW(GWLP_WNDPROC)`），前端把拖拽区矩形报给壳层，系统就会自己接管拖动与分屏。

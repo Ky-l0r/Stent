@@ -14,13 +14,13 @@
 
 ```
 <!-- 贴命令与结果，例如：
-python tests/selftest_all.py     → 171 通过 / 0 失败
-python tests/ui_publish_layout.py → 12 种窗口尺寸全部通过
+python tests/selftest_all.py     → 203 通过 / 0 失败
+python tests/ui_web_window.py    → 12 项窗口行为全部通过
 -->
 ```
 
 - [ ] 服务层 `tests/selftest_all.py` 全绿
-- [ ] 界面冒烟 `python main.py --selftest` 通过
+- [ ] 界面冒烟 `python tests/ui_web_smoke.py` 通过（未装浏览器时注明跳过）
 - [ ] 按改动区域补跑了对应回归脚本（清单见 docs/development.md）
 - [ ] 修 bug 时补了能复现该 bug 的自检项
 - [ ] 界面视觉改动附了改前 / 改后截图

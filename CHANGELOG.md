@@ -6,12 +6,10 @@
 
 ### 新增：Web 前端
 
-- **默认入口换成 Web**：`python main.py` 现在打开 WebView2 独立窗口；
-  旧界面用 `python main.py --qt`（功能完整，保留作回退与视觉对照）。
-  `--selftest` 仍走 PySide6——Web 前端没有「无头构建页面」这回事，
-  它的等价检查是 `tests/ui_web_smoke.py`。
-- **新的前端形态**：`python main.py --web` 打开 WebView2 独立窗口（不是浏览器标签页），
-  HTML/CSS/JS 负责渲染，Python 保留全部业务能力。旧的 `python main.py` 仍可用，是回退路径。
+- **入口只剩一个**：`python main.py` 打开 WebView2 独立窗口（不是浏览器标签页），
+  HTML/CSS/JS 负责渲染，Python 保留全部业务能力。`--web` 保留为兼容写法。
+- **界面检查换了地方**：Web 前端没有「无头构建页面」这回事，等价检查是
+  `tests/ui_web_smoke.py`（真浏览器渲染）与 `tests/ui_web_window.py`（窗口行为）。
 - **本机接口层** `stent/api/`：标准库 `http.server` + 16 条路由，只监听 `127.0.0.1`、
   端口由系统分配；每个 `/api/*` 请求校验启动时生成的随机 Token，挡住本机其它进程。
 - **流式创作走 SSE**：`POST /api/create/stream` 逐段推 `delta` 事件；客户端断开时
@@ -57,22 +55,38 @@
 - `tests/selftest_api.py`：起真服务打 43 项断言（鉴权、静态资源、配置、画像、检查、边界），
   不需要窗口、不联网。
 
-### 新增：Electron 客户端（webapp/）
+### 移除：两套旧壳（Qt / Electron）
 
-第三套壳，与 pywebview 版共用同一个 Python 后端与同一组接口：
+v1.2 期间并行做过三套界面，最终只留 pywebview 这一套——每加一处交互都要在三处对齐，
+而真正在用的只有它。同一次发版里把另外两套连同它们的测试、依赖、打包配置一起删掉：
 
-- **独立工程** `webapp/`：Electron 33 + React 19 + TypeScript + Vite 6 + electron-builder，
-  渲染进程五个页面（热点 / 创作 / 发布 / 画像 / 设置）从原生 JS 重写为 React 组件。
-- **主进程托管后端**：自动挑空闲端口、生成随机令牌、`spawn` 后端、轮询 `/api/health`
-  等就绪、退出时用 `taskkill /T` 杀进程树（PyInstaller 的引导器会留下子进程）。
-- **令牌不再注入 HTML**：主进程生成 → 命令行传给后端 → 预加载脚本经 IPC 交给渲染进程。
-- **后端配合改造**：新增 `--headless`（只跑服务）与 `--token`（外部指定令牌）；
-  接口层补 CORS，放行 `file://` 与 Vite dev 源，否则带自定义头的请求会被预检拦下。
-- **打包**：`electronDist` 复用 node_modules 里的 Electron（不联网下载），
-  `extraResources` 把 `dist/Stent` 塞进 `resources/backend/`；产物为免安装目录版，
-  实测 484MB（Electron 运行时 + Python 后端 + 依赖）。
-- 关掉 `signAndEditExecutable`：本机没有签名证书，开着会去解压 winCodeSign，
-  在无符号链接权限的机器上直接失败。
+- **PySide6 界面**：`stent/ui/`（主窗口、七个页面、主题、图标、无边框窗口）、`stent/app.py`。
+  连带移除 `--qt` / `--selftest` / `--reset-onboarding` 三个参数与 `PySide6` 依赖，
+  9 个 Qt 界面测试脚本（`ui_smoke` / `ui_animation` / `ui_wheel` / `ui_contrast` /
+  `ui_screenshot` / `ui_publish_layout` / `ui_draft_reload` / `ui_tagcloud_diag` / `ui_window`）一并删除。
+- **Electron 客户端**：`webapp/`（Electron 33 + React 19 + Vite 6，约 480MB 产物）、
+  CI 的 `frontend` 作业，以及为它加的 `--headless` 参数。
+- **打包配置瘦身**：`Stent.spec` 里按文件名过滤 Qt 共享库的那套裁剪（`DROPPED_BINARIES` /
+  `_prune`）不再需要；`stent/ui/pages/*` 的 hiddenimports 同步移除。
+- **日志设施搬家**：原来挂在 Qt 入口的 `ensure_utf8_console()` / `setup_logging()`
+  移到 `stent/bootstrap.py`，壳层与自检脚本继续用同一套。
+- **CI**：Qt 的 `ui-smoke` 作业换成 `web-smoke`（`python tests/ui_web_smoke.py`，
+  浏览器内核对不上时退到系统 Edge，都没有就跳过）。
+
+### 修复：桌面窗口的三个毛病
+
+报障是「全屏之后不能缩小、拖动有延迟、最大化没有动画」，三条都出在 pywebview 壳：
+
+- **点第二下回不来**：旧实现用 `getattr(window, "maximized", False)` 判断状态，
+  而 pywebview 的 `Window` 没有这个属性（只有 `state`），恒为 `False`，于是永远只调
+  `maximize()`。改问 Win32 `IsZoomed`。
+- **拖动慢半拍**：旧实现逐帧把位移从 JS 回传给 Python，每帧过一次桥。现在前端只在
+  `pointerdown` 时交一次按下点，壳层在 Python 侧按光标摆窗口（120Hz `SetWindowPos`），
+  实测与鼠标位移误差 0px。（`WM_NCLBUTTONDOWN + HTCAPTION` 交给系统移动循环这条路走不通：
+  鼠标捕获在 WebView2 的子窗口、属于另一个进程的线程，跨线程 `ReleaseCapture` 无效。）
+- **补上最大化动画**：无边框窗口拿不到系统 zoom 动画，改为先 `ShowWindow(SW_MAXIMIZE)`
+  落状态（还原点由系统记），立刻拉回原矩形，再用 `SetWindowPos` 12 帧缓动到工作区；
+  还原时反向缓动后清状态，不二次跳变。
 
 ### 其他
 

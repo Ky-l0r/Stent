@@ -41,7 +41,7 @@ python main.py
 | 文档 | 什么时候读 |
 |---|---|
 | [docs/development.md](docs/development.md) | 打包、自检清单、性能取舍 |
-| [docs/ui-internals.md](docs/ui-internals.md) | 改 `stent/ui/frameless.py` 或窗口行为前**必读** |
+| [docs/ui-internals.md](docs/ui-internals.md) | 改 `stent/webapp.py` 的窗口行为前**必读** |
 | [NOTICE](NOTICE) | 想知道哪些代码来自上游 Easel、改动了什么 |
 
 ---
@@ -50,14 +50,17 @@ python main.py
 
 ```
 stent/
-├── core/        存储与 LLM 客户端：不含界面与平台知识
-├── services/    业务逻辑：热榜 / 创作 / 检查 / 发布编排 / 分析。可脱离 UI 单测
+├── webapp.py    桌面壳：无边框窗口、拖动与最大化动画、单实例、文件选择
+├── api/         本机 HTTP 接口：路由、令牌校验、SSE
+├── web/         前端：index.html + assets（原生 ES Module，无构建步骤）
+├── services/    业务逻辑：热榜 / 创作 / 检查 / 发布编排 / 分析。可脱离界面单测
 ├── platforms/   平台适配器：每个平台一个文件，实现 platforms/base.py 的统一接口
-└── ui/          PySide6 界面：页面在 ui/pages/，不写业务规则
+├── core/        存储与 LLM 客户端：不含界面与平台知识
+└── bootstrap.py 启动期公共设施：控制台 UTF-8、日志落盘
 ```
 
-依赖方向是单向的：`ui → services → core`，`services → platforms`。
-**不要在 `core/` 里 import `ui/`**，也不要把平台选择器写进 service。
+依赖方向是单向的：`web → api → services → core`，`services → platforms`。
+**不要在 `core/` 里 import `services/`**，也不要把平台选择器写进 service。
 
 ---
 
@@ -66,7 +69,7 @@ stent/
 - **风格**：PEP 8，行宽 100；模块与函数用中文 docstring 说清「为什么」，不重复「做了什么」；
 - **类型**：新代码带类型注解，`from __future__ import annotations`；
 - **导入**：包内用相对导入（`from . import paths`）；
-- **重依赖惰性导入**：`playwright`、平台适配器、PySide6 子模块都要在函数内部 import——
+- **重依赖惰性导入**：`playwright`、`pywebview`、平台适配器都要在函数内部 import——
   冷启动 < 3 秒靠的是这个，顶层 import 会把体积和启动时间吃回去；
 - **HTTP**：热榜这类低延迟路径用标准库 `urllib`，不要「统一成 httpx」（原因见
   [docs/development.md](docs/development.md#性能指标与实现取舍)）；
@@ -108,19 +111,20 @@ ruff check . && ruff format --check .                # 静态检查
 python tests/check_project.py                        # 版本号 / CHANGELOG / 依赖口径一致
 python tests/selftest_all.py                         # 服务层端到端（当前 171 项）
 python tests/selftest_attribution_zh.py              # 归因链路中文化
-$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面层冒烟
+python tests/ui_web_smoke.py        # 界面渲染冒烟（真浏览器，缺内核退到系统 Edge）
+python tests/ui_web_window.py       # 壳层窗口行为（最大化 / 还原 / 动画 / 拖动）
 ```
 
 再按你改动的区域补跑对应的回归脚本，清单见
 [docs/development.md「发版前自检清单」](docs/development.md#发版前自检清单)。
 
 > 修 bug 时，请**同时补一个能复现该 bug 的自检项**。这个仓库里大半的回归脚本
-> （`ui_publish_layout.py`、`ui_draft_reload.py`、`bili_quill_js.py`）都是这么来的。
+> （`ui_web_smoke.py`、`ui_web_window.py`、`bili_quill_js.py`）都是这么来的。
 
 ### 跑界面测试
 
-`tests/ui_*.py` 大多需要真实窗口，在桌面会话里直接跑；只想验证「能不能构建」用上面的
-`QT_QPA_PLATFORM=offscreen` 那条。截图类脚本会写到 `_data/screenshots/`。
+`tests/ui_web_window.py` 需要真实窗口（会注入鼠标、把窗口置顶），在桌面会话里直接跑；
+`tests/ui_web_smoke.py` 只要能起浏览器就行。截图写到临时目录，不污染仓库。
 
 ---
 

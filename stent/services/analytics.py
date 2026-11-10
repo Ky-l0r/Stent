@@ -21,7 +21,7 @@
 
 设计约束：
 
-- 本模块**不得** import PySide6 / anthropic / openclaw / Easel 的任何模块；
+- 本模块**不得** import 界面层（`stent.webapp`）/ `stent.api` / anthropic / openclaw / Easel 的任何模块；
 - 平台适配器走**惰性导入 + 防御性写法**：``stent.platforms`` 的 registry 尚未实现时，
   本模块仍可正常 import，``sync_metrics`` 返回友好错误而不是抛 ImportError；
 - 所有数据访问都通过注入的 ``Database`` 对象，不直接裸写 sqlite3；

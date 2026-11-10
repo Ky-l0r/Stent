@@ -10,7 +10,7 @@
 1. 每次开工前先读本文件，再按需读：
    - [CONTRIBUTING.md](CONTRIBUTING.md)：分层约定、提交规范、自检清单
    - [docs/development.md](docs/development.md)：打包、静态检查、平台改版取证流程、性能取舍
-   - [docs/ui-internals.md](docs/ui-internals.md)：改 `stent/ui/frameless.py` 或窗口行为前**必读**
+   - [docs/ui-internals.md](docs/ui-internals.md)：改 `stent/webapp.py` 的窗口行为前**必读**
    - [CHANGELOG.md](CHANGELOG.md)：近几个版本修过什么、为什么这么改，最有参考价值
 2. 冲突时的优先级：**用户当前指令 > 本文件 > CONTRIBUTING.md / docs/\* > README.md**。
    发现冲突要报告，不得静默选一边。
@@ -182,12 +182,12 @@ Git 默认后端因此在握手阶段直接失败：
 
 | 类型 | 约定 | 示例 |
 | --- | --- | --- |
-| 界面页面 | `XxxPage`，文件 `ui/pages/xxx.py` | `CreatePage` / `pages/create.py` |
+| 前端页面 | `export function mount(root, ctx)`，文件 `web/assets/pages/<key>.js` | `pages/create.js` |
 | 业务服务 | `XxxService` 或无状态模块函数 | `PublishService` → `services/publisher.py` |
 | 平台适配器 | `XxxAdapter`，`key` 用小写平台名 | `XiaoHongShuAdapter` / `"xiaohongshu"` |
 | 存储层 | `Database` 单例 + 按领域分组的方法 | `core/db.py` |
-| 后台任务 | `XxxWorker` | `ui/workers.py` |
-| 自检脚本 | `selftest_*.py` / `ui_*.py`，可直接 `python` 运行 | `tests/selftest_all.py` |
+| 后台任务 | `XxxWorker`（接口层轮询的后台任务） | `api/server.py` |
+| 自检脚本 | `selftest_*.py` / `ui_web_*.py`，可直接 `python` 运行 | `tests/selftest_all.py` |
 
 - 模块名用下划线（`douyin_title.py`），包内一律相对导入（`from . import paths`）。
 - 面向用户的字符串用中文；日志用中文；代码标识符用英文。
@@ -198,21 +198,20 @@ Git 默认后端因此在握手阶段直接失败：
 
 | 层 | 路径 | 职责 | 禁止 |
 | --- | --- | --- | --- |
-| 界面层 | `stent/ui/` | PySide6 页面、控件、主题、图标 | 写业务规则、直接访问平台适配器内部选择器 |
+| 壳层 | `stent/webapp.py` | 窗口、单实例、文件选择等原生能力 | 写业务规则、拼前端 HTML |
 | 接口层 | `stent/api/` | 本机 HTTP 路由、鉴权、SSE、参数校验 | 写业务规则、绕过 services 直接查库 |
-| 前端(轻) | `stent/web/` | HTML/CSS/原生 ES Module，渲染与交互 | 拼 prompt、算平台限制、判断能否发布 |
-| 前端(重) | `webapp/` | Electron + React + TS + Vite，同一组接口 | 直接读写文件、绕过 preload 拿 Node 能力 |
-| 服务层 | `stent/services/` | 热榜 / 创作 / 检查 / 发布编排 / 分析 / 画像 | import `ui/` 或 `api/`；启动浏览器做界面该做的事 |
+| 前端 | `stent/web/` | HTML/CSS/原生 ES Module，渲染与交互 | 拼 prompt、算平台限制、判断能否发布 |
+| 服务层 | `stent/services/` | 热榜 / 创作 / 检查 / 发布编排 / 分析 / 画像 | import `api/` 或 `webapp`；启动浏览器做界面该做的事 |
 | 平台层 | `stent/platforms/` | 每个平台一个适配器，实现 `base.py` 接口 | 承载业务决策、被 service 绕过接口直接调用 |
 | 核心层 | `stent/core/` | SQLite 存储、LLM 客户端 | import 上面任何一层 |
 
-- `core/` 里出现 `from ..ui` 或 `from ..services` 就是错误。
+- `core/` 里出现 `from ..services` 或 `from ..webapp` 就是错误。
 - `services/` 里出现 `from ..api` 或 HTTP 相关代码就是错误（接口层才做协议转换）。
 - 平台选择器只能待在 `platforms/`；`services/` 里出现 `"#id"`、`[class*=]` 这类 CSS 选择器就是错误。
 
 ### 5.4 具体规则（都是踩过坑写下来的）
 
-- **重依赖必须惰性导入**：`playwright`、平台适配器、PySide6 子模块一律在函数内部 import。
+- **重依赖必须惰性导入**：`playwright`、`pywebview`、平台适配器一律在函数内部 import。
   冷启动 < 3 秒靠的就是这个，顶层 import 会把启动时间吃回去。
 - **热点拉取用标准库 `urllib`，不要"统一成 httpx"**。httpx 0.28 在 Windows 上每次构造
   `Client` 约 3 秒（与网络无关），会直接吃掉整个延迟预算。原因见 `docs/development.md`。
@@ -224,34 +223,32 @@ Git 默认后端因此在握手阶段直接失败：
 - **抖音作品信息走轻量通道**：`services/douyin_title.py` 纯标准库、不启浏览器，拿不到才回退 Playwright。
 - **打包是 onedir，不要改回 onefile**（原因见 `Stent.spec` 头部）。别删
   `paths.ensure_playwright_browsers_path()`：冻结态不纠正 `PLAYWRIGHT_BROWSERS_PATH` 必然报"浏览器不可用"。
-- **中文输出要防编码**：`stent/app.py` 的 `ensure_utf8_console()` 与两个 selftest 脚本的
+- **中文输出要防编码**：`stent/bootstrap.py` 的 `ensure_utf8_console()` 与两个 selftest 脚本的
   `reconfigure(encoding="utf-8")` 不是冗余——CI 的 windows-latest 是英文环境（cp1252），
   删掉就 UnicodeEncodeError。本地复现：`PYTHONIOENCODING=cp1252 python tests/selftest_all.py`。
 - **异常处理**：允许在平台适配器里吞异常以换取"单个平台失败不影响整体"，但必须
   （a）`log.warning` 留下可诊断信息；（b）返回给用户的中文说明不能是"未知错误"。
   禁止把异常吞成 `None` 继续执行到下一屏。
-- **入口默认是 Web，别再按「默认 Qt」写文档或脚本**：`python main.py` 起 WebView2 窗口，
-  `--qt` 才是旧界面；`--selftest` / `--reset-onboarding` 会被路由回 Qt（无头构建页面是 Qt 侧能力）。
-  改 `main.py` 的参数路由时，CI 的 `ui-smoke`（`python main.py --qt --selftest`）不能挂。
+- **入口只有一个**：`python main.py` 起 WebView2 窗口。Qt 与 Electron 两套壳已于 v1.2 删除，
+  `--qt` / `--selftest` / `--reset-onboarding` 都不再存在——写文档、脚本、CI 时不要复活它们。
+  界面自检改用 `tests/ui_web_smoke.py`（渲染）与 `tests/ui_web_window.py`（窗口行为）。
 - **pywebview 的 `js_api` 对象不要暴露公开属性**：它建 JS 桥时会反射公开成员，
   碰到 `Window` 就会在非 UI 线程读原生属性，刷出一串 COM 异常。窗口引用一律用 `_window`。
-- **Electron 前端有两处环境坑**：① 本机 shell 若带 `ELECTRON_RUN_AS_NODE=1`，
-  `electron .` 会以 Node 模式跑，报 `app.isPackaged of undefined`——用 `env -u ELECTRON_RUN_AS_NODE` 启动；
-  ② `electron-builder` 默认要去 GitHub 下 115MB 运行时，改用配置里的 `electronDist`
-  直接复用 `node_modules/electron/dist`，别再让 CI/本机去下载。
-- **打包目录要换新的**：覆盖 `dist/`、`release*/`、`webapp/release` 时会被批量删除保护拦下，
-  迭代时用 `--distpath` / `--config.directories.output` 指到新目录，或先 `mv` 旧目录而不是删。
+- **打包目录要换新的**：覆盖 `dist/` 时会被批量删除保护拦下，
+  迭代时用 `--distpath` 指到新目录，或先 `mv` 旧目录而不是删。
 - **版本号只有一处真源**：`stent/__init__.py` 的 `__version__`；`pyproject.toml` 用
   `dynamic = ["version"]` 读它。不要在任何地方再写死版本号。
 
 ### 5.5 UI 与主题
 
-- 颜色只从 `stent/ui/theme.py` 取，不写死十六进制；平台品牌色在 `PLATFORM_COLORS`。
-- 图标用 `stent/ui/icons.py` 的内联 Lucide SVG，不要引入图片资源或 emoji 当图标。
+- 颜色只从 CSS 变量取（`stent/web/assets/app.css` 的 `--stent-*`），不写死十六进制；
+  平台品牌色在前端常量里，加平台时同步加品牌色。
+- 图标用内联 SVG，不要引入图片资源或 emoji 当图标。
 - 支持浅色 / 暗色双主题，新增控件必须两套主题都看过；语义色要随主题变暗
   （例如警告底色用暗金棕而非浅黄）。
-- 布局不许写死像素高度导致小窗口下压叠；发布页的 `_sync_pane_limits()` 就是为此而写。
-- 动效与窗口行为改动前读 `docs/ui-internals.md`，无边框窗口依赖 Win32 / DWM 调用。
+- 布局不许写死像素高度导致小窗口下压叠；需要限高的列表用固定高度 + 内部滚动。
+- 动效与窗口行为改动前读 `docs/ui-internals.md`：无边框窗口的拖动、最大化动画、
+  最小化都是壳层用 Win32 自己做的，改动前先看那里的坑。
 
 ### 5.6 注释与文案
 
@@ -270,11 +267,10 @@ Git 默认后端因此在握手阶段直接失败：
 
 | 目录 | 放什么 |
 | --- | --- |
-| `stent/ui/` | 主窗口、无边框窗口、主题、图标、共享控件、后台任务线程 |
-| `stent/ui/pages/` | 七个页面：`hotsearch` `create` `publish` `analytics` `profile` `settings` `onboarding` |
+| `stent/webapp.py` | 桌面壳：窗口（含无边框、最大化动画、拖动）、单实例、文件选择 |
 | `stent/api/` | 本机 HTTP 接口：`server.py` 路由与 SSE、`handlers.py` 端点实现 |
-| `stent/web/` | pywebview 版前端：`index.html` + `assets/*.js`（原生 ES Module，无构建步骤） |
-| `webapp/` | Electron 版前端：`electron/`（主进程 + 预加载）、`src/`（React 页面） |
+| `stent/web/` | 前端：`index.html` + `assets/*.js` + `assets/pages/*.js`（原生 ES Module，无构建步骤） |
+| `stent/bootstrap.py` | 启动期公共设施：控制台 UTF-8 与日志落盘 |
 | `stent/services/` | 热榜聚合、创作、画像、检查、发布编排、抖音抓取、分析 |
 | `stent/platforms/` | `base.py` 接口 + 每平台一个适配器 + `_browser.py` 共用工具 |
 | `stent/core/` | `db.py`（SQLite）、`llm.py`（OpenAI 兼容客户端） |
@@ -286,15 +282,15 @@ Git 默认后端因此在握手阶段直接失败：
 
 ### 6.2 新文件放哪（按顺序判定）
 
-1. 新页面 → `stent/ui/pages/<key>.py`，并在 `main_window.py` 的 `NAV_ITEMS`
-   加一行五元组 `(key, 标题, 图标名, 模块名, 类名)`，图标名要同时加进 `icons.py`。
-2. 新业务能力 → `stent/services/<能力>.py`，不碰 UI，能脱离 Qt 单测。
+1. 新页面 → `stent/web/assets/pages/<key>.js`（导出 `mount(root, ctx)`），
+   并在 `stent/web/assets/app.js` 的 `PAGES` 与 `NAV` 里各加一行。
+2. 新业务能力 → `stent/services/<能力>.py`，不碰界面，能脱离窗口单测。
 3. 新平台 → `stent/platforms/<key>.py` 实现 `PlatformAdapter`，然后四处配套：
    `platforms/__init__.py` 的 `_PLATFORM_SPECS` 与 `PLATFORM_ORDER`（域名规则见
-   `PLATFORM_DOMAINS` / `POST_ID_PATTERNS`）、`ui/theme.py` 的 `PLATFORM_COLORS`、
+   `PLATFORM_DOMAINS` / `POST_ID_PATTERNS`）、前端平台品牌色、
    `tests/selftest_all.py` 里"四个平台"相关断言。
 4. 存储或 LLM 能力 → `stent/core/`，且不得反向依赖上层。
-5. 共享控件 / 主题 / 图标 → `ui/components.py`、`ui/theme.py`、`ui/icons.py`。
+5. 共享控件 / 主题 / 图标 → `stent/web/assets/ui.js` 与 `app.css` 里的 CSS 变量。
 6. 回归脚本 → `tests/`，命名 `selftest_*.py` 或 `ui_*.py`，同时登记进
    `docs/development.md` 的「按改动区域选跑的回归」表。
 7. 都不合适 → **先问**，不要新建顶层包。
@@ -312,7 +308,7 @@ Git 默认后端因此在握手阶段直接失败：
 
 - `pyproject.toml`、`requirements*.txt`、`Stent.spec`、`build.ps1`
 - `.editorconfig`、`.gitattributes`、`.pre-commit-config.yaml`、`.github/workflows/ci.yml`
-- `docs/images/` 下的 README 截图（由 `tests/ui_screenshot.py` 生成后挑选裁切）
+- `docs/images/` 下的 README 截图（用 `tests/ui_web_smoke.py` 截的图挑选裁切）
 
 ### 6.4 临时文件
 
@@ -333,9 +329,8 @@ Git 默认后端因此在握手阶段直接失败：
 | `core/`、`services/` | 上项 + `python tests/selftest_all.py`（当前 171 项） |
 | 归因、画像记忆、中文文案 | 上项 + `python tests/selftest_attribution_zh.py` |
 | `api/`（接口层） | 上项 + `python tests/selftest_api.py` |
-| `webapp/`（Electron 前端） | `cd webapp && npm run check && npm run build`；动打包配置再加 `npm run package:dir` |
-| `web/`（前端资源） | `node --check` 抽查语法 + `python tests/selftest_api.py`（静态资源与 token 注入）；界面改动要开窗口看一眼 |
-| `ui/`（含 `pages/`） | 上项 + `$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest`（7 个页面全构建）+ 对应 `ui_*.py` 回归 |
+| `web/`（前端资源） | `python tests/selftest_api.py`（静态资源与 token 注入）+ `python tests/ui_web_smoke.py`（真浏览器渲染） |
+| `webapp.py`（壳层 / 窗口） | 上项 + `python tests/ui_web_window.py`（最大化 / 还原 / 动画 / 拖动 / 最小化） |
 | `platforms/` | 上项 + selftest 里的平台断言；涉及真实页面的改动**标注"需真机验证"** |
 | `pyproject.toml`、依赖、CI、构建脚本 | 全部门禁 + `python tests/check_project.py`；改依赖后本地 `pip install -r requirements.txt` 跑一次源码 |
 | 准备发版 | 全部 + `pwsh -File build.ps1 -Clean`（约 2 分半，产物约 190MB） |
@@ -347,18 +342,17 @@ ruff check .                                  # lint（CI 同款，必须零告�
 ruff format --check .                         # 格式校验
 python tests/check_project.py                 # 版本号 / CHANGELOG / 依赖口径一致
 python tests/selftest_api.py                  # 本机接口自检（起真服务，43 项，不联网）
-cd webapp && npm run check && npm run build    # Electron 前端类型检查 + 构建
-python tests/selftest_all.py                  # 服务层端到端 171 项
+python tests/selftest_all.py                  # 服务层端到端 200+ 项
 python tests/selftest_attribution_zh.py       # 归因链路中文化
-$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面无头构建
-python tests/ui_smoke.py                      # 真实窗口双主题冒烟
+python tests/ui_web_smoke.py                  # 界面渲染冒烟（真浏览器）
+python tests/ui_web_window.py                 # 壳层窗口行为（真窗口 + 注入鼠标）
 pwsh -File build.ps1 -Clean                   # 打包
 ```
 
 ### 7.3 硬规则
 
 - **服务层自检不许引入第三方依赖**。`core/`、`services/` 能在只装 Python 的环境跑完，
-  CI 的服务层作业也刻意不装 PySide6 / Playwright——一旦偷偷 import，CI 会挂，这是有意的守门。
+  CI 的服务层作业也刻意不装 Playwright / pywebview——一旦偷偷 import，CI 会挂，这是有意的守门。
 - 结果如实报告：通过条数与失败数、是否跑了完整门禁。只跑子集就写明"未跑完整门禁"及风险点。
 - 平台相关的真机行为（扫码登录、真实投稿、指标抓取）无法在 CI 验证，必须标注"需真机验证"。
 - CI 红了要当轮修复。静态检查挂了先本地复现，别反复推提交试错。
@@ -373,7 +367,7 @@ pwsh -File build.ps1 -Clean                   # 打包
 | 发版 | `stent/__init__.py` 的 `__version__` + `CHANGELOG.md` 版本标题一起改（CI 会校验） |
 | 能力或已知限制变化 | `README.md`（含「已知限制」「路线图」表） |
 | 构建流程、自检清单、平台改版取证 | `docs/development.md` |
-| 无边框窗口 / Win32 / 主题实现 | `docs/ui-internals.md` |
+| 无边框窗口 / Win32 / 拖动与最大化动画 | `docs/ui-internals.md` |
 | Web 前端的架构、职责边界、迁移进度 | `docs/web-architecture.md` |
 | 分层、代码约定、提交规范 | `CONTRIBUTING.md` |
 | 新增或调整回归脚本 | `docs/development.md` 的回归表 |
@@ -442,7 +436,8 @@ git status -sb
 ruff check . ; ruff format --check . ; python tests/selftest_all.py
 
 # 界面相关再加
-$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest
+python tests/ui_web_smoke.py    # 渲染
+python tests/ui_web_window.py   # 窗口行为
 
 # 让源码跑起来看看（改 UI 时优先用这个，别每次打包）
 python main.py

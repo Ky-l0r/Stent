@@ -11,7 +11,7 @@
 |---|---|
 | 操作系统 | Windows 10 / 11（窗口实现依赖 Win32 与 DWM 接口） |
 | Python | 3.10+（开发实测 3.13） |
-| 运行依赖 | `requirements.txt`：PySide6、openai、keyring、playwright |
+| 运行依赖 | `requirements.txt`：openai、keyring、playwright、pywebview |
 | 开发依赖 | `requirements-dev.txt`：额外加 pyinstaller、pytest |
 
 ```powershell
@@ -61,7 +61,7 @@ pwsh -File build.ps1 -Clean
 
 ### 瘦身
 
-v1.1 实测 232.7MB → 约 190MB。`excludes` 只能挡住 Python 侧的模块导入，**挡不住 Qt 的共享库**，
+v1.1 实测 232.7MB → 约 190MB（当时靠裁剪 Qt 实现）。v1.2 删掉 Qt 与 Electron 两套壳后，
 因此在 `COLLECT` 阶段按文件名再过滤一遍二进制与数据（QML / Quick / Pdf / VirtualKeyboard、
 `opengl32sw.dll`、`translations/`）。**若后续引入依赖 OpenGL / QML 的组件，记得把对应条目从过滤表里移除。**
 
@@ -102,10 +102,10 @@ ruff check --fix .        # 自动修可安全修复的部分
 |---|---|---|
 | 静态检查 | ubuntu / py3.12 | `ruff check .`、`ruff format --check .`、`tests/check_project.py` |
 | 服务层自检 | windows / py3.10 + py3.13 | `selftest_all.py`、`selftest_attribution_zh.py` |
-| 界面冒烟 | windows / py3.12 | 装 `requirements.txt` 后 `QT_QPA_PLATFORM=offscreen python main.py --selftest` |
+| 界面冒烟 | windows / py3.12 | 装 `requirements.txt` 后 `python tests/ui_web_smoke.py`（真浏览器渲染） |
 
 服务层自检作业**故意不装任何第三方依赖**：`core/` 与 `services/` 一旦偷偷 import
-PySide6 或 playwright，这一步就会挂——这是 CI 在替我们守住分层。
+playwright 或 pywebview，这一步就会挂——这是 CI 在替我们守住分层。
 
 ---
 
@@ -118,32 +118,27 @@ PySide6 或 playwright，这一步就会挂——这是 CI 在替我们守住分
 ruff check . ; ruff format --check . ; python tests/check_project.py
 
 # 2. 服务层端到端（配置 / 数据库 / 热榜解析 / 创作 / 检查 / 发布 / 分析）
-python tests/selftest_all.py                       # 当前 171 项通过 / 0 失败
+python tests/selftest_all.py                       # 当前 203 项通过 / 0 失败
 
 # 3. 归因链路中文化（假 LLM 返回中英混排 JSON）
 python tests/selftest_attribution_zh.py
 
 # 4. 界面层：无头构建全部页面
-$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest
+python tests/ui_web_smoke.py
 
 # 5. 真实窗口冒烟（双主题 + 无边框检查）
-python tests/ui_smoke.py
+python tests/ui_web_window.py
 ```
 
 ### 按改动区域选跑的回归
 
 | 改了什么 | 跑这个 | 它盯住什么 |
 |---|---|---|
-| 发布中心布局 | `tests/ui_publish_layout.py` | 检查栏卡片不被裁切 / 压扁、确认文案不截断、分栏不压叠预览 |
-| 草稿与创作输入 | `tests/ui_draft_reload.py` | 补充要求与快捷参数在往返中不丢 |
+| 发布页布局 | 人工 + `tests/ui_web_smoke.py` 截图 | 检查栏卡片不被裁切 / 压扁、确认文案不截断 |
+| 草稿与创作输入 | `tests/selftest_all.py` | 补充要求与快捷参数在往返中不丢 |
 | B 站表单写入 | `tests/bili_quill_js.py` | 真实 Chromium 里的富文本写入与分区点选 |
-| 编辑区 / 标签云排版 | `tests/ui_tagcloud_diag.py` | 排版异常时取证用 |
-| 滚轮与数值控件 | `tests/ui_wheel.py` | 真实 Win32 滚轮注入，防悬停误改数值 |
-| 窗口动画 | `tests/ui_animation.py` | 最大化 / 还原 / 最小化过渡逐帧 |
-| 无边框窗口行为 | `tests/ui_window.py` | Qt 版：最大化贴合工作区、还原回原尺寸、顶栏拖动与鼠标 1:1 |
-| Web 壳窗口行为 | `tests/ui_web_window.py` | pywebview 版：同一组断言 + 最大化缓动动画；注入鼠标走完整链路 |
-| 主题配色 | `tests/ui_contrast.py` | 找出与背景撞色的文字 |
-| 视觉核对 | `tests/ui_screenshot.py` | 抓关键区域截图到 `_data/screenshots/` |
+| 窗口行为 / 动画 / 拖动 | `tests/ui_web_window.py` | 最大化贴合工作区、还原回原尺寸、过渡动画有中间帧、拖动 1:1、最小化与恢复 |
+| 界面渲染 / 主题 | `tests/ui_web_smoke.py` | 真浏览器渲染、路由、主题切换、控制台报错，并截图到临时目录 |
 
 > 改 UI 时建议用 `python main.py` 直接跑源码验证，不必每次都重新打包；确认无误后再打包分发。
 
@@ -184,7 +179,7 @@ python tests/bili_probe.py --drafts   # dump 稿件管理里的草稿列表
 | 热点拉取 | < 2 秒 | 多平台并发 + 同一平台多源竞速；结果本地缓存 5~10 分钟 | 首次 ~2.2 秒 / 缓存 **0.006 秒** |
 | LLM 首字 | < 1 秒 | `stream=True` 流式输出；失败自动重试 2 次（已吐字则不重试，避免内容重复） | 取决于服务商 |
 | 数据归因 | 增量 < 1 秒 | SQLite 增量拉取，只同步 `last_synced` 超期的内容 | — |
-| 安装体积 | < 200MB | 裁剪 PySide6 模块；Chromium 按需安装；排除 numpy / matplotlib 等 | 约 190MB（不含浏览器内核） |
+| 安装体积 | < 200MB | 不打包浏览器内核（复用系统 WebView2 / Edge）；排除 numpy / matplotlib 等 | 以 Release 说明为准 |
 
 两条容易被「顺手优化」掉的取舍：
 

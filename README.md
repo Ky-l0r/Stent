@@ -156,11 +156,10 @@ python main.py
 首次运行会自动创建数据目录与 SQLite 数据库（开发态在 `_data\`）。
 
 界面在 v1.2 换成了 Web 前端：`python main.py` 打开的是 **WebView2 独立窗口**（复用系统
-自带运行时，不打包浏览器内核），不是浏览器标签页。旧的 PySide6 界面仍保留：
+自带运行时，不打包浏览器内核），不是浏览器标签页：
 
 ```powershell
-python main.py                # Web 前端（默认）
-python main.py --qt           # 旧界面（回退 / 对照）
+python main.py                # WebView2 独立窗口
 python main.py --browser      # 只起本机服务，用浏览器调前端
 ```
 
@@ -168,33 +167,14 @@ python main.py --browser      # 只起本机服务，用浏览器调前端
 数据分析（概览、趋势、排行、指标同步、归因回流）、账号画像、设置。
 架构、接口清单、职责划分与迁移进度见 [docs/web-architecture.md](docs/web-architecture.md)。
 
-### 方式三：Electron 客户端（webapp/，需要 Node 22）
-
-第三套壳，和上面共用同一个 Python 后端与接口：
-
-```powershell
-cd webapp
-npm install
-npm run dev           # 开发：编译 + 起窗口，后端由主进程自动拉起
-
-# 打包（先把后端打进 dist\Stent）
-pwsh -File ../build.ps1
-npm run package:dir   # 产物：webapp\release\win-unpacked\Stent.exe，免安装
-```
-
-三套界面各自验证过、都能跑：PySide6（`--qt`）、pywebview（默认）、Electron（本目录）。
-打包体积：pywebview 版 208MB，Electron 版 484MB（多一个 Chromium 运行时）。
-
 ### 命令行参数
 
 | 参数 | 作用 |
 |---|---|
-| `--qt` | 启动旧的 PySide6 界面（默认是 Web 前端） |
-| `--browser` | Web 前端不弹窗，改用系统浏览器打开本机服务（调试用） |
+| `--browser` | 不弹窗口，改用系统浏览器打开本机服务（调试用） |
 | `--port 8765` | 指定接口端口（默认由系统分配，只监听 127.0.0.1） |
-| `--selftest` | **走 PySide6**：无界面构建全部页面做冒烟后退出（CI 用） |
-| `--reset-onboarding` | 强制重新显示首次启动引导（旧界面） |
-| `--debug` | 输出调试日志 |
+| `--token` | 固定访问令牌（默认随机；调试接口时用） |
+| `--debug` | 输出调试日志，并打开 WebView 调试工具 |
 
 日志与数据位置由 `stent/paths.py` 统一管理，可用环境变量 `STENT_DATA_DIR` 覆盖数据目录（自动化测试与绿色部署用）。
 
@@ -277,16 +257,16 @@ npm run package:dir   # 产物：webapp\release\win-unpacked\Stent.exe，免安�
 
 | 操作 | 行为 |
 |---|---|
-| 长按顶栏拖动 | 移动窗口；拖到屏幕左 / 右边缘自动分屏，拖到顶部最大化 |
-| 拖到顶部停住 | 呼出系统 Snap 布局选择器（Windows 11） |
-| 双击顶栏 | 最大化 / 还原 |
-| 悬停「最大化」按钮 | 呼出 Snap 布局选择器（Windows 11） |
-| 拖拽窗口四边 / 四角 | 调整窗口大小 |
-| `F11` / `Esc` | 进入全屏 / 退出全屏 |
-| `Ctrl+M` | 最大化 / 还原 |
+| 长按顶栏拖动 | 移动窗口，位移与鼠标 1:1 跟手 |
+| 双击顶栏 | 最大化 / 还原（带缓动动画） |
+| 右上角「▢」 | 最大化 / 还原 |
+| 右上角「—」/「✕」 | 最小化 / 关闭 |
 
-系统级对话框（文件选择、消息框、引导页）仍保留原生标题栏——它们由系统绘制，也更符合用户对弹窗的操作预期。
-**为什么无边框窗口还能有 Snap 和原生调整大小**，见 [docs/ui-internals.md](docs/ui-internals.md)。
+系统级对话框（文件选择、消息框）仍保留原生标题栏——它们由系统绘制，也更符合用户对弹窗的操作预期。
+窗口是自绘标题栏的无边框窗口，实现与取舍见 [docs/ui-internals.md](docs/ui-internals.md)。
+
+> 贴边分屏（Aero Snap）、拖边调整窗口大小、`F11` 全屏目前没有：无边框窗口没有系统非客户区，
+> 这几种交互都要额外实现。旧 Qt 版曾有这些能力，v1.2 删除该壳后一并失去，尚未移植。
 
 ### 主题
 
@@ -384,7 +364,7 @@ Stent/
 ## 开发与构建
 
 打包、自检清单、平台改版取证流程、性能指标与实现取舍，集中在
-[docs/development.md](docs/development.md)；无边框窗口的 Win32 实现细节在
+[docs/development.md](docs/development.md)；窗口的实现与取舍在
 [docs/ui-internals.md](docs/ui-internals.md)；Web 前端的架构、职责划分与迁移要点在
 [docs/web-architecture.md](docs/web-architecture.md)。
 
@@ -394,7 +374,8 @@ Stent/
 ruff check . && ruff format --check .   # 静态检查（规则见 pyproject.toml）
 python tests/check_project.py           # 版本号 / CHANGELOG / 依赖口径一致
 python tests/selftest_all.py            # 服务层端到端自检（当前 171 项）
-$env:QT_QPA_PLATFORM='offscreen'; python main.py --selftest   # 界面层冒烟
+python tests/ui_web_smoke.py      # 界面渲染冒烟（真浏览器）
+python tests/ui_web_window.py     # 壳层窗口行为（最大化 / 还原 / 动画 / 拖动）
 pwsh -File build.ps1 -Clean             # 一键打包，产物 dist\Stent\Stent.exe
 ```
 
@@ -420,8 +401,8 @@ pwsh -File build.ps1 -Clean             # 一键打包，产物 dist\Stent\Stent
 3. **发布是单人单次操作**。同一平台的浏览器操作会串行执行，避免登录态冲突；不提供批量发布。
 4. **热点源为公益接口**。60s API、xxapi 与 uapis 均为公益项目，偶发超时或限流；Stent 会并发竞速、
    自动降级到备用源或历史缓存，并在界面上标出哪个平台失败、可以单独重试。
-5. **打包体积**。PySide6 本体约 100~150MB；浏览器内核不内置，优先复用系统 Edge / Chrome，
-   需要固定版本时再按需下载。
+5. **打包体积**。窗口复用系统自带的 WebView2，不打包浏览器内核；v1.2 删掉 Qt 与 Electron 两套壳后，
+   产物里不再有 Qt 运行时，实际体积以 Release 说明为准。
 6. **图片尺寸与视频时长校验未实现**，当前只检查文件是否存在、数量与扩展名是否合法。
 7. **仅支持 Windows**。无边框窗口的拖拽 / Snap / 圆角实现依赖 Win32 与 DWM 接口，未在 macOS / Linux 验证。
 
