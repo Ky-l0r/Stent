@@ -129,25 +129,13 @@ async function route() {
 }
 
 function wireShell() {
-  // 自绘标题栏：没有原生边框，拖动靠把位移量交给壳层窗口
+  // 自绘标题栏：按下时只把「按下点的屏幕坐标」交给壳层，由系统进入它自己的
+  // 移动循环。旧实现是逐帧算位移再调 move_window()，每一帧都过一次 JS→Python
+  // 的桥，必然比鼠标慢半拍。
   const zone = document.getElementById("dragzone");
-  let drag = null;
   zone.addEventListener("pointerdown", (event) => {
     if (!shell.available() || event.button !== 0) return;
-    drag = { x: event.screenX, y: event.screenY };
-    zone.setPointerCapture(event.pointerId);
-  });
-  zone.addEventListener("pointermove", (event) => {
-    if (!drag) return;
-    const dx = event.screenX - drag.x;
-    const dy = event.screenY - drag.y;
-    if (!dx && !dy) return;
-    drag = { x: event.screenX, y: event.screenY };
-    shell.call("move_window", dx, dy); // 不 await：拖拽不能等一次往返
-  });
-  zone.addEventListener("pointerup", (event) => {
-    drag = null;
-    try { zone.releasePointerCapture(event.pointerId); } catch { /* 已释放 */ }
+    shell.call("start_drag", Math.round(event.screenX), Math.round(event.screenY));
   });
   zone.addEventListener("dblclick", () => shell.call("toggle_maximize"));
 

@@ -140,6 +140,8 @@ python tests/ui_smoke.py
 | 编辑区 / 标签云排版 | `tests/ui_tagcloud_diag.py` | 排版异常时取证用 |
 | 滚轮与数值控件 | `tests/ui_wheel.py` | 真实 Win32 滚轮注入，防悬停误改数值 |
 | 窗口动画 | `tests/ui_animation.py` | 最大化 / 还原 / 最小化过渡逐帧 |
+| 无边框窗口行为 | `tests/ui_window.py` | Qt 版：最大化贴合工作区、还原回原尺寸、顶栏拖动与鼠标 1:1 |
+| Web 壳窗口行为 | `tests/ui_web_window.py` | pywebview 版：同一组断言 + 最大化缓动动画；注入鼠标走完整链路 |
 | 主题配色 | `tests/ui_contrast.py` | 找出与背景撞色的文字 |
 | 视觉核对 | `tests/ui_screenshot.py` | 抓关键区域截图到 `_data/screenshots/` |
 

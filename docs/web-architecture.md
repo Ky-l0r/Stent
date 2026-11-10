@@ -297,6 +297,19 @@ Qt 版大量 `self.ctx.toast(...)`。Web 侧统一 `toast(message, level)`，
 - 页面模块用 `ctx.onLeave(fn)` 注册清理：停轮询、中断流式生成、把 `active` 置 false，
   避免几秒后才回来的响应去改全局状态灯或往已卸载的 DOM 里写东西。
 
+### 6.9.1 pywebview 壳的窗口行为
+
+无边框窗口没有系统非客户区，三件事都得自己做，且都不适合走「JS 逐帧回传」：
+
+| 能力 | 做法 | 为什么不是别的做法 |
+| --- | --- | --- |
+| 拖动 | 前端只在 `pointerdown` 时把按下点交给壳层，壳层在 Python 侧 120Hz 读光标、`SetWindowPos` 摆窗口 | 旧实现逐帧 `move_window(dx,dy)`，每帧一次 JS→Shell 往返，必然慢半拍；而 `WM_NCLBUTTONDOWN + HTCAPTION` 在这套窗口上无效——鼠标捕获在 WebView2 的子窗口、属于另一个进程的线程，`ReleaseCapture` 跨线程不生效，系统移动循环拿不到后续移动（实测窗口纹丝不动） |
+| 最大化 / 还原 | 先 `ShowWindow(SW_MAXIMIZE)` 落状态（Windows 自己记还原点），立刻把窗口拉回原矩形，再用 `SetWindowPos` 逐帧缓动到工作区（170ms，12 帧）；还原时先在最大化状态下缓动回还原点，最后 `SW_RESTORE` | 无边框窗口拿不到系统的 zoom 动画；`SetWindowPlacement` 手写 `showCmd` 在「窗口已经铺满工作区」时不会真的切状态，还会串用旧的 `ptMaxPosition` |
+| 判断是否最大化 | Win32 `IsZoomed` | pywebview 的 `Window` **没有** `maximized` 属性（只有 `state`），旧代码 `getattr(window, "maximized", False)` 恒为 `False`，于是只进不出——这就是「全屏之后不能缩小」 |
+
+对应的回归脚本是 `tests/ui_web_window.py`：先在进程内造一个真实 Win32 弹窗验证状态机，
+再真启动应用、用 Win32 注入鼠标走完整链路（系统 → WebView2 → JS → `js_api` → 原生窗口）。
+
 ### 6.10 大量数据下的布局
 
 作品一多，「把所有行都铺在页面上」会让整页无限拉长，滚动条失去位置感。规则：
@@ -345,6 +358,9 @@ python tests/selftest_api.py
 
 # 界面渲染自检（真浏览器，缺内核时自动退到系统 Edge）
 python tests/ui_web_smoke.py
+
+# 壳层窗口行为（最大化/还原/动画/拖动，真窗口 + 注入鼠标）
+python tests/ui_web_window.py
 ```
 
 `--browser` 模式下所有页面功能可用，只有「选择媒体文件」不可用（浏览器拿不到真实路径）。
@@ -370,8 +386,8 @@ python tests/ui_web_smoke.py
    但没法把「后端崩了」这件事报给界面。
 2. **令牌走 IPC 而不是注入 HTML**：主进程生成 → 命令行给后端 → 预加载脚本
    `contextBridge` 暴露给渲染进程。页面源码里搜不到令牌，也不会出现在 URL 上。
-3. **拖拽用 `-webkit-app-region: drag`**：不再需要 JS 逐帧上报位移（pywebview 版的做法，
-   拖动时有一次 IPC 往返，快速拖动会滞后）。
+3. **拖拽用 `-webkit-app-region: drag`**：由 Chromium 直接把按下转成系统的拖动，
+   不需要像 pywebview 版那样自己做（见 §6.9.1，两边现在都不逐帧过 IPC）。
 
 ### 因此多出来的两处后端改动
 
