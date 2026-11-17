@@ -235,7 +235,11 @@ input:focus, textarea:focus, select:focus {
   outline: 2px solid var(--primary); outline-offset: 1px; border-color: var(--primary);
 }
 label.field { display: block; margin-bottom: var(--space-3); }
-label.field > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+/* 字段名要比 placeholder 清楚：13px 正文色；需要弱化的说明仍走 .muted */
+label.field > span { display: block; color: var(--text); font-size: 13px; margin-bottom: 6px; }
+label.field > span .muted { color: var(--muted); font-weight: 400; }
+/* 输入框下方的填写提示：贴着控件，不再占上方间距 */
+label.field > .field__hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; line-height: 1.6; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
 /* 窗口再宽，单行输入也不该拉到 900px：一眼扫不到行尾的输入框只能靠猜。
    长表单页整张卡收窄，比只限制字段更干净 */
@@ -252,6 +256,8 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 /* chip 里的计数与名字要能分开读，否则「微博 20」像一个词 */
 .chip__dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }
 .chip__count { font-size: 11px; opacity: .8; font-variant-numeric: tabular-nums; }
+/* 展开器不是筛选项，用虚线边框区分 */
+.chip--more { border-style: dashed; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* 筛选分两组：平台和垂类混在一排时，用户分不清哪几个是互斥的 */
 .filter-group { display: flex; align-items: flex-start; gap: var(--space-3); }
@@ -401,7 +407,7 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 .bar-row__top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .bar-row__label { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
 .bar-row__label span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar { height: 8px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .bar__fill { height: 100%; border-radius: 999px; background: var(--primary); }
 .bar-row__value { text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
@@ -433,7 +439,7 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
 
 /* ---------- 进度 ---------- */
-.progress { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.progress { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .progress__fill {
   height: 100%; background: var(--primary); border-radius: 999px;
   transition: width .3s ease; width: 0;
@@ -445,9 +451,9 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 progress {
   appearance: none; -webkit-appearance: none;
   width: 100%; height: 6px; border: 0; border-radius: 999px;
-  background: var(--panel-2); overflow: hidden;
+  background: var(--line); overflow: hidden;
 }
-progress::-webkit-progress-bar { background: var(--panel-2); border-radius: 999px; }
+progress::-webkit-progress-bar { background: var(--line); border-radius: 999px; }
 progress::-webkit-progress-value { background: var(--primary); border-radius: 999px; transition: width .3s ease; }
 
 /* ---------- 对话框 ---------- */
@@ -492,6 +498,8 @@ progress::-webkit-progress-value { background: var(--primary); border-radius: 99
 
 .link { color: var(--primary); background: none; border: 0; padding: 0; cursor: pointer; font-size: 13px; }
 .link:hover { text-decoration: underline; }
+/* 前提条件类的引导（如「未配置模型」）用警示色文字，不占按钮位 */
+.link--warn { color: var(--warn); }
 
 /* ---------- 草稿行 ---------- */
 .draft-row { align-items: center; cursor: default; padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--line); }

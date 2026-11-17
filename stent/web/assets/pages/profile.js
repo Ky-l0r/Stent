@@ -53,8 +53,9 @@ function render(root, ctx) {
           const value = profile[dim.key];
           const text = Array.isArray(value) ? value.join("、") : value || "";
           return `<label class="field">
-            <span>${esc(dim.label)} · <span class="muted">${esc(dim.hint)}</span></span>
+            <span>${esc(dim.label)}</span>
             <textarea data-dim="${esc(dim.key)}" rows="3" placeholder="${esc(dim.placeholder)}">${esc(text)}</textarea>
+            <span class="field__hint">${esc(dim.hint)}</span>
           </label>`;
         })
         .join("")}

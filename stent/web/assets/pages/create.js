@@ -187,9 +187,10 @@ function updateLimitHint(root, ctx) {
 function updateLlmHint(root, ctx) {
   const hint = root.querySelector("#llm-hint");
   const ready = ctx.meta?.llm_ready;
+  // 未配置模型是「前提条件」，不是第五个动作：用警示色链接，跟三个按钮分开
   hint.innerHTML = ready
     ? ""
-    : '<button class="btn btn--sm" id="go-settings">未配置模型，去设置</button>';
+    : '<button class="link link--warn" id="go-settings">未配置模型，去设置</button>';
   hint.querySelector("#go-settings")?.addEventListener("click", () => ctx.navigate("settings"));
 }
 

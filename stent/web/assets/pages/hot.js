@@ -12,7 +12,9 @@ import {
   toast,
 } from "../ui.js";
 
-const filters = { keyword: "", category: "", platforms: new Set() };
+const filters = { keyword: "", category: "", platforms: new Set(), catOpen: false };
+// 垂类动辄十几个，全铺开只是噪声：默认只放前八个，其余收进「+N」
+const CAT_LIMIT = 8;
 let data = { items: [], platforms: [], categories: [] };
 // 页面是否还挂在界面上：热榜请求可能几秒才回来，切页后不能再改全局状态灯
 let active = false;
@@ -100,13 +102,20 @@ function renderFilters(root, ctx) {
     })
     .join("");
 
-  const cats = [{ name: "", count: data.items.length }, ...data.categories]
-    .map((c) => {
-      const value = c.name;
-      const active = filters.category === value ? " active" : "";
-      return `<button class="chip${active}" data-category="${esc(value)}">${esc(value || "全部垂类")}<span class="chip__count">${c.count}</span></button>`;
-    })
-    .join("");
+  const allCats = [{ name: "", count: data.items.length }, ...data.categories];
+  const shownCats = filters.catOpen ? allCats : allCats.slice(0, CAT_LIMIT + 1);
+  const hiddenCats = allCats.length - shownCats.length;
+  const cats =
+    shownCats
+      .map((c) => {
+        const value = c.name;
+        const active = filters.category === value ? " active" : "";
+        return `<button class="chip${active}" data-category="${esc(value)}">${esc(value || "全部垂类")}<span class="chip__count">${c.count}</span></button>`;
+      })
+      .join("") +
+    (allCats.length > CAT_LIMIT + 1
+      ? `<button class="chip chip--more" data-cat-toggle="1">${filters.catOpen ? "收起" : `+${hiddenCats}`}</button>`
+      : "");
 
   const failures = data.platforms.filter((p) => p.count === 0 && p.error);
   const failureHtml = failures.length
@@ -141,9 +150,15 @@ function renderFilters(root, ctx) {
   host.querySelectorAll("[data-category]").forEach((btn) => {
     btn.addEventListener("click", () => {
       filters.category = filters.category === btn.dataset.category ? "" : btn.dataset.category;
+      // 选中的垂类不能被折起来，否则用户看不见自己当前筛的是什么
+      if (filters.category) filters.catOpen = true;
       renderFilters(root, ctx);
       renderList(root, ctx);
     });
+  });
+  host.querySelector("[data-cat-toggle]")?.addEventListener("click", () => {
+    filters.catOpen = !filters.catOpen;
+    renderFilters(root, ctx);
   });
 }
 
