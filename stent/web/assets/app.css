@@ -108,6 +108,17 @@ button { font: inherit; color: inherit; }
 /* 键盘操作要看得见焦点；鼠标点击不显示，避免每次点按钮都留一圈 */
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
+/* ---------- 图标 ---------- */
+/* sprite 只提供 symbol 容器，本身不占位；描边与颜色由 .icon 统一给 */
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.icon {
+  width: 18px; height: 18px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.75;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+/* 窗口按钮的图标窗口习惯比导航小一号，线也更细 */
+.icon--win { width: 16px; height: 16px; stroke-width: 1.6; }
+
 /* ---------- 外壳 ---------- */
 .app { display: flex; flex-direction: column; height: 100%; }
 
@@ -168,7 +179,6 @@ button { font: inherit; color: inherit; }
 }
 .nav-item:hover { background: var(--hover); color: var(--text); }
 .nav-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
-.nav-icon { width: 18px; font-size: 15px; line-height: 1; text-align: center; opacity: .9; }
 .sidebar__gap { flex: 1; }
 .sidebar__meta { color: var(--muted); font-size: 11px; padding: var(--space-2) 10px; }
 

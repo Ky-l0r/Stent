@@ -43,7 +43,7 @@ WINDOW_SIZE = (1380, 854)
 # 现在下限只作用于用户手动拖边（见 _NativeWindow._min_size），吸附与最大化
 # 是刻意的布局动作，不受它约束。
 MIN_SIZE = (1080, 700)
-BACKGROUND = "#F6F5FA"
+BACKGROUND = "#F4F3F8"
 
 _IS_WINDOWS = sys.platform == "win32"
 

@@ -9,6 +9,72 @@
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
+  <!-- 图标统一走这组 symbol：24 网格、1.75 描边、颜色继承 currentColor。
+       不引图标库——十几个图标不值得多一个依赖，也不用处理离线加载。 -->
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-hot" viewBox="0 0 24 24">
+      <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5Z"/>
+    </symbol>
+    <symbol id="i-create" viewBox="0 0 24 24">
+      <path d="M12 20h9"/>
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+    </symbol>
+    <symbol id="i-drafts" viewBox="0 0 24 24">
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>
+      <path d="M14 2v4a2 2 0 0 0 2 2h4"/>
+      <path d="M16 13H8"/>
+      <path d="M16 17H8"/>
+      <path d="M10 9H8"/>
+    </symbol>
+    <symbol id="i-publish" viewBox="0 0 24 24">
+      <path d="M22 2 15 22l-4-9-9-4 20-7Z"/>
+      <path d="M22 2 11 13"/>
+    </symbol>
+    <symbol id="i-analytics" viewBox="0 0 24 24">
+      <path d="M3 3v18h18"/>
+      <path d="M8 17v-5"/>
+      <path d="M13 17V8"/>
+      <path d="M18 17v-9"/>
+    </symbol>
+    <symbol id="i-profile" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9"/>
+      <circle cx="12" cy="10" r="3"/>
+      <path d="M6.5 19.5a6 6 0 0 1 11 0"/>
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24">
+      <path d="M4 8h4"/>
+      <path d="M12 8h8"/>
+      <circle cx="10" cy="8" r="2"/>
+      <path d="M4 16h10"/>
+      <path d="M18 16h2"/>
+      <circle cx="16" cy="16" r="2"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2"/>
+      <path d="M12 20v2"/>
+      <path d="m4.93 4.93 1.41 1.41"/>
+      <path d="m17.66 17.66 1.41 1.41"/>
+      <path d="M2 12h2"/>
+      <path d="M20 12h2"/>
+      <path d="m6.34 17.66-1.41 1.41"/>
+      <path d="m19.07 4.93-1.41 1.41"/>
+    </symbol>
+    <symbol id="i-min" viewBox="0 0 24 24">
+      <path d="M5 12h14"/>
+    </symbol>
+    <symbol id="i-max" viewBox="0 0 24 24">
+      <rect x="5" y="5" width="14" height="14" rx="1.5"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24">
+      <path d="M18 6 6 18"/>
+      <path d="m6 6 12 12"/>
+    </symbol>
+  </svg>
+
   <div class="app">
     <header class="titlebar" id="titlebar">
       <div class="titlebar__drag" id="dragzone">
@@ -21,25 +87,33 @@
         <button class="status-pill" id="status" type="button" title="点击查看详情">
           <span class="status-pill__dot"></span><span class="status-pill__text">就绪</span>
         </button>
-        <button class="icon-btn" id="theme-btn" type="button" title="切换主题">◐</button>
+        <button class="icon-btn" id="theme-btn" type="button" title="切换主题">
+          <svg class="icon" aria-hidden="true"><use href="#i-moon"></use></svg>
+        </button>
         <div class="win-controls">
-          <button class="win-btn" data-win="minimize" type="button" title="最小化">—</button>
-          <button class="win-btn" data-win="maximize" type="button" title="最大化">▢</button>
-          <button class="win-btn win-btn--close" data-win="close" type="button" title="关闭">✕</button>
+          <button class="win-btn" data-win="minimize" type="button" title="最小化">
+            <svg class="icon icon--win" aria-hidden="true"><use href="#i-min"></use></svg>
+          </button>
+          <button class="win-btn" data-win="maximize" type="button" title="最大化">
+            <svg class="icon icon--win" aria-hidden="true"><use href="#i-max"></use></svg>
+          </button>
+          <button class="win-btn win-btn--close" data-win="close" type="button" title="关闭">
+            <svg class="icon icon--win" aria-hidden="true"><use href="#i-close"></use></svg>
+          </button>
         </div>
       </div>
     </header>
 
     <div class="body">
       <nav class="sidebar" id="sidebar">
-        <button class="nav-item" data-route="hot" type="button"><span class="nav-icon">◈</span>热点发现</button>
-        <button class="nav-item" data-route="create" type="button"><span class="nav-icon">✎</span>内容创作</button>
-        <button class="nav-item" data-route="drafts" type="button"><span class="nav-icon">▤</span>草稿箱<span class="nav-badge hidden" id="drafts-badge">0</span></button>
-        <button class="nav-item" data-route="publish" type="button"><span class="nav-icon">➤</span>发布中心</button>
-        <button class="nav-item" data-route="analytics" type="button"><span class="nav-icon">◔</span>数据分析</button>
-        <button class="nav-item" data-route="profile" type="button"><span class="nav-icon">◍</span>账号画像</button>
+        <button class="nav-item" data-route="hot" type="button"><svg class="icon" aria-hidden="true"><use href="#i-hot"></use></svg>热点发现</button>
+        <button class="nav-item" data-route="create" type="button"><svg class="icon" aria-hidden="true"><use href="#i-create"></use></svg>内容创作</button>
+        <button class="nav-item" data-route="drafts" type="button"><svg class="icon" aria-hidden="true"><use href="#i-drafts"></use></svg>草稿箱<span class="nav-badge hidden" id="drafts-badge">0</span></button>
+        <button class="nav-item" data-route="publish" type="button"><svg class="icon" aria-hidden="true"><use href="#i-publish"></use></svg>发布中心</button>
+        <button class="nav-item" data-route="analytics" type="button"><svg class="icon" aria-hidden="true"><use href="#i-analytics"></use></svg>数据分析</button>
+        <button class="nav-item" data-route="profile" type="button"><svg class="icon" aria-hidden="true"><use href="#i-profile"></use></svg>账号画像</button>
         <div class="sidebar__gap"></div>
-        <button class="nav-item" data-route="settings" type="button"><span class="nav-icon">⚙</span>设置</button>
+        <button class="nav-item" data-route="settings" type="button"><svg class="icon" aria-hidden="true"><use href="#i-settings"></use></svg>设置</button>
         <div class="sidebar__meta" id="version-tag">v—</div>
       </nav>
 

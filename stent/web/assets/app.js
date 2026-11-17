@@ -43,9 +43,14 @@ async function refreshDraftBadge() {
 }
 
 function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+  const dark = theme === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
   const btn = document.getElementById("theme-btn");
-  if (btn) btn.textContent = theme === "dark" ? "☀" : "◐";
+  if (!btn) return;
+  // 按钮里放的是图标 symbol，切主题靠换 <use> 的引用，不再替换文字
+  const use = btn.querySelector("use");
+  if (use) use.setAttribute("href", dark ? "#i-sun" : "#i-moon");
+  btn.title = dark ? "切换到浅色" : "切换到深色";
 }
 
 async function toggleTheme() {
