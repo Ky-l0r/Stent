@@ -298,7 +298,8 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
   padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 14px;
   background: var(--warn-soft); border: 1px solid var(--warn); font-size: 13px;
 }
-.banner--info { background: var(--primary-soft); border-color: var(--primary); }
+/* 信息条走中性底：它只是说明，不该和主按钮抢同一块紫 */
+.banner--info { background: var(--panel-2); border-color: var(--line); }
 
 .spinner {
   width: 14px; height: 14px; border-radius: 50%;
@@ -327,7 +328,12 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 }
 .kpi__label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
 .kpi__value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+/* 0 表示「还没有」而不是「结论」：降色降重，让真有数的卡片先被看见 */
+.kpi__value--zero { color: var(--muted); font-weight: 600; }
 .kpi__sub { color: var(--muted); font-size: 12px; margin-top: var(--space-1); }
+
+/* 平均互动率那一行的大数字：无数据时由 .muted 接着把颜色压下去 */
+.rate-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 
 /* ---------- 工具条 ---------- */
 .toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
@@ -395,6 +401,8 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 
 /* ---------- 空状态 ---------- */
 .empty--state { padding: 40px var(--space-4); }
+/* 图表区空态：比整页空态矮一档，卡片不至于占掉半屏却什么都没有 */
+.empty--chart { padding: 28px var(--space-4); }
 .empty__title { color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 .empty__hint { color: var(--muted); font-size: 13px; line-height: 1.7; max-width: 460px; margin: 0 auto var(--space-3); }
 .empty--inset { padding: var(--space-3) 0; }

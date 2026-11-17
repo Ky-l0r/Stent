@@ -312,7 +312,9 @@ function renderEnv() {
     }
     return;
   }
-  host.innerHTML = `<div class="banner${env.code === "no_chromium" ? "" : " banner--error"}">
+  // 缺组件/缺依赖都是「还没配好」而不是「出错了」，用警示色而不是报错色：
+  // 红色留给真正的发布失败（见 renderResult）
+  host.innerHTML = `<div class="banner">
     <span>${esc(env.title)}：${esc(env.detail)}${env.size_hint ? `（需下载${esc(env.size_hint)}）` : ""}</span>
     <button class="btn btn--sm" id="install-env">一键配置</button>
   </div>`;

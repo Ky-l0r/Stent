@@ -570,7 +570,7 @@ function renderHint() {
       <span>还没有任何作品记录。可以从已登录账号批量导入，或粘贴作品链接逐条登记。</span>
       <span style="display:flex;gap:8px">
         <button class="btn btn--sm" id="hint-register">登记已有作品</button>
-        <button class="btn btn--sm btn--primary" id="hint-publish">去发布</button>
+        <button class="btn btn--sm" id="hint-publish">去发布</button>
       </span>
     </div>`;
     host.querySelector("#hint-register")?.addEventListener("click", () => {
@@ -617,7 +617,7 @@ function renderKpis() {
     .map(
       ([label, value, sub]) => `<div class="kpi">
         <div class="kpi__label">${label}</div>
-        <div class="kpi__value">${esc(value)}</div>
+        <div class="kpi__value${value === "0" ? " kpi__value--zero" : ""}">${esc(value)}</div>
         ${sub ? `<div class="kpi__sub">${esc(sub)}</div>` : ""}
       </div>`
     )
@@ -632,11 +632,13 @@ function renderRate() {
   const rating = benchmark.rating;
   const ranges = (benchmark.engagement_ranges || []).map((v) => `${v}%`).join(" / ");
   const warnings = (data.warnings || []).map((w) => `<div class="kpi__sub">注意：${esc(w)}</div>`).join("");
+  // 没有指标时 fmtRate 返回「—」，两个大号破折号挤在一起像排版事故，换成一句话
+  const rateEmpty = data.avg_engagement_rate == null;
   host.innerHTML = `
     <div class="toolbar" style="align-items:baseline">
       <span class="muted" style="font-size:12px">平均互动率</span>
-      <strong style="font-size:20px">${esc(fmtRate(data.avg_engagement_rate))}</strong>
-      <span class="muted" style="font-size:12px">加权 ${esc(fmtRate(data.aggregate_engagement_rate))}</span>
+      <strong class="rate-value${rateEmpty ? " muted" : ""}">${esc(rateEmpty ? "暂无" : fmtRate(data.avg_engagement_rate))}</strong>
+      <span class="muted" style="font-size:12px">加权 ${esc(rateEmpty ? "—" : fmtRate(data.aggregate_engagement_rate))}</span>
       ${rating ? `<span class="pill pill--${RATING_TONE[rating] || "idle"}">${esc(rating)}</span>` : ""}
       <div class="spacer"></div>
       <span class="muted" style="font-size:12px">
@@ -655,7 +657,7 @@ function renderTrend() {
   const series = state.series || [];
   const hasValue = series.some((row) => Number(row.value) > 0);
   if (!series.length || (!hasValue && state.metric !== "posts")) {
-    host.innerHTML = `<div class="empty empty--state">
+    host.innerHTML = `<div class="empty empty--chart">
       <div class="empty__title">还没有可绘制的趋势</div>
       <div class="empty__hint">发布内容并同步指标后，这里会按天画出变化曲线。</div>
       <button class="btn btn--sm" id="chart-sync">去同步指标</button>
