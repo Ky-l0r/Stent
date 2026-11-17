@@ -24,7 +24,7 @@ function render(root, ctx) {
     <div class="page-head">
       <div>
         <h1 class="page-title">设置</h1>
-        <p class="page-desc">只需要三项：接口地址、密钥、模型名称</p>
+        <p class="page-desc">填好接口地址、密钥和模型名称就能用，采样参数收在「高级参数」里</p>
       </div>
       <div class="page-actions">
         <button class="btn" id="test">测试连通性</button>
@@ -55,14 +55,17 @@ function render(root, ctx) {
           <input id="api_key" type="password" placeholder="${data.key_set ? "••••••••（已保存）" : "sk-..."}" autocomplete="off">
         </label>
       </div>
-      <div class="field-row">
-        <label class="field"><span>温度（0-2）</span>
-          <input id="temperature" type="number" step="0.1" min="0" max="2" value="${Number(llm.temperature ?? 0.7)}">
-        </label>
-        <label class="field"><span>单次最大 token</span>
-          <input id="max_tokens" type="number" min="256" step="256" value="${Number(llm.max_tokens ?? 4096)}">
-        </label>
-      </div>
+      <details class="field-adv">
+        <summary>高级参数 <span class="muted" id="adv-val">温度 ${Number(llm.temperature ?? 0.7)} · 最大 ${Number(llm.max_tokens ?? 4096)} token</span></summary>
+        <div class="field-row" style="margin-top:10px">
+          <label class="field"><span>温度（0-2）</span>
+            <input id="temperature" type="number" step="0.1" min="0" max="2" value="${Number(llm.temperature ?? 0.7)}">
+          </label>
+          <label class="field"><span>单次最大 token</span>
+            <input id="max_tokens" type="number" min="256" step="256" value="${Number(llm.max_tokens ?? 4096)}">
+          </label>
+        </div>
+      </details>
       <p class="card__hint">密钥存储方式：${esc(data.key_mode || "未知")}${
         data.key_set ? '　<button class="btn btn--sm btn--ghost" id="clear-key" type="button">清除已保存的密钥</button>' : ""
       }</p>
@@ -93,6 +96,14 @@ function render(root, ctx) {
       </div>
     </div>
   `;
+
+  // 收起时也要能看出当前采样参数，改完立刻反映到 summary 上
+  const advVal = root.querySelector("#adv-val");
+  const syncAdv = () => {
+    advVal.textContent = `温度 ${root.querySelector("#temperature").value} · 最大 ${root.querySelector("#max_tokens").value} token`;
+  };
+  root.querySelector("#temperature").addEventListener("input", syncAdv);
+  root.querySelector("#max_tokens").addEventListener("input", syncAdv);
 
   root.querySelector("#provider").addEventListener("change", (event) => {
     const preset = presets.find((p) => p.key === event.target.value);

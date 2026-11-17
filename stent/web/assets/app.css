@@ -241,6 +241,10 @@ label.field > span .muted { color: var(--muted); font-weight: 400; }
 /* 输入框下方的填写提示：贴着控件，不再占上方间距 */
 label.field > .field__hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; line-height: 1.6; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+/* 次要参数折叠：与创作页的 details 保持同一套观感 */
+.field-adv { margin-bottom: var(--space-3); }
+.field-adv > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.field-adv > summary:hover { color: var(--text); }
 /* 窗口再宽，单行输入也不该拉到 900px：一眼扫不到行尾的输入框只能靠猜。
    长表单页整张卡收窄，比只限制字段更干净 */
 .card--narrow { max-width: 760px; }
