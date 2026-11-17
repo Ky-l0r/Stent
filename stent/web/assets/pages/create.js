@@ -107,6 +107,13 @@ export async function mount(root, ctx) {
           </details>
           <p class="muted" style="margin:0;font-size:12px">Ctrl+Enter 生成</p>
         </div>
+
+        <div class="card">
+          <h2 class="card__title">简介</h2>
+          <textarea id="summary" rows="3" placeholder="平台简介 / 摘要">${esc(state.summary)}</textarea>
+          <h2 class="card__title" style="margin-top:12px">标签</h2>
+          <input id="tags" type="text" placeholder="空格分隔，例：通勤穿搭 平价好物" value="${esc(state.tags.join(" "))}">
+        </div>
       </div>
 
       <div>
@@ -125,13 +132,6 @@ export async function mount(root, ctx) {
         <div class="card">
           <h2 class="card__title">标题候选</h2>
           <div id="titles" class="list"></div>
-        </div>
-
-        <div class="card">
-          <h2 class="card__title">简介</h2>
-          <textarea id="summary" rows="3" placeholder="平台简介 / 摘要">${esc(state.summary)}</textarea>
-          <h2 class="card__title" style="margin-top:12px">标签</h2>
-          <input id="tags" type="text" placeholder="空格分隔，例：通勤穿搭 平价好物" value="${esc(state.tags.join(" "))}">
         </div>
 
         <div class="card hidden" id="report">
