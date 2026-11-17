@@ -1,7 +1,7 @@
 // 设置：LLM 三件套 + 主题。密钥只写不读——页面上永远显示不出已存的 Key。
 
 import { api } from "../api.js";
-import { confirmDialog, esc, setBusy, setStatus, toast } from "../ui.js";
+import { confirmDialog, esc, setBusy, setStatus, setThemeIcon, toast } from "../ui.js";
 
 let data = null;
 
@@ -32,7 +32,7 @@ function render(root, ctx) {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card card--narrow">
       <h2 class="card__title">LLM 接入</h2>
       <label class="field"><span>服务商</span>
         <select id="provider">
@@ -69,7 +69,7 @@ function render(root, ctx) {
       <div id="test-result" class="muted" style="font-size:12.5px"></div>
     </div>
 
-    <div class="card">
+    <div class="card card--narrow">
       <h2 class="card__title">热点平台</h2>
       <p class="card__hint">勾选要聚合的平台。保存后回热点页点「刷新」生效；至少有选一个。</p>
       <div style="display:flex;flex-wrap:wrap;gap:8px 16px">
@@ -85,11 +85,11 @@ function render(root, ctx) {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card card--narrow">
       <h2 class="card__title">外观</h2>
-      <div style="display:flex;gap:8px">
-        <button class="btn${data.theme !== "dark" ? " btn--primary" : ""}" data-theme="light">浅色</button>
-        <button class="btn${data.theme === "dark" ? " btn--primary" : ""}" data-theme="dark">暗色</button>
+      <div class="seg">
+        <button type="button" data-theme="light"${data.theme !== "dark" ? ' class="active"' : ""}>浅色</button>
+        <button type="button" data-theme="dark"${data.theme === "dark" ? ' class="active"' : ""}>暗色</button>
       </div>
     </div>
   `;
@@ -201,10 +201,9 @@ function render(root, ctx) {
       const theme = btn.dataset.theme;
       document.documentElement.dataset.theme = theme;
       root.querySelectorAll("[data-theme]").forEach((other) => {
-        other.classList.toggle("btn--primary", other === btn);
+        other.classList.toggle("active", other === btn);
       });
-      const toggle = document.getElementById("theme-btn");
-      if (toggle) toggle.textContent = theme === "dark" ? "☀" : "◐";
+      setThemeIcon(theme === "dark");
       try {
         await api.put("/api/settings", { theme });
         data.theme = theme;

@@ -33,6 +33,16 @@ export function setStatus(text, level = "idle") {
   pill.title = text;
 }
 
+// 主题按钮里是 <svg><use>，切主题要换引用而不是写文字。
+// 外壳的 applyTheme 与设置页的切换都会调，收在这里免得两处各写一遍。
+export function setThemeIcon(dark) {
+  const btn = document.getElementById("theme-btn");
+  if (!btn) return;
+  const use = btn.querySelector("use");
+  if (use) use.setAttribute("href", dark ? "#i-sun" : "#i-moon");
+  btn.title = dark ? "切换到浅色" : "切换到深色";
+}
+
 export function platformColor(key) {
   return `var(--platform-${key || "unknown"}, var(--muted))`;
 }

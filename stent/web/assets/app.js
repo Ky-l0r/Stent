@@ -2,7 +2,7 @@
 // 页面各自是一个 ES Module，导出 mount(root, ctx)；这里只负责加载与切换。
 
 import { api, shell } from "./api.js";
-import { esc, setStatus, toast } from "./ui.js";
+import { esc, setStatus, setThemeIcon, toast } from "./ui.js";
 
 const PAGES = {
   hot: ["热点发现", () => import("./pages/hot.js")],
@@ -45,12 +45,7 @@ async function refreshDraftBadge() {
 function applyTheme(theme) {
   const dark = theme === "dark";
   document.documentElement.dataset.theme = dark ? "dark" : "light";
-  const btn = document.getElementById("theme-btn");
-  if (!btn) return;
-  // 按钮里放的是图标 symbol，切主题靠换 <use> 的引用，不再替换文字
-  const use = btn.querySelector("use");
-  if (use) use.setAttribute("href", dark ? "#i-sun" : "#i-moon");
-  btn.title = dark ? "切换到浅色" : "切换到深色";
+  setThemeIcon(dark);
 }
 
 async function toggleTheme() {

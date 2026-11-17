@@ -94,7 +94,8 @@ function renderFilters(root, ctx) {
       const active = filters.platforms.has(p.key) ? " active" : "";
       const tone = p.count === 0 && p.error ? "（失败）" : p.stale ? "（缓存）" : "";
       return `<button class="chip${active}" data-platform="${esc(p.key)}" title="${esc(p.error || "点击按平台筛选")}">
-        ${esc(p.label)} ${p.count}${tone}
+        <span class="chip__dot" style="background:${platformColor(p.key)}"></span>${esc(p.label)}
+        <span class="chip__count">${p.count}${tone}</span>
       </button>`;
     })
     .join("");
@@ -103,7 +104,7 @@ function renderFilters(root, ctx) {
     .map((c) => {
       const value = c.name;
       const active = filters.category === value ? " active" : "";
-      return `<button class="chip${active}" data-category="${esc(value)}">${esc(value || "全部垂类")} ${c.count}</button>`;
+      return `<button class="chip${active}" data-category="${esc(value)}">${esc(value || "全部垂类")}<span class="chip__count">${c.count}</span></button>`;
     })
     .join("");
 
@@ -115,8 +116,15 @@ function renderFilters(root, ctx) {
       </div>`
     : "";
 
-  host.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${chips}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px">${cats}</div>${failureHtml}`;
+  host.innerHTML = `
+    <div class="filter-group">
+      <span class="filter-group__label">平台</span>
+      <div class="filter-group__items">${chips}</div>
+    </div>
+    <div class="filter-group">
+      <span class="filter-group__label">垂类</span>
+      <div class="filter-group__items">${cats}</div>
+    </div>${failureHtml}`;
 
   host.querySelector("#retry-failed")?.addEventListener("click", (event) =>
     load(true, root, ctx, event.target)
@@ -170,6 +178,7 @@ function renderList(root, ctx) {
     return;
   }
 
+  const labels = new Map(data.platforms.map((p) => [p.key, p.label]));
   host.innerHTML = `<div class="list">${items
     .map(
       (item) => `
@@ -178,6 +187,7 @@ function renderList(root, ctx) {
         <span class="row__dot" style="background:${platformColor(item.platform)}"></span>
         <span class="row__title">${esc(item.title)}</span>
         <span class="row__meta">${esc(item.heat || "")}</span>
+        <span class="row__source">${esc(labels.get(item.platform) || "")}</span>
         <span class="row__actions">
           <button class="btn btn--sm btn--ghost" data-act="copy">复制</button>
           <button class="btn btn--sm btn--ghost" data-act="open">原文</button>

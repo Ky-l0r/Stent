@@ -237,15 +237,29 @@ input:focus, textarea:focus, select:focus {
 label.field { display: block; margin-bottom: var(--space-3); }
 label.field > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+/* 窗口再宽，单行输入也不该拉到 900px：一眼扫不到行尾的输入框只能靠猜。
+   长表单页整张卡收窄，比只限制字段更干净 */
+.card--narrow { max-width: 760px; }
 
 .chip {
-  display: inline-flex; align-items: center; height: var(--control-h-sm); padding: 0 10px;
+  display: inline-flex; align-items: center; gap: 6px; height: var(--control-h-sm); padding: 0 10px;
   border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
   border-radius: 999px; font-size: 12px; cursor: pointer;
   transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
 .chip:hover { color: var(--text); border-color: var(--muted); }
 .chip.active { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
+/* chip 里的计数与名字要能分开读，否则「微博 20」像一个词 */
+.chip__dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }
+.chip__count { font-size: 11px; opacity: .8; font-variant-numeric: tabular-nums; }
+
+/* 筛选分两组：平台和垂类混在一排时，用户分不清哪几个是互斥的 */
+.filter-group { display: flex; align-items: flex-start; gap: var(--space-3); }
+.filter-group + .filter-group { margin-top: 10px; }
+.filter-group__label {
+  flex: 0 0 auto; width: 28px; color: var(--muted); font-size: 12px; line-height: var(--control-h-sm);
+}
+.filter-group__items { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 
 /* ---------- 列表 ---------- */
 .list { display: flex; flex-direction: column; }
@@ -258,6 +272,8 @@ label.field > span { display: block; color: var(--muted); font-size: 12px; margi
 .row__dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
 .row__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row__meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* 色点只能表示平台，读的人得自己记色卡；补一列平台名，色点才不白给 */
+.row__source { flex: 0 0 auto; width: 52px; text-align: right; color: var(--muted); font-size: 12px; }
 .row__actions { display: flex; gap: var(--space-1); opacity: 0; transition: opacity .12s; }
 .row:hover .row__actions { opacity: 1; }
 
