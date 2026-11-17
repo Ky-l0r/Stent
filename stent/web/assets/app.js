@@ -211,7 +211,12 @@ async function boot() {
   });
   document.getElementById("theme-btn").addEventListener("click", toggleTheme);
   document.getElementById("status").addEventListener("click", () => {
-    toast("所有数据都存在本机，接口只监听 127.0.0.1", "info", 4000);
+    const version = document.getElementById("version-tag")?.textContent || "";
+    toast(
+      `${version} 数据全部存在本机，接口只监听 127.0.0.1，不经过任何服务器`.trim(),
+      "info",
+      5000
+    );
   });
   window.addEventListener("hashchange", route);
   wireShell();

@@ -284,7 +284,8 @@ label.field > .field__hint { color: var(--muted); font-size: 12px; margin: 6px 0
 .row__meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
 /* 色点只能表示平台，读的人得自己记色卡；补一列平台名，色点才不白给 */
 .row__source { flex: 0 0 auto; width: 52px; text-align: right; color: var(--muted); font-size: 12px; }
-.row__actions { display: flex; gap: var(--space-1); opacity: 0; transition: opacity .12s; }
+/* 常显半透明、悬停变实：藏到 hover 才出现，第一次用的人不会知道这行能操作 */
+.row__actions { display: flex; gap: var(--space-1); opacity: .5; transition: opacity .12s; }
 .row:hover .row__actions { opacity: 1; }
 
 .empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
